@@ -31,7 +31,7 @@ static_assert(pointer_linked<pushed_record_t>);
 
 /** Four pushers, half of their records alone and half in pairs, and one taker draining as they go:
  *  every record arrives once, with the fields its pusher wrote, and each pusher's in push order. */
-void intrusive_stack_every_push_taken_once() {
+void test_every_push_taken_once() {
     constexpr std::uint32_t pushers_count_k = 4;
     constexpr std::uint32_t records_per_pusher_k = 20000;
     std::vector<pushed_record_t> records(pushers_count_k * records_per_pusher_k);
@@ -72,8 +72,8 @@ void intrusive_stack_every_push_taken_once() {
         // A batch is newest first, so its reverse is the order of the pushes.
         for (std::size_t position = batch.size(); position != 0; --position) {
             pushed_record_t const &record = *batch[position - 1];
-            st_verify_lt_(record.pusher, pushers_count_k);
-            st_verify_eq_(record.sequence, next_sequence[record.pusher], "each pusher's records arrive in order");
+            expect_true(record.pusher < pushers_count_k);
+            expect_equal(record.sequence, next_sequence[record.pusher], "each pusher's records arrive in order");
             ++next_sequence[record.pusher];
             ++times_taken[static_cast<std::size_t>(&record - records.data())];
         }
@@ -82,23 +82,19 @@ void intrusive_stack_every_push_taken_once() {
     }
     for (std::thread &pusher : pushers) pusher.join();
 
-    st_verify_eq_(taken_count, records.size());
-    for (std::uint32_t const taken : times_taken) st_verify_eq_(taken, 1u);
-    st_verify_eq_(stack.take_all(), nullptr);
+    expect_equal(taken_count, records.size());
+    for (std::uint32_t const taken : times_taken) expect_equal(taken, 1u);
+    expect_equal(stack.take_all(), nullptr);
 }
 
 } // namespace ashvardanian::smashtable::test
 
 using namespace ashvardanian::smashtable::test;
 
-int main(int, char **arguments) {
-    settings_t const settings = read_settings(arguments[0]);
-    install_test_signal_handlers();
-    print(probe_machine());
-    print(settings);
-    test_tally_t tally;
+int main(int argc, char **argv) {
+    start_test_run(argc, argv);
 
-    tally += run_test(settings, "intrusive_stack.every_push_taken_once", intrusive_stack_every_push_taken_once);
+    run_test_case("test_every_push_taken_once", test_every_push_taken_once);
 
-    return report_test_failures(settings, tally);
+    return finish_test_run();
 }

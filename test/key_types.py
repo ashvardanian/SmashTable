@@ -18,14 +18,14 @@ import weakref
 
 import pytest
 from base import (
-    all_class_names,
-    enumerable_map_names,
-    key_types,
+    ALL_CLASSES,
+    ENUMERABLE_MAP_CLASSES,
+    KEY_TYPES,
+    MAP_CLASSES,
+    VALUE_MODES,
+    VALUE_TYPES,
     make,
-    map_class_names,
     same_scalar,
-    value_modes,
-    value_types,
     wrong_type_key,
 )
 
@@ -34,6 +34,8 @@ import smashtable as st
 # region Key typing
 
 
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 @pytest.mark.parametrize(
     "bad_key",
     [
@@ -47,8 +49,6 @@ import smashtable as st
         pytest.param(complex(1), id="complex"),
     ],
 )
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
 def test_key_type_is_enforced(container, bad_key):
     """Only int, unsigned, str and bytes are keys, and a refused one is not stored.
 
@@ -60,8 +60,8 @@ def test_key_type_is_enforced(container, bad_key):
     assert len(container) == 0
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_rejected_key_leaves_the_container_untouched(container, keygen, key_type):
     """A key of another layout is refused rather than coerced, and does not grow the container."""
     container[keygen(1)[0]] = 1
@@ -70,8 +70,8 @@ def test_a_rejected_key_leaves_the_container_untouched(container, keygen, key_ty
     assert len(container) == 1
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_contains_answers_false_for_a_foreign_key(container, key_type):
     """Membership answers False rather than raising, which is what dict does."""
     assert wrong_type_key(key_type) not in container
@@ -79,7 +79,7 @@ def test_contains_answers_false_for_a_foreign_key(container, key_type):
     assert True not in container
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 def test_str_and_bytes_containers_are_separate_universes(container_class):
     """A container holds keys of one layout, so 'k' and b'k' live in two of them."""
     text_map = make(container_class, "str")
@@ -101,7 +101,7 @@ def test_str_and_bytes_containers_are_separate_universes(container_class):
 # region Key boundaries
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 @pytest.mark.parametrize(
     ("key_type", "key"),
     [
@@ -118,7 +118,7 @@ def test_integer_extremes_round_trip(container, key):
     assert len(container) == 1, "the key was stored under something other than itself"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 @pytest.mark.parametrize(
     ("key_type", "key"),
     [
@@ -135,7 +135,7 @@ def test_integer_overflow_raises(container, key):
         container[key] = "edge"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 @pytest.mark.parametrize(
     ("key_type", "key"),
     [
@@ -160,8 +160,7 @@ def test_string_edges_round_trip(container, key):
 # region Object lifetimes
 
 
-@pytest.mark.parametrize("class_name", enumerable_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", ENUMERABLE_MAP_CLASSES)
 def test_internal_types_do_not_leak_a_type_reference(container):
     """Creating a cursor, a view or a transaction must not immortalise its own type.
 
@@ -195,9 +194,9 @@ def test_internal_types_do_not_leak_a_type_reference(container):
 @pytest.mark.thread_unsafe(
     reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very state it compares against its model"
 )
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
-@pytest.mark.parametrize("value_type", value_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
+@pytest.mark.parametrize("value_type", VALUE_TYPES)
 def test_value_round_trips_with_its_exact_type(container, keygen, valuegen):
     """A value comes back as the same type it went in as, never widened or narrowed."""
     key = keygen(1)[0]
@@ -208,8 +207,7 @@ def test_value_round_trips_with_its_exact_type(container, keygen, valuegen):
     assert got == value
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 def test_bool_value_stays_bool(container):
     """A stored True is still True, not 1."""
     container[1] = True
@@ -218,8 +216,7 @@ def test_bool_value_stays_bool(container):
     assert container[2] is False
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 @pytest.mark.parametrize(
     "value",
     [
@@ -243,8 +240,8 @@ def test_numeric_value_edges_round_trip(container, value):
     assert same_scalar(container[1], value)
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 @pytest.mark.parametrize(
     "value",
     [pytest.param(object(), id="object"), pytest.param([], id="list"), pytest.param({}, id="dict")],
@@ -264,9 +261,9 @@ def test_unsupported_value_type_raises(container, keygen, value):
 @pytest.mark.parametrize(
     ("error", "stdlib_base"),
     [
-        pytest.param(st.ConflictError, RuntimeError, id="conflict"),
-        pytest.param(st.DuplicateKeyError, KeyError, id="duplicate-key"),
-        pytest.param(st.StateError, RuntimeError, id="state"),
+        pytest.param(st.ConflictError, RuntimeError, id="st.ConflictError"),
+        pytest.param(st.DuplicateKeyError, KeyError, id="st.DuplicateKeyError"),
+        pytest.param(st.StateError, RuntimeError, id="st.StateError"),
     ],
 )
 def test_every_error_is_catchable_as_a_stdlib_one(error, stdlib_base):
@@ -280,7 +277,7 @@ def test_every_error_is_catchable_as_a_stdlib_one(error, stdlib_base):
 # region Module surface
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+@pytest.mark.parametrize("container_class", ALL_CLASSES)
 def test_the_module_exports_its_containers(container_class):
     """Every container class this build ships is reachable from the module."""
     assert getattr(st, container_class.__name__) is container_class
@@ -291,23 +288,23 @@ def test_the_module_exports_its_containers(container_class):
 # region Object values
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_an_object_container_reports_its_mode(container_class, key_type):
     """The mode is visible, so a caller can tell which guarantees they have."""
     assert make(container_class, key_type).value_mode == "scalar"
     assert make(container_class, key_type, "object").value_mode == "object"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 def test_an_unknown_value_mode_is_rejected(container_class):
     """A mode that does not exist is a ValueError rather than a silent default."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unknown value mode"):
         container_class(key=int, value="pickled")
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_an_object_round_trips_by_identity(container_class, key_type, keygen):
     """An object comes back as the same object, not a copy of it."""
     container = make(container_class, key_type, "object")
@@ -317,8 +314,8 @@ def test_an_object_round_trips_by_identity(container_class, key_type, keygen):
     assert container[key] is payload
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_an_object_container_still_takes_scalars(container_class, key_type, keygen):
     """Widening the value type does not narrow it: every scalar still works, by exact type."""
     container = make(container_class, key_type, "object")
@@ -329,8 +326,8 @@ def test_an_object_container_still_takes_scalars(container_class, key_type, keyg
         assert container[key] == value
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_stored_object_keeps_a_reference(container_class, key_type, keygen):
     """Insert takes a reference, overwrite and erase give it back, and teardown gives it back."""
     container = make(container_class, key_type, "object")
@@ -350,8 +347,8 @@ def test_a_stored_object_keeps_a_reference(container_class, key_type, keygen):
     assert sys.getrefcount(payload) == base, "dropping the container must release what it held"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_clear_releases_every_stored_object(container_class, key_type, keygen):
     """clear is a bulk destroy, which is where a missed release would accumulate."""
     container = make(container_class, key_type, "object")
@@ -364,8 +361,8 @@ def test_clear_releases_every_stored_object(container_class, key_type, keygen):
     assert [sys.getrefcount(held) for held in payloads] == bases
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_cycle_through_a_container_is_collectable(container_class, key_type, keygen):
     """An object holding the container that holds it must not leak.
 
@@ -389,9 +386,9 @@ def test_a_cycle_through_a_container_is_collectable(container_class, key_type, k
     assert not survivors, f"{len(survivors)} of 50 container cycles survived a collection"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
-@pytest.mark.parametrize("value_mode", value_modes, indirect=True)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
+@pytest.mark.parametrize("value_mode", VALUE_MODES)
 def test_transactions_carry_objects(container, keygen, value_mode):
     """A value survives stage and commit, and vanishes on a raise, in either mode."""
     key = keygen(1)[0]
@@ -400,10 +397,11 @@ def test_transactions_carry_objects(container, keygen, value_mode):
         view[key] = payload
     assert container[key] == payload
 
-    with pytest.raises(RuntimeError):
-        with st.transaction(container) as (view,):
-            view[key] = {"other": True} if value_mode == "object" else "other"
-            raise RuntimeError("abort")
+    group = st.transaction(container)
+    (view,) = group.begin()
+    view[key] = {"other": True} if value_mode == "object" else "other"
+    with pytest.raises(RuntimeError), group:
+        raise RuntimeError("abort")
     assert container[key] == payload
 
 

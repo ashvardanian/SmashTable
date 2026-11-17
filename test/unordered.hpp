@@ -105,30 +105,30 @@ template <typename container_type_>
 
 /** Checks that @p identifier is present and, on maps, that it still carries @p value_identifier. */
 template <typename container_type_>
-void unordered_verify_present(container_type_ &container, std::size_t identifier,
-                              std::size_t value_identifier) noexcept {
+void check_unordered_present(container_type_ &container, std::size_t identifier,
+                             std::size_t value_identifier) noexcept {
     using key_t = typename container_type_::key_type;
 
     auto const key = unordered_key_from<key_t>(identifier);
-    st_verify_eq_(container.contains(key), true, "a key that was inserted must be found");
-    st_verify_eq_(container.count(key), 1u);
-    st_verify_ne_(container.find(key), container.end(), "find must reach the element");
+    expect_equal(container.contains(key), true, "a key that was inserted must be found");
+    expect_equal(container.count(key), 1u);
+    expect_true(container.find(key) != container.end(), "find must reach the element");
     if constexpr (unordered_has_values<container_type_>) {
         using mapped_t = typename container_type_::mapped_type;
-        st_verify_eq_(container.at(key), unordered_value_from<mapped_t>(value_identifier),
-                      "the mapped value must survive every rehash");
+        expect_equal(container.at(key), unordered_value_from<mapped_t>(value_identifier),
+                     "the mapped value must survive every rehash");
     }
 }
 
 /** Checks that @p identifier is absent, both through @c contains and through @c find. */
 template <typename container_type_>
-void unordered_verify_absent(container_type_ &container, std::size_t identifier) noexcept {
+void check_unordered_absent(container_type_ &container, std::size_t identifier) noexcept {
     using key_t = typename container_type_::key_type;
 
     auto const key = unordered_key_from<key_t>(identifier);
-    st_verify_eq_(container.contains(key), false);
-    st_verify_eq_(container.count(key), 0u);
-    st_verify_eq_(container.find(key), container.end(), "find must report the end for a missing key");
+    expect_equal(container.contains(key), false);
+    expect_equal(container.count(key), 0u);
+    expect_equal(container.find(key), container.end(), "find must report the end for a missing key");
 }
 
 /**
@@ -155,10 +155,11 @@ std::pair<std::set<typename container_type_::key_type>, std::size_t> unordered_k
     container_type_ &container) noexcept {
     std::set<typename container_type_::key_type> collected;
     std::size_t visits = 0;
-    st_verify_(container.for_each([&](auto const &address) noexcept {
+    expect_equal(container.for_each([&](auto const &address) noexcept {
         collected.insert(address.key());
         ++visits;
-    }));
+    }),
+                 success_k);
     return {std::move(collected), visits};
 }
 
@@ -174,20 +175,20 @@ std::set<typename container_type_::key_type> unordered_expected_keys(
 
 /** Re-checks the whole container against the oracle, in both directions. */
 template <typename container_type_>
-void unordered_verify_against_oracle(container_type_ &container,
-                                     std::unordered_map<std::size_t, std::size_t> const &oracle,
-                                     std::size_t identifiers_bound) noexcept {
-    st_verify_eq_(container.size(), oracle.size());
-    st_verify_eq_(container.empty(), oracle.empty());
+void check_unordered_against_oracle(container_type_ &container,
+                                    std::unordered_map<std::size_t, std::size_t> const &oracle,
+                                    std::size_t identifiers_bound) noexcept {
+    expect_equal(container.size(), oracle.size());
+    expect_equal(container.empty(), oracle.empty());
     for (std::size_t identifier = 0; identifier < identifiers_bound; ++identifier) {
         auto const found = oracle.find(identifier);
-        if (found != oracle.end()) unordered_verify_present(container, identifier, found->second);
-        else unordered_verify_absent(container, identifier);
+        if (found != oracle.end()) check_unordered_present(container, identifier, found->second);
+        else check_unordered_absent(container, identifier);
     }
     auto const [walked_keys, walked_visits] = unordered_keys_by_iteration(container);
-    st_verify_eq_(walked_visits, container.size());
-    st_verify_eq_(walked_keys, unordered_expected_keys<container_type_>(oracle),
-                  "iteration must reach exactly the live keys");
+    expect_equal(walked_visits, container.size());
+    expect_equal(walked_keys, unordered_expected_keys<container_type_>(oracle),
+                 "iteration must reach exactly the live keys");
 }
 
 #pragma endregion Fixture Helpers
@@ -196,85 +197,85 @@ void unordered_verify_against_oracle(container_type_ &container,
 
 /** Tests that every read and every teardown path tolerates an empty container. */
 template <typename container_type_>
-void test_unordered_empty_container_operations() {
+void check_unordered_empty_container_operations() {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
 
     container_t container;
-    st_verify_(container.empty());
-    st_verify_eq_(container.size(), 0u);
-    st_verify_eq_(container.bucket_count(), 0u);
-    unordered_verify_absent(container, 1);
-    st_verify_eq_(container.begin(), container.end(), "an empty container iterates over nothing");
-    st_verify_eq_(unordered_keys_by_for_each(container).first.size(), 0u);
-    st_verify_(!(container.erase(unordered_key_from<key_t>(7))));
+    expect_true(container.empty());
+    expect_equal(container.size(), 0u);
+    expect_equal(container.bucket_count(), 0u);
+    check_unordered_absent(container, 1);
+    expect_equal(container.begin(), container.end(), "an empty container iterates over nothing");
+    expect_equal(unordered_keys_by_for_each(container).first.size(), 0u);
+    expect_true(!(container.erase(unordered_key_from<key_t>(7))));
 
     // The same operations must also survive on a container that owns memory but holds nothing.
     auto allocated = container_t::make(128);
-    st_verify_((allocated) && "allocating a small table must succeed");
+    if (!expect_true(allocated.has_value(), "allocating a small table must succeed")) return;
     container_t reserved = *std::move(allocated);
-    st_verify_(reserved.empty());
-    st_verify_eq_(reserved.size(), 0u);
-    st_verify_gt_(reserved.bucket_count(), 0u);
-    unordered_verify_absent(reserved, 1);
-    st_verify_eq_(reserved.begin(), reserved.end(), "a reserved but empty container iterates over nothing");
-    st_verify_eq_(unordered_keys_by_for_each(reserved).first.size(), 0u);
+    expect_true(reserved.empty());
+    expect_equal(reserved.size(), 0u);
+    expect_true(reserved.bucket_count() > 0u);
+    check_unordered_absent(reserved, 1);
+    expect_equal(reserved.begin(), reserved.end(), "a reserved but empty container iterates over nothing");
+    expect_equal(unordered_keys_by_for_each(reserved).first.size(), 0u);
 
     // Teardown on an empty container must be repeatable.
     reserved.clear();
     reserved.clear();
-    st_verify_eq_(reserved.size(), 0u);
+    expect_equal(reserved.size(), 0u);
     reserved.shrink_to_fit();
-    st_verify_eq_(reserved.bucket_count(), 0u);
-    st_verify_(reserved.empty());
+    expect_equal(reserved.bucket_count(), 0u);
+    expect_true(reserved.empty());
 }
 
 /** Tests the insert, lookup, overwrite and erase cycle on a single element. */
 template <typename container_type_>
-void test_unordered_single_element_operations() {
+void check_unordered_single_element_operations() {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
 
     container_t container;
     unordered_emplace(container, 42);
-    st_verify_eq_(container.size(), 1u);
-    st_verify_(!(container.empty()));
-    unordered_verify_present(container, 42, 42);
-    unordered_verify_absent(container, 43);
+    expect_equal(container.size(), 1u);
+    expect_true(!(container.empty()));
+    check_unordered_present(container, 42, 42);
+    check_unordered_absent(container, 43);
 
     auto const [collected, collected_visits] = unordered_keys_by_iteration(container);
-    st_verify_eq_(collected_visits, container.size());
-    st_verify_eq_(collected.size(), 1u);
-    st_verify_eq_(*collected.begin(), unordered_key_from<key_t>(42), "the only key must be the inserted one");
+    expect_equal(collected_visits, container.size());
+    expect_equal(collected.size(), 1u);
+    expect_equal(*collected.begin(), unordered_key_from<key_t>(42), "the only key must be the inserted one");
 
     // Re-inserting the same key overwrites rather than duplicates.
     if constexpr (unordered_has_values<container_t>) {
         unordered_emplace_valued(container, 42, 99);
-        st_verify_eq_(container.size(), 1u);
-        unordered_verify_present(container, 42, 99);
+        expect_equal(container.size(), 1u);
+        check_unordered_present(container, 42, 99);
     }
     else {
         unordered_emplace(container, 42);
-        st_verify_eq_(container.size(), 1u);
+        expect_equal(container.size(), 1u);
     }
 
-    st_verify_(container.erase(unordered_key_from<key_t>(42)));
-    st_verify_eq_(container.size(), 0u);
-    st_verify_(container.empty());
-    unordered_verify_absent(container, 42);
-    st_verify_(!(container.erase(unordered_key_from<key_t>(42))));
+    expect_true(container.erase(unordered_key_from<key_t>(42)));
+    expect_equal(container.size(), 0u);
+    expect_true(container.empty());
+    check_unordered_absent(container, 42);
+    expect_true(!(container.erase(unordered_key_from<key_t>(42))));
 
     // A tombstoned slot must accept the same key again.
     unordered_emplace(container, 42);
-    st_verify_eq_(container.size(), 1u);
-    unordered_verify_present(container, 42, 42);
+    expect_equal(container.size(), 1u);
+    check_unordered_present(container, 42, 42);
 }
 
 /** Tests that growth from an unallocated table preserves every element across many rehashes. */
 template <typename container_type_>
-void test_unordered_growth_through_rehashes(std::size_t size = 4000) {
+void check_unordered_growth_through_rehashes(std::size_t size = 4000) {
 
     using container_t = container_type_;
 
@@ -286,23 +287,23 @@ void test_unordered_growth_through_rehashes(std::size_t size = 4000) {
     for (std::size_t identifier = 0; identifier < size; ++identifier) {
         unordered_emplace(container, identifier);
         oracle[identifier] = identifier;
-        st_verify_eq_(container.size(), oracle.size());
+        expect_equal(container.size(), oracle.size());
         if (container.bucket_count() != previous_buckets) {
             previous_buckets = container.bucket_count();
             ++rehashes;
             // Everything inserted so far must have survived the reallocation.
             for (std::size_t earlier = 0; earlier <= identifier; ++earlier)
-                unordered_verify_present(container, earlier, earlier);
+                check_unordered_present(container, earlier, earlier);
         }
     }
 
-    st_verify_gt_(rehashes, 3, "growing to thousands of elements must rehash repeatedly");
-    unordered_verify_against_oracle(container, oracle, size + 100);
+    expect_true(rehashes > 3, "growing to thousands of elements must rehash repeatedly");
+    check_unordered_against_oracle(container, oracle, size + 100);
 }
 
 /** Tests that a tombstoned table still finds its survivors, then refills the tombstones. */
 template <typename container_type_>
-void test_unordered_tombstone_reuse(std::size_t size = 2000) {
+void check_unordered_tombstone_reuse(std::size_t size = 2000) {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
@@ -313,16 +314,16 @@ void test_unordered_tombstone_reuse(std::size_t size = 2000) {
         unordered_emplace(container, identifier);
         oracle[identifier] = identifier;
     }
-    unordered_verify_against_oracle(container, oracle, size);
+    check_unordered_against_oracle(container, oracle, size);
 
     // Erase three quarters of the keys, leaving long runs of tombstones behind. A probe sequence
     // that treats a tombstone as the end of the run loses the survivors right here.
     for (std::size_t identifier = 0; identifier < size; ++identifier) {
         if (identifier % 4 == 0) continue;
-        st_verify_(container.erase(unordered_key_from<key_t>(identifier)));
+        expect_true(container.erase(unordered_key_from<key_t>(identifier)));
         oracle.erase(identifier);
     }
-    unordered_verify_against_oracle(container, oracle, size);
+    check_unordered_against_oracle(container, oracle, size);
 
     // Refill the tombstones with the very keys that made them.
     for (std::size_t identifier = 0; identifier < size; ++identifier) {
@@ -330,19 +331,19 @@ void test_unordered_tombstone_reuse(std::size_t size = 2000) {
         unordered_emplace(container, identifier);
         oracle[identifier] = identifier;
     }
-    unordered_verify_against_oracle(container, oracle, size);
+    check_unordered_against_oracle(container, oracle, size);
 
     // And with keys that were never present, so the tombstones take unfamiliar hashes.
     for (std::size_t identifier = size; identifier < size + 500; ++identifier) {
         unordered_emplace(container, identifier);
         oracle[identifier] = identifier;
     }
-    unordered_verify_against_oracle(container, oracle, size + 500);
+    check_unordered_against_oracle(container, oracle, size + 500);
 }
 
 /** Tests that iteration and @c for_each each visit every live element exactly once. */
 template <typename container_type_>
-void test_unordered_full_iteration(std::size_t size = 1500) {
+void check_unordered_full_iteration(std::size_t size = 1500) {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
@@ -355,49 +356,51 @@ void test_unordered_full_iteration(std::size_t size = 1500) {
     }
 
     auto const expected = unordered_expected_keys<container_t>(oracle);
-    st_verify_eq_(expected.size(), size);
+    expect_equal(expected.size(), size);
 
     // A count alone would pass while a slot is visited twice and another skipped, so compare sets.
     std::size_t visits = 0;
     std::set<key_t> visited;
-    st_verify_(container.for_each([&](auto const &address) noexcept {
+    expect_equal(container.for_each([&](auto const &address) noexcept {
         visited.insert(address.key());
         ++visits;
-    }));
-    st_verify_eq_(visits, size);
-    st_verify_eq_(visited, expected, "for_each must visit every live key exactly once");
+    }),
+                 success_k);
+    expect_equal(visits, size);
+    expect_equal(visited, expected, "for_each must visit every live key exactly once");
     auto const [iterated, iterated_visits] = unordered_keys_by_iteration(container);
-    st_verify_eq_(iterated_visits, container.size());
-    st_verify_eq_(iterated, expected, "iteration must agree with for_each");
+    expect_equal(iterated_visits, container.size());
+    expect_equal(iterated, expected, "iteration must agree with for_each");
 
     // The const overloads walk the same slots through the const element reference.
     container_t const &const_container = container;
     std::size_t const_visits = 0;
     std::set<key_t> const_visited;
-    st_verify_(const_container.for_each([&](auto const &address) noexcept {
+    expect_equal(const_container.for_each([&](auto const &address) noexcept {
         const_visited.insert(address.key());
         ++const_visits;
-    }));
-    st_verify_eq_(const_visits, size);
-    st_verify_eq_(const_visited, expected, "the const for_each must see the same keys");
+    }),
+                 success_k);
+    expect_equal(const_visits, size);
+    expect_equal(const_visited, expected, "the const for_each must see the same keys");
 
     // Half the elements go away, and both walks must follow.
     for (std::size_t identifier = 0; identifier < size; identifier += 2) {
-        st_verify_(container.erase(unordered_key_from<key_t>(identifier)));
+        expect_true(container.erase(unordered_key_from<key_t>(identifier)));
         oracle.erase(identifier);
     }
     auto const survivors = unordered_expected_keys<container_t>(oracle);
     auto const [seen_by_for_each, for_each_visits] = unordered_keys_by_for_each(container);
     auto const [seen_by_walk, walk_visits] = unordered_keys_by_iteration(container);
-    st_verify_eq_(for_each_visits, container.size());
-    st_verify_eq_(walk_visits, container.size());
-    st_verify_eq_(seen_by_for_each, survivors, "for_each must skip tombstones");
-    st_verify_eq_(seen_by_walk, survivors, "iteration must skip tombstones");
+    expect_equal(for_each_visits, container.size());
+    expect_equal(walk_visits, container.size());
+    expect_equal(seen_by_for_each, survivors, "for_each must skip tombstones");
+    expect_equal(seen_by_walk, survivors, "iteration must skip tombstones");
 }
 
 /** Tests move construction, move assignment and @c swap against the oracle. */
 template <typename container_type_>
-void test_unordered_moves_and_swaps(std::size_t size = 600) {
+void check_unordered_moves_and_swaps(std::size_t size = 600) {
 
     using container_t = container_type_;
 
@@ -409,18 +412,18 @@ void test_unordered_moves_and_swaps(std::size_t size = 600) {
     }
 
     container_t moved_into(std::move(source));
-    unordered_verify_against_oracle(moved_into, oracle, size);
+    check_unordered_against_oracle(moved_into, oracle, size);
 
     container_t assigned_into;
     assigned_into = std::move(moved_into);
-    unordered_verify_against_oracle(assigned_into, oracle, size);
+    check_unordered_against_oracle(assigned_into, oracle, size);
 
     // Swapping with an empty container hands the whole payload over and takes nothing back.
     container_t empty_partner;
     assigned_into.swap(empty_partner);
-    st_verify_(assigned_into.empty());
-    st_verify_eq_(assigned_into.size(), 0u);
-    unordered_verify_against_oracle(empty_partner, oracle, size);
+    expect_true(assigned_into.empty());
+    expect_equal(assigned_into.size(), 0u);
+    check_unordered_against_oracle(empty_partner, oracle, size);
 
     // Swapping two populated containers exchanges them wholesale.
     container_t other;
@@ -430,68 +433,68 @@ void test_unordered_moves_and_swaps(std::size_t size = 600) {
         other_oracle[identifier] = identifier;
     }
     empty_partner.swap(other);
-    unordered_verify_against_oracle(empty_partner, other_oracle, size + 200);
-    unordered_verify_against_oracle(other, oracle, size + 200);
+    check_unordered_against_oracle(empty_partner, other_oracle, size + 200);
+    check_unordered_against_oracle(other, oracle, size + 200);
 }
 
 /** Tests @c reserve idempotence, explicit @c rehash, @c clear and @c shrink_to_fit. */
 template <typename container_type_>
-void test_unordered_capacity_management(std::size_t size = 800) {
+void check_unordered_capacity_management(std::size_t size = 800) {
 
     using container_t = container_type_;
 
     using reserve_result_t = typename container_t::reserve_result_t;
 
     container_t container;
-    st_verify_eq_(container.reserve(size), reserve_result_t::reallocated_k,
-                  "the first reserve on an empty table must allocate");
-    st_verify_eq_(container.reserve(size), reserve_result_t::unchanged_k,
-                  "a second reserve for the same count must be a no-op");
-    st_verify_eq_(container.reserve(size / 2), reserve_result_t::unchanged_k,
-                  "shrinking through reserve must be a no-op");
+    expect_equal(container.reserve(size), reserve_result_t::reallocated_k,
+                 "the first reserve on an empty table must allocate");
+    expect_equal(container.reserve(size), reserve_result_t::unchanged_k,
+                 "a second reserve for the same count must be a no-op");
+    expect_equal(container.reserve(size / 2), reserve_result_t::unchanged_k,
+                 "shrinking through reserve must be a no-op");
     auto const reserved_buckets = container.bucket_count();
-    st_verify_gt_(reserved_buckets, 0u);
+    expect_true(reserved_buckets > 0u);
 
     std::unordered_map<std::size_t, std::size_t> oracle;
     for (std::size_t identifier = 0; identifier < size; ++identifier) {
         unordered_emplace(container, identifier);
         oracle[identifier] = identifier;
     }
-    st_verify_eq_(container.bucket_count(), reserved_buckets);
-    unordered_verify_against_oracle(container, oracle, size);
+    expect_equal(container.bucket_count(), reserved_buckets);
+    check_unordered_against_oracle(container, oracle, size);
 
     // An explicit rehash moves every element into a differently sized table. The bucket count is
     // scaled by a power of two, because the probe mask assumes a power-of-two slot count and
     // @c rehash forwards its argument without rounding.
-    st_verify_eq_(container.rehash(reserved_buckets * 4), reserve_result_t::reallocated_k,
-                  "a rehash onto a different size moves every element, so it must report reallocating");
-    st_verify_eq_(container.bucket_count(), reserved_buckets * 4);
-    unordered_verify_against_oracle(container, oracle, size);
+    expect_equal(container.rehash(reserved_buckets * 4), reserve_result_t::reallocated_k,
+                 "a rehash onto a different size moves every element, so it must report reallocating");
+    expect_equal(container.bucket_count(), reserved_buckets * 4);
+    check_unordered_against_oracle(container, oracle, size);
 
     // Shrinking gives the four-fold growth back and lands on the count the reserve chose, so a
     // @c shrink_to_fit that did nothing at all is a failure rather than a pass.
     container.shrink_to_fit();
-    st_verify_eq_(container.bucket_count(), reserved_buckets);
-    unordered_verify_against_oracle(container, oracle, size);
+    expect_equal(container.bucket_count(), reserved_buckets);
+    check_unordered_against_oracle(container, oracle, size);
 
     container.clear();
-    st_verify_(container.empty());
-    st_verify_eq_(container.size(), 0u);
-    st_verify_gt_(container.bucket_count(), 0u, "clear keeps the memory");
-    unordered_verify_absent(container, 0);
+    expect_true(container.empty());
+    expect_equal(container.size(), 0u);
+    expect_true(container.bucket_count() > 0u, "clear keeps the memory");
+    check_unordered_absent(container, 0);
 
     container.shrink_to_fit();
-    st_verify_eq_(container.bucket_count(), 0u);
+    expect_equal(container.bucket_count(), 0u);
 
     // A cleared and shrunk container is still usable.
     unordered_emplace(container, 5);
-    st_verify_eq_(container.size(), 1u);
-    unordered_verify_present(container, 5, 5);
+    expect_equal(container.size(), 1u);
+    check_unordered_present(container, 5, 5);
 }
 
 /** Tests that the load factor stays under the documented cap and the counters stay honest. */
 template <typename container_type_>
-void test_unordered_load_factor_consistency(std::size_t size = 3000) {
+void check_unordered_load_factor_consistency(std::size_t size = 3000) {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
@@ -499,28 +502,28 @@ void test_unordered_load_factor_consistency(std::size_t size = 3000) {
     container_t container;
     for (std::size_t identifier = 0; identifier < size; ++identifier) {
         unordered_emplace(container, identifier);
-        st_verify_eq_(container.size(), identifier + 1);
-        st_verify_(!(container.empty()));
+        expect_equal(container.size(), identifier + 1);
+        expect_true(!(container.empty()));
 
         // The header lives in whole buckets, and the table never runs past three quarters full.
-        st_verify_eq_(container.bucket_count() * hash_bucket_capacity_k, container.slots_count().raw);
-        st_verify_le_(container.size() * 4, container.slots_count().raw * 3,
-                      "the load factor must stay under the 75% cap");
-        st_verify_le_(container.size(), container.capacity());
+        expect_equal(container.bucket_count() * hash_bucket_capacity_k, container.slots_count().raw);
+        expect_true(container.size() * 4 <= container.slots_count().raw * 3,
+                    "the load factor must stay under the 75% cap");
+        expect_true(container.size() <= container.capacity());
     }
 
     // Erasures lower the size without lowering the slot count.
     auto const slots_before_erasures = container.slots_count().raw;
     for (std::size_t identifier = 0; identifier < size; identifier += 3)
-        st_verify_(container.erase(unordered_key_from<key_t>(identifier)));
-    st_verify_eq_(container.size(), size - ((size + 2) / 3));
-    st_verify_eq_(container.slots_count().raw, slots_before_erasures);
-    st_verify_(!(container.empty()));
+        expect_true(container.erase(unordered_key_from<key_t>(identifier)));
+    expect_equal(container.size(), size - ((size + 2) / 3));
+    expect_equal(container.slots_count().raw, slots_before_erasures);
+    expect_true(!(container.empty()));
 
     container.clear();
-    st_verify_(container.empty());
-    st_verify_eq_(container.size(), 0u);
-    st_verify_eq_(container.slots_count().raw, slots_before_erasures);
+    expect_true(container.empty());
+    expect_equal(container.size(), 0u);
+    expect_equal(container.slots_count().raw, slots_before_erasures);
 }
 
 #pragma endregion Basic Unordered Operations
@@ -531,7 +534,7 @@ void test_unordered_load_factor_consistency(std::size_t size = 3000) {
  *  where the equality predicate is transparent and the hash of a view matches the hash of the
  *  string it views, which the standard guarantees. */
 template <typename container_type_>
-void test_unordered_heterogeneous_string_view_lookup(std::size_t size = 400) {
+void check_unordered_heterogeneous_string_view_lookup(std::size_t size = 400) {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
@@ -547,25 +550,25 @@ void test_unordered_heterogeneous_string_view_lookup(std::size_t size = 400) {
     for (std::size_t identifier = 0; identifier < size; ++identifier) {
         std::string const owned = unordered_key_from<key_t>(identifier);
         std::string_view const borrowed {owned};
-        st_verify_eq_(container.contains(borrowed), true, "a view of a present key must be found");
-        st_verify_eq_(container.count(borrowed), 1u);
-        st_verify_ne_(container.find(borrowed), container.end(), "find must accept a view");
+        expect_equal(container.contains(borrowed), true, "a view of a present key must be found");
+        expect_equal(container.count(borrowed), 1u);
+        expect_true(container.find(borrowed) != container.end(), "find must accept a view");
         if constexpr (unordered_has_values<container_t>) {
             using mapped_t = typename container_t::mapped_type;
-            st_verify_eq_(container.at(borrowed), unordered_value_from<mapped_t>(identifier),
-                          "a view must reach the same value the owned key does");
+            expect_equal(container.at(borrowed), unordered_value_from<mapped_t>(identifier),
+                         "a view must reach the same value the owned key does");
         }
     }
 
     using namespace std::literals::string_view_literals;
-    st_verify_eq_(container.contains("key-missing"sv), false);
-    st_verify_eq_(container.count("key-missing"sv), 0u);
+    expect_equal(container.contains("key-missing"sv), false);
+    expect_equal(container.count("key-missing"sv), 0u);
 
     // Erasing through a view must retire the same slot the owned key would have.
     std::string const first = unordered_key_from<key_t>(0);
-    st_verify_(container.erase(std::string_view {first}));
-    st_verify_eq_(container.contains(first), false);
-    st_verify_eq_(container.size(), size - 1);
+    expect_true(container.erase(std::string_view {first}));
+    expect_equal(container.contains(first), false);
+    expect_equal(container.size(), size - 1);
 }
 
 #pragma endregion Heterogeneous Lookup
@@ -580,7 +583,7 @@ void test_unordered_heterogeneous_string_view_lookup(std::size_t size = 400) {
  *      from a release build to be worth anything.
  */
 template <typename container_type_>
-void test_unordered_exhausted_allocator_insertions(std::size_t attempts = 4000) {
+void check_unordered_exhausted_allocator_insertions(std::size_t attempts = 4000) {
 
     using container_t = container_type_;
 
@@ -589,10 +592,10 @@ void test_unordered_exhausted_allocator_insertions(std::size_t attempts = 4000) 
     ledger.allow(1);
     {
         auto allocated = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
-        st_verify_((allocated) && "the one permitted allocation must succeed");
+        if (!expect_true(allocated.has_value(), "the one permitted allocation must succeed")) return;
         container_t container = *std::move(allocated);
         std::size_t const slots = container.slots_count().raw;
-        st_verify_gt_(slots, 0u);
+        expect_true(slots > 0u);
 
         std::unordered_map<std::size_t, std::size_t> oracle;
         for (std::size_t identifier = 0; identifier < attempts; ++identifier) {
@@ -600,16 +603,16 @@ void test_unordered_exhausted_allocator_insertions(std::size_t attempts = 4000) 
             unordered_emplace(container, identifier);
             if (container.size() != size_before) oracle[identifier] = identifier;
             // Neither the counters nor the layout may run past the single buffer that was handed out.
-            st_verify_le_(container.size() + container.deleted_count(), slots);
-            st_verify_eq_(container.slots_count().raw, slots);
+            expect_true(container.size() + container.deleted_count() <= slots);
+            expect_equal(container.slots_count().raw, slots);
         }
 
         // The load factor caps at 75%, so the one buffer accepts three of every four slots and no more.
-        st_verify_eq_(container.size(), slots * 3 / 4, "a table that cannot grow stops at its load cap");
-        st_verify_eq_(container.size(), oracle.size());
-        for (auto const &entry : oracle) unordered_verify_present(container, entry.first, entry.second);
+        expect_equal(container.size(), slots * 3 / 4, "a table that cannot grow stops at its load cap");
+        expect_equal(container.size(), oracle.size());
+        for (auto const &entry : oracle) check_unordered_present(container, entry.first, entry.second);
     }
-    ledger.verify_balanced();
+    ledger.check_balanced();
 }
 
 /** Inserts the element for @p identifier through the reporting overload of @c emplace. */
@@ -628,28 +631,28 @@ auto unordered_emplace_reporting(container_type_ &container, std::size_t identif
 /** Tests that a reporting insertion separates a fresh key from one already taken. Two of the three
  *  outcomes; the refusal is a table that cannot grow, tested separately. */
 template <typename container_type_>
-void test_unordered_insert_reports_outcome() {
+void check_unordered_insert_reports_outcome() {
 
     using container_t = container_type_;
     using upsert_result_t = typename container_t::upsert_result_t;
 
     container_t container;
     auto const stored = unordered_emplace_reporting(container, 1);
-    st_verify_eq_(stored.outcome, upsert_result_t::inserted_k, "a fresh key must report an insertion");
-    st_verify_ne_(stored.position, container.end(), "an insertion must name the slot it landed in");
-    st_verify_(!(stored.failed()));
+    expect_equal(stored.outcome, upsert_result_t::inserted_k, "a fresh key must report an insertion");
+    expect_true(stored.position != container.end(), "an insertion must name the slot it landed in");
+    expect_true(!(stored.failed()));
 
     auto const duplicate = unordered_emplace_reporting(container, 1);
-    st_verify_eq_(duplicate.outcome, upsert_result_t::updated_k, "a key already there must report an update");
-    st_verify_ne_(duplicate.position, container.end(), "an update must name the slot the key sits in");
-    st_verify_(!(duplicate.failed()) && "a key already there is not a failure");
-    st_verify_eq_(container.size(), 1u);
+    expect_equal(duplicate.outcome, upsert_result_t::updated_k, "a key already there must report an update");
+    expect_true(duplicate.position != container.end(), "an update must name the slot the key sits in");
+    expect_true(!(duplicate.failed()), "a key already there is not a failure");
+    expect_equal(container.size(), 1u);
 }
 
 /** Tests that an insertion the table had no room for is distinguishable from a duplicate. Both
  *  leave the size alone, and only the reported outcome tells them apart. */
 template <typename container_type_>
-void test_unordered_insert_reports_refusal() {
+void check_unordered_insert_reports_refusal() {
 
     using container_t = container_type_;
     using upsert_result_t = typename container_t::upsert_result_t;
@@ -660,26 +663,26 @@ void test_unordered_insert_reports_refusal() {
     ledger.allow(1);
     {
         auto allocated = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
-        st_verify_((allocated) && "the one permitted allocation must succeed");
+        if (!expect_true(allocated.has_value(), "the one permitted allocation must succeed")) return;
         container_t container = *std::move(allocated);
         std::size_t const slots = container.slots_count().raw;
         for (std::size_t identifier = 0; identifier < slots; ++identifier)
             unordered_emplace(container, identifier, assume_reserved_t {}, assume_unique_t {});
-        st_verify_eq_(container.size(), slots);
+        expect_equal(container.size(), slots);
 
         // Both calls promise the reservation, so neither asks the refusing allocator for room and the
         // only thing separating them is what the probe found.
         auto const duplicate = unordered_emplace_reporting(container, 0, assume_reserved_t {});
-        st_verify_eq_(duplicate.outcome, upsert_result_t::updated_k, "a saturated table still updates what it holds");
-        st_verify_(!(duplicate.failed()));
+        expect_equal(duplicate.outcome, upsert_result_t::updated_k, "a saturated table still updates what it holds");
+        expect_true(!(duplicate.failed()));
 
         auto const refused = unordered_emplace_reporting(container, slots + 1, assume_reserved_t {});
-        st_verify_eq_(refused.outcome, upsert_result_t::no_slot_k, "a table with no room must report the refusal");
-        st_verify_((refused.failed()) && "a refusal is the only way an insertion fails");
-        st_verify_eq_(refused.position, container.end(), "a refusal names no slot");
-        st_verify_eq_(container.size(), slots);
+        expect_equal(refused.outcome, upsert_result_t::no_slot_k, "a table with no room must report the refusal");
+        expect_true(refused.failed(), "a refusal is the only way an insertion fails");
+        expect_equal(refused.position, container.end(), "a refusal names no slot");
+        expect_equal(container.size(), slots);
     }
-    ledger.verify_balanced();
+    ledger.check_balanced();
 }
 
 /** Tests that filing a key the table already holds never reaches the allocator. A table sitting
@@ -687,7 +690,7 @@ void test_unordered_insert_reports_refusal() {
  *  established the key is new turns a plain overwrite - which needs no slot of its own - into a
  *  refusal the caller cannot do anything about. */
 template <typename container_type_>
-void test_unordered_present_key_needs_no_room() {
+void check_unordered_present_key_needs_no_room() {
 
     using container_t = container_type_;
     using upsert_result_t = typename container_t::upsert_result_t;
@@ -696,63 +699,63 @@ void test_unordered_present_key_needs_no_room() {
     allocation_ledger_t ledger;
     {
         auto allocated = container_t::make(std::size_t {24}, {}, {}, stateful_allocator<std::byte> {ledger});
-        st_verify_((allocated) && "the first allocation must succeed");
+        if (!expect_true(allocated.has_value(), "the first allocation must succeed")) return;
         container_t container = *std::move(allocated);
         std::size_t const threshold = container.capacity();
-        st_verify_gt_(threshold, 0u);
+        expect_true(threshold > 0u);
 
         for (std::size_t identifier = 0; identifier < threshold; ++identifier) unordered_emplace(container, identifier);
-        st_verify_eq_(container.size(), threshold);
+        expect_equal(container.size(), threshold);
         std::size_t const slots_before = container.slots_count().raw;
-        std::size_t const granted_before = ledger.granted_count;
+        std::size_t const granted_before = ledger.allocations;
 
         // From here the allocator answers nothing, so anything asking it for a slot fails.
         ledger.refuse_everything();
 
         for (std::size_t identifier = 0; identifier < threshold; ++identifier) {
             status_t const overwritten = unordered_upsert(container, identifier, identifier + threshold);
-            st_verify_eq_(overwritten, success_k, "an overwrite needs no room and must not report a refusal");
+            expect_equal(overwritten, success_k, "an overwrite needs no room and must not report a refusal");
         }
-        st_verify_eq_(ledger.granted_count, granted_before);
-        st_verify_eq_(ledger.refused_count, std::size_t {0});
-        st_verify_eq_(container.slots_count().raw, slots_before);
-        st_verify_eq_(container.size(), threshold);
+        expect_equal(ledger.allocations, granted_before);
+        expect_equal(ledger.refusals, std::size_t {0});
+        expect_equal(container.slots_count().raw, slots_before);
+        expect_equal(container.size(), threshold);
         for (std::size_t identifier = 0; identifier < threshold; ++identifier)
-            unordered_verify_present(container, identifier, identifier + threshold);
+            check_unordered_present(container, identifier, identifier + threshold);
 
         // The reporting insertion answers the same question, and an update is not a failure.
         auto const duplicate = unordered_emplace_reporting(container, 0);
-        st_verify_eq_(duplicate.outcome, upsert_result_t::updated_k, "a key already there is an update, not a refusal");
-        st_verify_(!(duplicate.failed()) && "an overwrite the allocator never saw cannot have failed");
-        st_verify_ne_(duplicate.position, container.end(), "an update must name the slot the key sits in");
-        st_verify_eq_(ledger.refused_count, std::size_t {0});
+        expect_equal(duplicate.outcome, upsert_result_t::updated_k, "a key already there is an update, not a refusal");
+        expect_true(!(duplicate.failed()), "an overwrite the allocator never saw cannot have failed");
+        expect_true(duplicate.position != container.end(), "an update must name the slot the key sits in");
+        expect_equal(ledger.refusals, std::size_t {0});
 
         // A genuinely new key does need a slot, and that refusal is the one the heap is to blame for.
         status_t const refused = unordered_upsert(container, threshold, threshold);
-        st_verify_eq_(refused, out_of_memory_heap_k,
-                      "a new key the table cannot make room for is an allocation failure");
-        st_verify_eq_(container.size(), threshold);
-        st_verify_eq_(container.slots_count().raw, slots_before);
+        expect_equal(refused, out_of_memory_heap_k,
+                     "a new key the table cannot make room for is an allocation failure");
+        expect_equal(container.size(), threshold);
+        expect_equal(container.slots_count().raw, slots_before);
 
         auto const refused_report = unordered_emplace_reporting(container, threshold + 1);
-        st_verify_eq_(refused_report.outcome, upsert_result_t::no_memory_k,
-                      "a refused growth must not be reported as an exhausted probe");
-        st_verify_((refused_report.failed()) && "nothing was stored, so the insertion failed");
-        st_verify_eq_(refused_report.position, container.end(), "a refusal names no slot");
-        st_verify_eq_(container.size(), threshold);
+        expect_equal(refused_report.outcome, upsert_result_t::no_memory_k,
+                     "a refused growth must not be reported as an exhausted probe");
+        expect_true(refused_report.failed(), "nothing was stored, so the insertion failed");
+        expect_equal(refused_report.position, container.end(), "a refusal names no slot");
+        expect_equal(container.size(), threshold);
     }
-    ledger.verify_balanced();
+    ledger.check_balanced();
 }
 
 /** Tests that a table with every slot taken refuses further keys, terminates while doing so, and
  *  does not count a store that never happened. */
 template <typename container_type_>
-void test_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
+void check_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
 
     using container_t = container_type_;
 
     auto allocated = container_t::make(std::size_t {64});
-    st_verify_((allocated) && "the table must build");
+    if (!expect_true(allocated.has_value(), "the table must build")) return;
     container_t container = *std::move(allocated);
     std::size_t const slots = container.slots_count().raw;
 
@@ -760,24 +763,24 @@ void test_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
     // the last slot, which is the state both probe loops have to survive.
     for (std::size_t identifier = 0; identifier < slots; ++identifier)
         unordered_emplace(container, identifier, assume_reserved_t {}, assume_unique_t {});
-    st_verify_eq_(container.size(), slots);
-    st_verify_eq_(container.slots_count().raw, slots);
+    expect_equal(container.size(), slots);
+    expect_equal(container.slots_count().raw, slots);
 
     // The unique-key probe has nowhere to store, and must say so by leaving the size alone.
     for (std::size_t identifier = slots; identifier < slots + extra_attempts; ++identifier) {
         unordered_emplace(container, identifier, assume_reserved_t {}, assume_unique_t {});
-        st_verify_eq_(container.size(), slots);
+        expect_equal(container.size(), slots);
     }
 
     // The upsert probe has to terminate on the same table, and leave the size alone too.
     for (std::size_t identifier = slots; identifier < slots + extra_attempts; ++identifier) {
         unordered_emplace(container, identifier, assume_reserved_t {});
-        st_verify_eq_(container.size(), slots);
+        expect_equal(container.size(), slots);
     }
 
     // Everything that did fit is still reachable, and an overwrite of a present key still lands.
     for (std::size_t identifier = 0; identifier < slots; ++identifier)
-        unordered_verify_present(container, identifier, identifier);
+        check_unordered_present(container, identifier, identifier);
 
     // A walk that visits every match wraps the whole full table, and still meets each key once.
     for (std::size_t identifier = 0; identifier < slots; ++identifier) {
@@ -787,19 +790,19 @@ void test_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
                                      ++visits;
                                      return walk_control_t::resume_k;
                                  });
-        st_verify_eq_(visits, 1u);
+        expect_equal(visits, 1u);
     }
     if constexpr (unordered_has_values<container_t>) {
         unordered_emplace_valued(container, 0, 7, assume_reserved_t {});
-        st_verify_eq_(container.size(), slots);
-        unordered_verify_present(container, 0, 7);
+        expect_equal(container.size(), slots);
+        check_unordered_present(container, 0, 7);
     }
 }
 
 /** Tests that a rehash asking for nothing compacts the table instead of emptying it into a layout
  *  with no slots at all. */
 template <typename container_type_>
-void test_unordered_rehash_to_nothing(std::size_t size = 300) {
+void check_unordered_rehash_to_nothing(std::size_t size = 300) {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
@@ -814,26 +817,26 @@ void test_unordered_rehash_to_nothing(std::size_t size = 300) {
 
     // Tombstones make the smallest layout that still fits smaller than the current one.
     for (std::size_t identifier = 0; identifier < size; identifier += 2) {
-        st_verify_(container.erase(unordered_key_from<key_t>(identifier)));
+        expect_true(container.erase(unordered_key_from<key_t>(identifier)));
         oracle.erase(identifier);
     }
 
-    st_verify_ne_(container.rehash(0), reserve_result_t::failed_k, "a rehash to nothing must still succeed");
-    st_verify_gt_(container.bucket_count(), 0u, "the survivors need slots to live in");
-    st_verify_eq_(container.deleted_count(), 0u);
-    unordered_verify_against_oracle(container, oracle, size);
+    expect_true(container.rehash(0) != reserve_result_t::failed_k, "a rehash to nothing must still succeed");
+    expect_true(container.bucket_count() > 0u, "the survivors need slots to live in");
+    expect_equal(container.deleted_count(), 0u);
+    check_unordered_against_oracle(container, oracle, size);
 
     // On a table holding nothing the same call may genuinely give the memory back.
     container.clear();
-    st_verify_((container.rehash(0) != reserve_result_t::failed_k));
-    st_verify_(container.empty());
-    unordered_verify_absent(container, 0);
+    expect_true((container.rehash(0) != reserve_result_t::failed_k));
+    expect_true(container.empty());
+    check_unordered_absent(container, 0);
 }
 
 /** Tests that an element count no power of two can cover fails instead of quietly yielding the
  *  smallest possible table. */
 template <typename container_type_>
-void test_unordered_unrepresentable_capacity() {
+void check_unordered_unrepresentable_capacity() {
 
     using container_t = container_type_;
     using reserve_result_t = typename container_t::reserve_result_t;
@@ -846,13 +849,13 @@ void test_unordered_unrepresentable_capacity() {
 
     for (std::size_t elements : {past_the_load_factor_k, wrapping_to_nothing_k, past_every_power_of_two_k}) {
         auto allocated = container_t::make(elements);
-        st_verify_(!(allocated) && "an unrepresentable element count must not report success");
+        expect_true(!(allocated), "an unrepresentable element count must not report success");
 
         container_t container;
-        st_verify_eq_(container.reserve(elements), reserve_result_t::failed_k,
-                      "an unrepresentable reservation must fail rather than allocate one bucket");
-        st_verify_eq_(container.bucket_count(), 0u);
-        st_verify_(container.empty());
+        expect_equal(container.reserve(elements), reserve_result_t::failed_k,
+                     "an unrepresentable reservation must fail rather than allocate one bucket");
+        expect_equal(container.bucket_count(), 0u);
+        expect_true(container.empty());
     }
 }
 
@@ -883,7 +886,7 @@ using unordered_pinned = typename unordered_pinned_of<container_type_>::type;
  *  the miss to a second callback rather than returning one, the shape every store here uses.
  */
 template <typename container_type_>
-void test_unordered_pinned_reports_status() {
+void check_unordered_pinned_reports_status() {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
@@ -891,41 +894,43 @@ void test_unordered_pinned_reports_status() {
     static_assert(unordered_has_values<container_t>, "The pinned suites are written for maps");
 
     auto allocated = container_t::make(std::size_t {64});
-    st_verify_((allocated) && "the growable table must build");
+    if (!expect_true(allocated.has_value(), "the growable table must build")) return;
     auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
 
-    st_verify_eq_(container.emplace(unordered_key_from<key_t>(1), unordered_value_from<mapped_t>(1)), success_k,
-                  "an empty pinned table must take the first key");
+    expect_equal(container.emplace(unordered_key_from<key_t>(1), unordered_value_from<mapped_t>(1)), success_k,
+                 "an empty pinned table must take the first key");
 
-    st_verify_eq_(container.update(unordered_key_from<key_t>(1), unordered_value_from<mapped_t>(2)), success_k,
-                  "updating a key that is there must succeed");
-    st_verify_eq_(container.update(unordered_key_from<key_t>(9), unordered_value_from<mapped_t>(2)), key_not_found_k,
-                  "updating a key that was never stored must name the reason");
+    expect_equal(container.update(unordered_key_from<key_t>(1), unordered_value_from<mapped_t>(2)), success_k,
+                 "updating a key that is there must succeed");
+    expect_equal(container.update(unordered_key_from<key_t>(9), unordered_value_from<mapped_t>(2)), key_not_found_k,
+                 "updating a key that was never stored must name the reason");
 
     // The miss reaches a callback of its own, so a caller never infers absence from a return value.
     std::size_t found_calls = 0, missing_calls = 0;
-    st_verify_(container.find(
-        unordered_key_from<key_t>(1), [&](auto const &) noexcept { ++found_calls; },
-        [&]() noexcept { ++missing_calls; }));
-    st_verify_eq_(found_calls, 1u);
-    st_verify_eq_(missing_calls, 0u);
-    st_verify_(container.find(
-        unordered_key_from<key_t>(9), [&](auto const &) noexcept { ++found_calls; },
-        [&]() noexcept { ++missing_calls; }));
-    st_verify_eq_(found_calls, 1u);
-    st_verify_eq_(missing_calls, 1u);
+    expect_equal(container.find(
+                     unordered_key_from<key_t>(1), [&](auto const &) noexcept { ++found_calls; },
+                     [&]() noexcept { ++missing_calls; }),
+                 success_k);
+    expect_equal(found_calls, 1u);
+    expect_equal(missing_calls, 0u);
+    expect_equal(container.find(
+                     unordered_key_from<key_t>(9), [&](auto const &) noexcept { ++found_calls; },
+                     [&]() noexcept { ++missing_calls; }),
+                 success_k);
+    expect_equal(found_calls, 1u);
+    expect_equal(missing_calls, 1u);
 
-    st_verify_eq_(container.erase(unordered_key_from<key_t>(1)), success_k, "erasing a live key must succeed");
-    st_verify_eq_(container.erase(unordered_key_from<key_t>(1)), key_not_found_k,
-                  "erasing a tombstone must name the reason");
-    st_verify_eq_(container.erase(unordered_key_from<key_t>(9)), key_not_found_k,
-                  "erasing a key that was never stored must name the reason");
-    st_verify_eq_(container.size(), 0u);
+    expect_equal(container.erase(unordered_key_from<key_t>(1)), success_k, "erasing a live key must succeed");
+    expect_equal(container.erase(unordered_key_from<key_t>(1)), key_not_found_k,
+                 "erasing a tombstone must name the reason");
+    expect_equal(container.erase(unordered_key_from<key_t>(9)), key_not_found_k,
+                 "erasing a key that was never stored must name the reason");
+    expect_equal(container.size(), 0u);
 }
 
 /** Tests that a pinned table with no free slot reports the refusal instead of probing forever. */
 template <typename container_type_>
-void test_unordered_pinned_saturation() {
+void check_unordered_pinned_saturation() {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
@@ -934,44 +939,46 @@ void test_unordered_pinned_saturation() {
     static_assert(unordered_has_values<container_t>, "The pinned suites are written for maps");
 
     auto allocated = container_t::make(std::size_t {64});
-    st_verify_((allocated) && "the growable table must build");
+    if (!expect_true(allocated.has_value(), "the growable table must build")) return;
     auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
     std::size_t const slots = container.slots_count();
-    st_verify_gt_(slots, 0u);
+    expect_true(slots > 0u);
 
     // A pinned table has no load factor to respect, so every slot can be taken.
     for (std::size_t identifier = 0; identifier < slots; ++identifier) {
         status_t const stored =
             container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier));
-        st_verify_eq_(stored, success_k, "every slot of an empty pinned table must be available");
+        expect_equal(stored, success_k, "every slot of an empty pinned table must be available");
     }
-    st_verify_eq_(container.size(), slots);
+    expect_equal(container.size(), slots);
 
     // A new key has nowhere to go, and the probe must come back rather than wrap forever.
     for (std::size_t identifier = slots; identifier < slots + 8; ++identifier) {
         status_t const refused =
             container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier));
-        st_verify_eq_(refused, capacity_exhausted_k, "a full pinned table must report the refusal");
-        st_verify_ne_(refused, out_of_memory_heap_k, "no allocation was attempted, so none can have failed");
+        expect_equal(refused, capacity_exhausted_k, "a full pinned table must report the refusal");
+        expect_true(refused != out_of_memory_heap_k, "no allocation was attempted, so none can have failed");
     }
-    st_verify_eq_(container.size(), slots);
+    expect_equal(container.size(), slots);
 
     // Keys that are already there stay reachable and overwritable even with no free slot left.
     for (std::size_t identifier = 0; identifier < slots; ++identifier) {
-        st_verify_eq_(container.contains(unordered_key_from<key_t>(identifier)), true,
-                      "a saturated table must still find what it holds");
+        expect_equal(container.contains(unordered_key_from<key_t>(identifier)), true,
+                     "a saturated table must still find what it holds");
         status_t const updated = container.emplace(unordered_key_from<key_t>(identifier),
                                                    unordered_value_from<mapped_t>(identifier + slots));
-        st_verify_eq_(updated, success_k, "an overwrite needs no free slot");
+        expect_equal(updated, success_k, "an overwrite needs no free slot");
     }
     for (std::size_t identifier = 0; identifier < slots; ++identifier) {
         bool reached = false;
-        st_verify_(container.find(unordered_key_from<key_t>(identifier), [&](auto const &slot) noexcept {
-            reached = true;
-            st_verify_eq_(slot.value(), unordered_value_from<mapped_t>(identifier + slots),
-                          "the overwrite must be the value that survives");
-        }));
-        st_verify_((reached) && "an overwritten key must still be present");
+        expect_equal(container.find(unordered_key_from<key_t>(identifier),
+                                    [&](auto const &slot) noexcept {
+                                        reached = true;
+                                        expect_equal(slot.value(), unordered_value_from<mapped_t>(identifier + slots),
+                                                     "the overwrite must be the value that survives");
+                                    }),
+                     success_k);
+        expect_true(reached, "an overwritten key must still be present");
     }
 }
 
@@ -980,7 +987,7 @@ void test_unordered_pinned_saturation() {
  *  key; reporting that as an allocation failure sends the caller to free memory that was never the
  *  problem, when the remedy is a rehash into fresh storage. */
 template <typename container_type_>
-void test_unordered_pinned_tombstone_saturation() {
+void check_unordered_pinned_tombstone_saturation() {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
@@ -988,37 +995,37 @@ void test_unordered_pinned_tombstone_saturation() {
     static_assert(unordered_has_values<container_t>, "The pinned suites are written for maps");
 
     auto allocated = container_t::make(std::size_t {64});
-    st_verify_((allocated) && "the growable table must build");
+    if (!expect_true(allocated.has_value(), "the growable table must build")) return;
     auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
     std::size_t const slots = container.slots_count();
-    st_verify_gt_(slots, 0u);
+    expect_true(slots > 0u);
 
     for (std::size_t identifier = 0; identifier < slots; ++identifier) {
         status_t const stored =
             container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier));
-        st_verify_eq_(stored, success_k, "every slot of an empty pinned table must be available");
+        expect_equal(stored, success_k, "every slot of an empty pinned table must be available");
     }
     for (std::size_t identifier = 0; identifier < slots; ++identifier) {
         status_t const erased = container.erase(unordered_key_from<key_t>(identifier));
-        st_verify_eq_(erased, success_k, "every key stored must be erasable");
+        expect_equal(erased, success_k, "every key stored must be erasable");
     }
-    st_verify_eq_(container.size(), 0u);
+    expect_equal(container.size(), 0u);
 
     // Every slot is a tombstone now, so the table is empty and still has nowhere to put a key.
     for (std::size_t identifier = slots; identifier < slots + 4; ++identifier) {
         status_t const refused =
             container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier));
-        st_verify_eq_(refused, capacity_exhausted_k, "an exhausted probe must name the exhausted probe");
-        st_verify_ne_(refused, out_of_memory_heap_k,
-                      "a table of tombstones is not short of memory, and freeing some would not help");
+        expect_equal(refused, capacity_exhausted_k, "an exhausted probe must name the exhausted probe");
+        expect_true(refused != out_of_memory_heap_k,
+                    "a table of tombstones is not short of memory, and freeing some would not help");
     }
-    st_verify_eq_(container.size(), 0u);
+    expect_equal(container.size(), 0u);
 }
 
 /** Tests concurrent @c emplace followed by concurrent @c find and @c contains on a frozen table,
  *  with each thread owning a disjoint range of keys. */
 template <typename container_type_>
-void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
+void check_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
@@ -1028,9 +1035,9 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
 
     std::size_t const total = unordered_threads_count_k * per_thread;
     auto allocated = container_t::make(total * 2);
-    st_verify_((allocated) && "the growable table must build");
+    if (!expect_true(allocated.has_value(), "the growable table must build")) return;
     auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
-    st_verify_ge_(container.capacity(), total, "the pinned table must hold what the writers will store");
+    expect_true(container.capacity() >= total, "the pinned table must hold what the writers will store");
     auto const slots_before = container.slots_count();
 
     std::vector<std::thread> threads;
@@ -1045,8 +1052,8 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
         });
     for (auto &thread : threads) thread.join();
 
-    st_verify_eq_(container.size(), total);
-    st_verify_eq_(container.slots_count(), slots_before);
+    expect_equal(container.size(), total);
+    expect_equal(container.slots_count(), slots_before);
 
     // The readers run over the same disjoint ranges, so a miss is a lost element, not a race.
     std::atomic<std::size_t> found_by_contains {0};
@@ -1060,8 +1067,8 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
             for (std::size_t offset = 0; offset < per_thread; ++offset) {
                 std::size_t const identifier = thread_index * per_thread + offset;
                 auto const key = unordered_key_from<key_t>(identifier);
-                // A refusal is tallied rather than asserted, so no thread can abort mid-run and leave
-                // its siblings writing into a container the handler is already walking.
+                // A refusal is tallied rather than checked here, so the verdict waits for the join
+                // rather than racing siblings still writing into the container.
                 expected<bool> const seen = container.contains(key);
                 if (!seen) ++refusals;
                 else if (*seen) ++contains_hits;
@@ -1078,19 +1085,19 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
         });
     for (auto &thread : threads) thread.join();
 
-    st_verify_eq_(refused_reads.load(), 0u, "a frozen table must answer every read it is handed");
-    st_verify_eq_(found_by_contains.load(), total);
-    st_verify_eq_(found_by_callback.load(), total);
-    st_verify_eq_(wrong_values.load(), 0u);
+    expect_equal(refused_reads.load(), 0u, "a frozen table must answer every read it is handed");
+    expect_equal(found_by_contains.load(), total);
+    expect_equal(found_by_callback.load(), total);
+    expect_equal(wrong_values.load(), 0u);
 
     // The single-threaded view must agree with what the threads believe they wrote.
     std::size_t single_threaded_hits = 0;
     for (std::size_t identifier = 0; identifier < total; ++identifier) {
         expected<bool> const seen = container.contains(unordered_key_from<key_t>(identifier));
-        st_verify_(seen);
+        if (!expect_equal(seen.status(), success_k)) return;
         if (*seen) ++single_threaded_hits;
     }
-    st_verify_eq_(single_threaded_hits, total);
+    expect_equal(single_threaded_hits, total);
 }
 
 /**
@@ -1101,7 +1108,7 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
  *  back to a growable table to verify - the whole lifecycle @c release and @c adopt express.
  */
 template <typename container_type_>
-void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
+void check_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
 
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
@@ -1110,14 +1117,14 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
 
     std::size_t const total = unordered_threads_count_k * per_thread;
     auto allocated = container_t::make(total * 2);
-    st_verify_((allocated) && "the growable table must build");
+    if (!expect_true(allocated.has_value(), "the growable table must build")) return;
     container_t growable = *std::move(allocated);
     for (std::size_t identifier = 0; identifier < total; ++identifier)
         unordered_emplace(growable, identifier, assume_reserved_t {});
-    st_verify_eq_(growable.size(), total);
+    expect_equal(growable.size(), total);
 
     auto container = unordered_pinned<container_t>::adopt(std::move(growable).release());
-    st_verify_ge_(container.capacity(), total, "the pinned table must hold every key it was filled with");
+    expect_true(container.capacity() >= total, "the pinned table must hold every key it was filled with");
 
     // Every key already exists, so every update must land.
     std::atomic<std::size_t> updates_landed {0};
@@ -1135,16 +1142,18 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
         });
     for (auto &thread : threads) thread.join();
 
-    st_verify_eq_(updates_landed.load(), total);
-    st_verify_eq_(container.size(), total);
+    expect_equal(updates_landed.load(), total);
+    expect_equal(container.size(), total);
     for (std::size_t identifier = 0; identifier < total; ++identifier) {
         bool reached = false;
-        st_verify_(container.find(unordered_key_from<key_t>(identifier), [&](auto const &slot) noexcept {
-            reached = true;
-            st_verify_eq_(slot.value(), unordered_value_from<mapped_t>(identifier + total),
-                          "every update must be visible once the writers have joined");
-        }));
-        st_verify_((reached) && "an updated key must still be present");
+        expect_equal(container.find(unordered_key_from<key_t>(identifier),
+                                    [&](auto const &slot) noexcept {
+                                        reached = true;
+                                        expect_equal(slot.value(), unordered_value_from<mapped_t>(identifier + total),
+                                                     "every update must be visible once the writers have joined");
+                                    }),
+                     success_k);
+        expect_true(reached, "an updated key must still be present");
     }
 
     // Half of each thread's range is retired, and a missing key must never report an erasure.
@@ -1164,19 +1173,19 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
         });
     for (auto &thread : threads) thread.join();
 
-    st_verify_eq_(erasures_landed.load(), total / 2);
-    st_verify_eq_(phantom_erasures.load(), 0u);
-    st_verify_eq_(container.size(), total - total / 2);
-    st_verify_eq_(container.deleted_count(), total / 2);
+    expect_equal(erasures_landed.load(), total / 2);
+    expect_equal(phantom_erasures.load(), 0u);
+    expect_equal(container.size(), total - total / 2);
+    expect_equal(container.deleted_count(), total / 2);
 
     // Handing the allocation back gives the iterable surface back, so the survivors are checked the
     // same way every other suite checks them.
     container_t compacted = container_t::adopt(std::move(container).release());
-    st_verify_eq_(compacted.size(), total - total / 2);
+    expect_equal(compacted.size(), total - total / 2);
     for (std::size_t identifier = 0; identifier < total; ++identifier) {
         bool const survived = (identifier % per_thread) % 2 == 1;
-        if (survived) unordered_verify_present(compacted, identifier, identifier + total);
-        else unordered_verify_absent(compacted, identifier);
+        if (survived) check_unordered_present(compacted, identifier, identifier + total);
+        else check_unordered_absent(compacted, identifier);
     }
 }
 
@@ -1230,10 +1239,10 @@ inline std::vector<std::size_t> unordered_visit_generations(versioned_set_t cons
 
 /** Tests that @c probe_to_visit reaches every version of one key sharing a probe run, and none of
  *  the foreign keys sharing it. */
-inline void test_unordered_visit_every_match(std::size_t versions = 5) {
+inline void check_unordered_visit_every_match(std::size_t versions = 5) {
 
     auto allocated = versioned_set_t::make(std::size_t {64});
-    st_verify_((allocated) && "the table must build");
+    if (!expect_true(allocated.has_value(), "the table must build")) return;
     versioned_set_t container = *std::move(allocated);
     std::size_t const slots = container.slots_count().raw;
 
@@ -1243,25 +1252,25 @@ inline void test_unordered_visit_every_match(std::size_t versions = 5) {
         container.emplace(versioned_key_t {1, generation}, assume_reserved_t {}, assume_unique_t {});
         container.emplace(versioned_key_t {1 + slots, generation}, assume_reserved_t {}, assume_unique_t {});
     }
-    st_verify_eq_(container.size(), versions * 2);
+    expect_equal(container.size(), versions * 2);
 
     std::vector<std::size_t> const wanted = unordered_visit_generations(container, 1);
-    st_verify_eq_(wanted.size(), versions);
-    for (std::size_t generation = 0; generation < versions; ++generation) st_verify_eq_(wanted[generation], generation);
+    if (!expect_equal(wanted.size(), versions)) return;
+    for (std::size_t generation = 0; generation < versions; ++generation) expect_equal(wanted[generation], generation);
 
     std::vector<std::size_t> const foreign = unordered_visit_generations(container, 1 + slots);
-    st_verify_eq_(foreign.size(), versions);
+    expect_equal(foreign.size(), versions);
 
     // A key that never entered the run must cost zero visits, and so must one whose home slot is free.
-    st_verify_eq_(unordered_visit_generations(container, 2).size(), 0u);
-    st_verify_eq_(unordered_visit_generations(container, 1 + slots * 2).size(), 0u);
+    expect_equal(unordered_visit_generations(container, 2).size(), 0u);
+    expect_equal(unordered_visit_generations(container, 1 + slots * 2).size(), 0u);
 }
 
 /** Tests that a @c halt_k reply stops the walk before the next slot is even read. */
-inline void test_unordered_visit_early_exit(std::size_t versions = 5) {
+inline void check_unordered_visit_early_exit(std::size_t versions = 5) {
 
     auto allocated = versioned_set_t::make(std::size_t {64});
-    st_verify_((allocated) && "the table must build");
+    if (!expect_true(allocated.has_value(), "the table must build")) return;
     versioned_set_t container = *std::move(allocated);
     for (std::size_t generation = 0; generation < versions; ++generation)
         container.emplace(versioned_key_t {1, generation}, assume_reserved_t {}, assume_unique_t {});
@@ -1272,51 +1281,51 @@ inline void test_unordered_visit_early_exit(std::size_t versions = 5) {
             ++visits;
             return visits == stop_after ? walk_control_t::halt_k : walk_control_t::resume_k;
         });
-        st_verify_eq_(visits, stop_after);
+        expect_equal(visits, stop_after);
     }
 }
 
 /** Tests that a tombstone between two matches does not truncate the walk. */
-inline void test_unordered_visit_across_tombstones(std::size_t versions = 6) {
+inline void check_unordered_visit_across_tombstones(std::size_t versions = 6) {
 
     auto allocated = versioned_set_t::make(std::size_t {64});
-    st_verify_((allocated) && "the table must build");
+    if (!expect_true(allocated.has_value(), "the table must build")) return;
     versioned_set_t container = *std::move(allocated);
     for (std::size_t generation = 0; generation < versions; ++generation)
         container.emplace(versioned_key_t {1, generation}, assume_reserved_t {}, assume_unique_t {});
 
     // Erasing every other generation leaves tombstones interleaved with the survivors.
     for (std::size_t generation = 0; generation < versions; generation += 2)
-        st_verify_(container.erase(versioned_key_t {1, generation}));
-    st_verify_eq_(container.deleted_count(), (versions + 1) / 2);
+        expect_true(container.erase(versioned_key_t {1, generation}));
+    expect_equal(container.deleted_count(), (versions + 1) / 2);
 
     std::vector<std::size_t> const survivors = unordered_visit_generations(container, 1);
-    st_verify_eq_(survivors.size(), versions / 2);
-    for (std::size_t index = 0; index < survivors.size(); ++index) st_verify_eq_(survivors[index], index * 2 + 1);
+    if (!expect_equal(survivors.size(), versions / 2)) return;
+    for (std::size_t index = 0; index < survivors.size(); ++index) expect_equal(survivors[index], index * 2 + 1);
 }
 
 /** Tests that an empty table, and one holding no allocation at all, cost zero visits. */
-inline void test_unordered_visit_empty_table() {
+inline void check_unordered_visit_empty_table() {
 
     versioned_set_t unallocated;
-    st_verify_eq_(unordered_visit_generations(unallocated, 1).size(), 0u);
+    expect_equal(unordered_visit_generations(unallocated, 1).size(), 0u);
 
     auto allocated = versioned_set_t::make(std::size_t {64});
-    st_verify_((allocated) && "the table must build");
+    if (!expect_true(allocated.has_value(), "the table must build")) return;
     versioned_set_t container = *std::move(allocated);
-    st_verify_eq_(unordered_visit_generations(container, 1).size(), 0u);
+    expect_equal(unordered_visit_generations(container, 1).size(), 0u);
 
     // A table emptied back out by erasures must behave like one that never held anything.
     container.emplace(versioned_key_t {1, 0}, assume_reserved_t {}, assume_unique_t {});
-    st_verify_(container.erase(versioned_key_t {1, 0}));
-    st_verify_eq_(unordered_visit_generations(container, 1).size(), 0u);
+    expect_true(container.erase(versioned_key_t {1, 0}));
+    expect_equal(unordered_visit_generations(container, 1).size(), 0u);
 }
 
 /** Tests that a run starting in the last slot wraps to the front instead of ending there. */
-inline void test_unordered_visit_wraparound(std::size_t versions = 5) {
+inline void check_unordered_visit_wraparound(std::size_t versions = 5) {
 
     auto allocated = versioned_set_t::make(std::size_t {64});
-    st_verify_((allocated) && "the table must build");
+    if (!expect_true(allocated.has_value(), "the table must build")) return;
     versioned_set_t container = *std::move(allocated);
     std::size_t const slots = container.slots_count().raw;
 
@@ -1325,9 +1334,9 @@ inline void test_unordered_visit_wraparound(std::size_t versions = 5) {
         container.emplace(versioned_key_t {last, generation}, assume_reserved_t {}, assume_unique_t {});
 
     std::vector<std::size_t> const generations = unordered_visit_generations(container, last);
-    st_verify_eq_(generations.size(), versions);
+    if (!expect_equal(generations.size(), versions)) return;
     for (std::size_t generation = 0; generation < versions; ++generation)
-        st_verify_eq_(generations[generation], generation);
+        expect_equal(generations[generation], generation);
 }
 
 /**
@@ -1335,19 +1344,19 @@ inline void test_unordered_visit_wraparound(std::size_t versions = 5) {
  *  @note The bound must hold in a build where assertions are gone, which is why the harness runs
  *      this suite under a timeout in a release configuration too.
  */
-inline void test_unordered_visit_full_table() {
+inline void check_unordered_visit_full_table() {
 
     auto allocated = versioned_set_t::make(std::size_t {64});
-    st_verify_((allocated) && "the table must build");
+    if (!expect_true(allocated.has_value(), "the table must build")) return;
     versioned_set_t container = *std::move(allocated);
     std::size_t const slots = container.slots_count().raw;
 
     // Every slot taken by one identifier, so the run has neither a free slot nor a foreign key to end on.
     for (std::size_t generation = 0; generation < slots; ++generation)
         container.emplace(versioned_key_t {1, generation}, assume_reserved_t {}, assume_unique_t {});
-    st_verify_eq_(container.size(), slots);
+    expect_equal(container.size(), slots);
 
-    st_verify_eq_(unordered_visit_generations(container, 1).size(), slots);
+    expect_equal(unordered_visit_generations(container, 1).size(), slots);
 
     // A key absent from a table with nowhere to stop still has to walk exactly once around.
     std::size_t visits = 0;
@@ -1355,12 +1364,12 @@ inline void test_unordered_visit_full_table() {
         ++visits;
         return walk_control_t::resume_k;
     });
-    st_verify_eq_(visits, 0u);
+    expect_equal(visits, 0u);
 
     // Tombstones must not resurrect the loop either.
     for (std::size_t generation = 0; generation < slots; generation += 2)
-        st_verify_(container.erase(versioned_key_t {1, generation}));
-    st_verify_eq_(unordered_visit_generations(container, 1).size(), slots / 2);
+        expect_true(container.erase(versioned_key_t {1, generation}));
+    expect_equal(unordered_visit_generations(container, 1).size(), slots / 2);
 }
 
 #pragma endregion Multi Match Probe Walks

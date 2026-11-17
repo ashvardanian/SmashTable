@@ -23,25 +23,25 @@ import enum
 
 import pytest
 from base import (
+    ENUMERABLE_MAP_CLASSES,
+    ISOLATION_LEVELS,
+    KEY_TYPES,
+    MAP_CLASSES,
+    SET_CLASSES,
+    SHARING_MODES,
+    VALUE_MODES,
+    VALUE_TYPES,
     adopt_shadows,
     assert_group_state,
     assert_same_state,
-    enumerable_map_names,
-    isolation_levels,
-    key_types,
     make,
     make_participants,
-    map_class_names,
     ordering_of,
     random_map_ops,
     random_set_ops,
     replay,
-    set_class_names,
     shadows_of,
-    sharing_modes,
     stage_group_writes,
-    value_modes,
-    value_types,
 )
 
 import smashtable as st
@@ -60,14 +60,14 @@ def _permitted(call) -> bool:
     return True
 
 
-@pytest.mark.iterations(1)
+@pytest.mark.repeat(4)
 @pytest.mark.thread_unsafe(
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
-@pytest.mark.repeat(4)
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
-@pytest.mark.parametrize("value_type", value_types)
+@pytest.mark.iterations(1)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
+@pytest.mark.parametrize("value_type", VALUE_TYPES)
 def test_a_random_sequence_matches_dict(container, keygen, valuegen, rng):
     """A random walk over the mapping surface leaves the container agreeing with a dict.
 
@@ -79,13 +79,13 @@ def test_a_random_sequence_matches_dict(container, keygen, valuegen, rng):
     replay(container, {}, random_map_ops(rng, keys, values, count=150, ordering=ordering_of(type(container))))
 
 
-@pytest.mark.iterations(1)
+@pytest.mark.repeat(4)
 @pytest.mark.thread_unsafe(
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
-@pytest.mark.repeat(4)
-@pytest.mark.parametrize("class_name", set_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.iterations(1)
+@pytest.mark.parametrize("container_class", SET_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_random_sequence_matches_set(container, keygen, rng):
     """A random walk over the set surface leaves the container agreeing with a set.
 
@@ -97,8 +97,8 @@ def test_a_random_sequence_matches_set(container, keygen, rng):
 
 
 @pytest.mark.repeat(4)
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
 def test_random_transactions_match_the_model(container_class, key_type, keygen, valuegen, rng):
     """Each batch either commits and the model advances, or aborts and it must not."""
@@ -126,8 +126,7 @@ def test_random_transactions_match_the_model(container_class, key_type, keygen, 
 
 
 @pytest.mark.repeat(4)
-@pytest.mark.parametrize("class_name", enumerable_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", ENUMERABLE_MAP_CLASSES)
 def test_random_scan_windows_match_the_sorted_model(container, keygen, rng):
     """Every random window agrees with the same slice of a sorted model."""
     keys = keygen(40)
@@ -142,12 +141,11 @@ def test_random_scan_windows_match_the_sorted_model(container, keygen, rng):
         assert got == want, f"scan({low}, {high}) gave {got}, model gave {want}"
 
 
+@pytest.mark.repeat(4)
 @pytest.mark.thread_unsafe(
     reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very state it compares against its model"
 )
-@pytest.mark.repeat(4)
-@pytest.mark.parametrize("class_name", enumerable_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", ENUMERABLE_MAP_CLASSES)
 def test_random_interleaved_iteration_terminates(container, keygen, rng):
     """A walk under random mutation always ends, and never yields a key twice."""
     keys = keygen(30)
@@ -172,16 +170,16 @@ def test_random_interleaved_iteration_terminates(container, keygen, rng):
 # region Mixed Axes
 
 
-@pytest.mark.iterations(1)
+@pytest.mark.repeat(4)
 @pytest.mark.thread_unsafe(
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
-@pytest.mark.repeat(4)
-@pytest.mark.parametrize("class_name", enumerable_map_names)
+@pytest.mark.iterations(1)
+@pytest.mark.parametrize("container_class", ENUMERABLE_MAP_CLASSES)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int"), pytest.param("str", id="str")])
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
-@pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
-@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
+@pytest.mark.parametrize("isolation", ISOLATION_LEVELS)
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_a_random_sequence_matches_dict_at_every_level(container, keygen, valuegen, rng):
     """The answers a container gives do not depend on the level it delivers them at.
 
@@ -194,15 +192,14 @@ def test_a_random_sequence_matches_dict_at_every_level(container, keygen, valueg
     replay(container, {}, random_map_ops(rng, keys, values, count=120, ordering=ordering_of(type(container))))
 
 
-@pytest.mark.iterations(1)
+@pytest.mark.repeat(4)
 @pytest.mark.thread_unsafe(
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
-@pytest.mark.repeat(4)
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.iterations(1)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
-@pytest.mark.parametrize("value_mode", value_modes, indirect=True)
+@pytest.mark.parametrize("value_mode", VALUE_MODES)
 def test_a_random_map_sequence_matches_dict_in_either_mode(container, keygen, valuegen, rng):
     """The object-mode store path answers the same as the scalar one.
 
@@ -221,19 +218,19 @@ def test_a_random_map_sequence_matches_dict_in_either_mode(container, keygen, va
 # region Groups
 
 _GROUP_SPECS = [
-    ("SortedMap", "int", "scalar", None, None),
-    ("SortedSet", "str", "scalar", "snapshot", None),
-    ("SortedMap", "bytes", "object", "serializable", None),
-    ("HashMap", "int", "scalar", "snapshot", "partitioned"),
-    ("HashSet", "uint", "scalar", "strict_serializable", "partitioned"),
+    (st.SortedMap, "int", "scalar", None, None),
+    (st.SortedSet, "str", "scalar", "snapshot", None),
+    (st.SortedMap, "bytes", "object", "serializable", None),
+    (st.HashMap, "int", "scalar", "snapshot", "partitioned"),
+    (st.HashSet, "uint", "scalar", "strict_serializable", "partitioned"),
 ]
 
 
-@pytest.mark.iterations(1)
+@pytest.mark.repeat(4)
 @pytest.mark.thread_unsafe(
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
-@pytest.mark.repeat(4)
+@pytest.mark.iterations(1)
 @pytest.mark.parametrize(
     "group_size",
     [pytest.param(2, id="g2"), pytest.param(3, id="g3"), pytest.param(4, id="g4"), pytest.param(5, id="g5")],
@@ -267,14 +264,13 @@ def test_a_random_group_publishes_all_of_itself_or_none(group_size, rng):
             raise AssertionError(f"round {round_number} ({'aborted' if aborting else 'committed'})\n{error}") from None
 
 
-@pytest.mark.iterations(1)
+@pytest.mark.repeat(4)
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
 )
-@pytest.mark.repeat(4)
-@pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
-@pytest.mark.parametrize("sharing", sharing_modes)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.iterations(1)
+@pytest.mark.parametrize("isolation", ISOLATION_LEVELS)
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_a_refused_group_commit_publishes_no_participant(isolation, sharing, keygen, rng):
     """A commit refused over a watched key leaves every participant exactly as it was.
 
@@ -322,13 +318,12 @@ class Phase(enum.Enum):
 lifecycle_phases = tuple(Phase)
 
 
-@pytest.mark.iterations(1)
+@pytest.mark.repeat(4)
 @pytest.mark.thread_unsafe(
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
-@pytest.mark.repeat(4)
-@pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.iterations(1)
+@pytest.mark.parametrize("isolation", ISOLATION_LEVELS)
 def test_a_random_lifecycle_never_crashes_and_never_half_applies(isolation, keygen, rng):
     """Random legal and illegal phase orders are refused, never crashed, and never half-applied.
 

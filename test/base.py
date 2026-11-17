@@ -11,166 +11,227 @@ Matches C++ suite:
 Run:
     python -m pytest test/ -v
     SMASHTABLE_SEED=random python -m pytest test/ -v
-    SMASHTABLE_FILTER="sortedmap.*str" python -m pytest test/
+    SMASHTABLE_FILTER="SortedMap.*str" python -m pytest test/
 
 File: test/base.py
 Author: Ash Vardanian
 Date: August 17, 2026
 """
 
-import dataclasses
 import enum
 import math
 import os
 import random
 import re
-import secrets
 import sys
 import sysconfig
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, replace
+from typing import NoReturn
 
 import pytest
 
 import smashtable as st
 
-# region Settings
+# region Shared Settings
+_UINT64_MASK = 2**64 - 1
 
 
-def env_text(name: str) -> str | None:
-    """Reads `name`, or `None` when it is unset or empty."""
-    return os.environ.get(name) or None
+def env_text(variable: str) -> str | None:
+    """The stripped text of the environment `variable`, or None when unset or blank."""
+    text = os.environ.get(variable, "").strip()
+    return text or None
 
 
-_REQUESTED_SEED = os.environ.get("SMASHTABLE_SEED") or "42"
-if _REQUESTED_SEED == "random":
-    _RUN_SEED = secrets.randbits(32)
-elif _REQUESTED_SEED.isascii() and _REQUESTED_SEED.isdigit() and int(_REQUESTED_SEED) < 2**32:
-    _RUN_SEED = int(_REQUESTED_SEED)
-else:
-    raise SystemExit(f'SMASHTABLE_SEED="{_REQUESTED_SEED}" does not parse, expected an unsigned integer or random')
+def exit_unparsed(variable: str, text: str, expected: str) -> NoReturn:
+    """Stops the session on a setting that does not parse, naming it as the C and C++ suites do."""
+    raise SystemExit(f'{variable}="{text}" does not parse, expected {expected}')
 
 
-@dataclasses.dataclass(frozen=True)
+def env_seed(variable: str) -> int:
+    """An unsigned 64-bit seed: 42 when unset, drawn afresh for `random`."""
+    text = env_text(variable)
+    if text is None:
+        return 42
+    if text == "random":
+        return random.SystemRandom().getrandbits(64)
+    if not text.isdigit() or int(text) > _UINT64_MASK:
+        exit_unparsed(variable, text, "an unsigned integer or random")
+    return int(text)
+
+
+def env_real(variable: str, fallback: float) -> float:
+    """A positive real, `fallback` when unset."""
+    text = env_text(variable)
+    if text is None:
+        return fallback
+    try:
+        value = float(text)
+    except ValueError:
+        value = 0.0
+    if not value > 0 or value == float("inf"):
+        exit_unparsed(variable, text, "a positive number like 0.1 or 10")
+    return value
+
+
+def env_count(variable: str, fallback: int) -> int:
+    """A whole number, `fallback` when unset."""
+    text = env_text(variable)
+    if text is None:
+        return fallback
+    if not text.isdigit():
+        exit_unparsed(variable, text, "a whole number")
+    return int(text)
+
+
+def env_flag(variable: str, fallback: bool = False) -> bool:
+    """A switch, `fallback` when unset: 0, false, off and no turn it off."""
+    text = env_text(variable)
+    if text is None:
+        return fallback
+    return text not in {"0", "false", "off", "no"}
+
+
+@dataclass(frozen=True)
+class Filter:
+    """Which node ids a run selects: a regex search when the pattern compiles, else a substring, all when empty."""
+
+    pattern: str
+    regex: re.Pattern[str] | None
+
+    def selects(self, nodeid: str) -> bool:
+        """Whether `nodeid` passes the filter."""
+        if not self.pattern:
+            return True
+        if self.regex is not None:
+            return self.regex.search(nodeid) is not None
+        return self.pattern in nodeid
+
+
+def env_filter(variable: str) -> Filter:
+    """The filter the environment `variable` spells, compiled once."""
+    pattern = env_text(variable) or ""
+    try:
+        regex = re.compile(pattern) if pattern else None
+    except re.error:
+        regex = None
+    return Filter(pattern, regex)
+
+
+def mix(value: int) -> int:
+    """SplitMix64's finalizer, a bijection that spreads every input bit over all 64 output bits."""
+    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & _UINT64_MASK
+    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & _UINT64_MASK
+    return value ^ (value >> 31)
+
+
+def stream_key(seed: int, name: str, index: int = 0) -> int:
+    """The `index`-th stream of the family `name` under `seed`, identical in C, C++, Rust and Mojo."""
+    hashed = 0xCBF29CE484222325
+    for byte in name.encode():
+        hashed = ((hashed ^ byte) * 0x100000001B3) & _UINT64_MASK
+    return mix((mix(seed ^ hashed) + index) & _UINT64_MASK)
+
+
+# endregion Shared Settings
+
+
+@dataclass(frozen=True)
 class Settings:
     """Every `SMASHTABLE_*` variable the Python suite reads, parsed once at import."""
 
     seed: int
-    filter: str
-    filter_pattern: re.Pattern[str] | None
-
-    def selects(self, name: str) -> bool:
-        """Whether `SMASHTABLE_FILTER` selects the test `name`, as a regex or else as a substring."""
-        return bool(self.filter_pattern.search(name)) if self.filter_pattern else self.filter in name
+    filter: Filter
+    scale: float
 
 
-def read_settings() -> Settings:
-    """Reads every `SMASHTABLE_*` variable, exiting with status 1 on the first that does not parse."""
-    filter = env_text("SMASHTABLE_FILTER") or ""
-    try:
-        filter_pattern = re.compile(filter) if filter else None
-    except re.error:
-        filter_pattern = None
-    return Settings(seed=_RUN_SEED, filter=filter, filter_pattern=filter_pattern)
+SETTINGS = Settings(
+    seed=env_seed("SMASHTABLE_SEED"),
+    filter=env_filter("SMASHTABLE_FILTER"),
+    scale=env_real("SMASHTABLE_SCALE", 1.0),
+)
 
-
-SETTINGS = read_settings()
-
-# endregion Settings
+BACKEND_AXES: set[str] = set()
+"""The axes the seed and the case cap leave out, so every backend draws the same inputs: none, as there
+is no backend axis.
+"""
 
 # region Matrices
 
-map_class_names = [
-    pytest.param("SortedMap", id="sortedmap"),
-    pytest.param("HashMap", id="hashmap"),  # phase 2
-]
-"""Container classes named as strings and resolved by a fixture, so a class this build does not
-export yet skips loudly under its own id instead of vanishing from the matrix.
-"""
-set_class_names = [
-    pytest.param("SortedSet", id="sortedset"),
-    pytest.param("HashSet", id="hashset"),  # phase 2
-]
-all_class_names = map_class_names + set_class_names
-container_class_names = ("SortedMap", "SortedSet", "HashMap", "HashSet")
-"""Every container the stub declares, whether or not this build exports it yet."""
-sorted_map_names = [map_class_names[0]]
-sorted_set_names = [set_class_names[0]]
-sorted_class_names = [map_class_names[0], set_class_names[0]]
-hash_map_names = [map_class_names[1]]
-hash_set_names = [set_class_names[1]]
+MAP_CLASSES = [pytest.param(st.SortedMap, id="st.SortedMap"), pytest.param(st.HashMap, id="st.HashMap")]
+"""The map classes, swept directly as the `container_class` axis."""
+SET_CLASSES = [pytest.param(st.SortedSet, id="st.SortedSet"), pytest.param(st.HashSet, id="st.HashSet")]
+ALL_CLASSES = MAP_CLASSES + SET_CLASSES
+CONTAINER_CLASS_NAMES = ("SortedMap", "SortedSet", "HashMap", "HashSet")
+"""Every container the stub declares, by the name the stub checks read it under."""
+SORTED_MAP_CLASSES = [MAP_CLASSES[0]]
+SORTED_SET_CLASSES = [SET_CLASSES[0]]
+SORTED_CLASSES = [MAP_CLASSES[0], SET_CLASSES[0]]
+HASH_MAP_CLASSES = [MAP_CLASSES[1]]
+HASH_SET_CLASSES = [SET_CLASSES[1]]
 
-enumerable_map_names = [map_class_names[0]]
+ENUMERABLE_MAP_CLASSES = [MAP_CLASSES[0]]
 """Classes whose contents can be walked, which is what the structural oracle needs: it compares
 against `dict` and `set`, and cannot run against a container it cannot enumerate.
 
-A separate axis from `sorted_*` even though the two name the same classes today. Ordering and
+A separate axis from `SORTED_*` even though the two name the same classes today. Ordering and
 enumerability are different properties - an unordered core that gains a `for_each` becomes
 enumerable without becoming ordered - and a test that needs to list a container should say so
 rather than borrowing a name that happens to coincide.
 """
-enumerable_set_names = [set_class_names[0]]
-enumerable_class_names = enumerable_map_names + enumerable_set_names
+ENUMERABLE_SET_CLASSES = [SET_CLASSES[0]]
+ENUMERABLE_CLASSES = ENUMERABLE_MAP_CLASSES + ENUMERABLE_SET_CLASSES
 
-key_types = [pytest.param(name, id=name) for name in ("int", "uint", "str", "bytes")]
+KEY_TYPES = [pytest.param(name, id=name) for name in ("int", "uint", "str", "bytes")]
 """Every key type the containers accept. Floats and booleans are deliberately absent and are swept as
 rejections in test/key_types.py instead.
 """
 
-value_types = [pytest.param(name, id="v" + name) for name in ("int", "uint", "float", "bool", "str", "bytes")]
+VALUE_TYPES = [pytest.param(name, id="v" + name) for name in ("int", "uint", "float", "bool", "str", "bytes")]
 """Every value type: the four key layouts plus the two that may only ever be values."""
 
-value_modes = [pytest.param("scalar", id="scalar"), pytest.param("object", id="object")]
+VALUE_MODES = [pytest.param("scalar", id="scalar"), pytest.param("object", id="object")]
 """A container either admits only scalars, releasing the GIL around every store call, or admits any
 object and holds it. The axis exists because the second is the path where a missed acquisition
 corrupts rather than fails.
 """
 
-sizes = [pytest.param(0, id="n0"), pytest.param(1, id="n1"), pytest.param(7, id="n7"), pytest.param(64, id="n64")]
+COUNTS = [pytest.param(0, id="n0"), pytest.param(1, id="n1"), pytest.param(7, id="n7"), pytest.param(64, id="n64")]
 
-group_sizes = [pytest.param(1, id="g1"), pytest.param(2, id="g2"), pytest.param(5, id="g5")]
+GROUP_SIZES = [pytest.param(1, id="g1"), pytest.param(2, id="g2"), pytest.param(5, id="g5")]
 
-transaction_styles = [pytest.param("context", id="with"), pytest.param("explicit", id="phases")]
+TRANSACTION_STYLES = [pytest.param("context", id="with"), pytest.param("explicit", id="phases")]
 
-isolation_levels = [
-    pytest.param("monotonic_atomic_view", id="monotonic"),
+ISOLATION_LEVELS = [
+    pytest.param("monotonic_atomic_view", id="monotonic_atomic_view"),
     pytest.param("snapshot", id="snapshot"),
     pytest.param("serializable", id="serializable"),
-    pytest.param("strict_serializable", id="strict"),
+    pytest.param("strict_serializable", id="strict_serializable"),
 ]
 """What a reader is promised, and how the store is shared between threads. Two independent axes: the
 level is asked for at construction, while the sharing decides how far up it actually survives.
 """
-stamped_isolation_levels = ("snapshot", "serializable", "strict_serializable")
+STAMPED_ISOLATION_LEVELS = ("snapshot", "serializable", "strict_serializable")
 """The levels whose reader answers at a stamp, which is what lets its reads repeat."""
-sharing_modes = [pytest.param("locked", id="locked"), pytest.param("partitioned", id="partitioned")]
+SHARING_MODES = [pytest.param("locked", id="locked"), pytest.param("partitioned", id="partitioned")]
+
+MAX_CASES_PER_TEST = 192
+"""The most cases one test function may expand to, today's largest, so a new axis cannot multiply a
+matrix past it unnoticed.
+"""
 
 # endregion Matrices
 
 # region Gates
 
 
-def free_threaded() -> bool:
-    """Whether this interpreter is a free-threaded build with the GIL actually off."""
-    if sys.version_info < (3, 13):
-        return False
-    if not sysconfig.get_config_var("Py_GIL_DISABLED"):
-        return False
-    return not sys._is_gil_enabled()
+FREE_THREADED = (
+    sys.version_info >= (3, 13) and bool(sysconfig.get_config_var("Py_GIL_DISABLED")) and not sys._is_gil_enabled()
+)
+"""Whether this interpreter is a free-threaded build with the GIL actually off."""
 
-
-def skip_unless_free_threaded() -> None:
-    """Skips a test that only means something without the GIL."""
-    if sys.version_info < (3, 13):
-        pytest.skip("free-threading requires Python 3.13t or newer")
-    if not sysconfig.get_config_var("Py_GIL_DISABLED"):
-        pytest.skip("not a free-threaded build")
-    if sys._is_gil_enabled():
-        pytest.skip("the GIL is enabled in this process")
-
-
-def exported_container_names() -> list[str]:
-    """Which container classes this build actually ships."""
-    return [name for name in container_class_names if hasattr(st, name)]
+requires_free_threading = pytest.mark.skipif(not FREE_THREADED, reason="needs a free-threaded build with the GIL off")
+"""Marks a test that only means something on a free-threaded interpreter with the GIL off."""
 
 
 def is_sorted_class(container_class: type) -> bool:
@@ -265,7 +326,7 @@ def effective_isolation(isolation: str, sharing: str) -> str:
     The single place the cap is spelled, so a core that changes what it can carry is one edit here
     rather than a sweep through the suite.
     """
-    if isolation in stamped_isolation_levels:
+    if isolation in STAMPED_ISOLATION_LEVELS:
         return isolation
     return "read_committed" if sharing == "partitioned" else "monotonic_atomic_view"
 
@@ -312,7 +373,7 @@ class Verdict(enum.Enum):
     raised = enum.auto()
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclass(frozen=True)
 class Outcome:
     """What one call did: the value it returned, or the stdlib family of the error it raised."""
 
@@ -367,7 +428,7 @@ class Compare(enum.Enum):
     any_member = enum.auto()
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclass(frozen=True)
 class Op:
     """One container call, replayable against a SmashTable container and a stdlib model."""
 
@@ -536,7 +597,7 @@ def replay(container, model, ops: Iterable[Op]) -> None:
 # region Groups
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclass(frozen=True)
 class Participant:
     """One container in a group, beside the stdlib model standing in for it."""
 
@@ -551,15 +612,14 @@ class Participant:
 
 
 def make_participants(rng: random.Random, specs: Sequence[tuple], count_each: int = 12) -> list[Participant]:
-    """Builds one participant per spec, each a `(class_name, key_type, value_mode, isolation, sharing)`.
+    """Builds one participant per spec, each a `(container_class, key_type, value_mode, isolation, sharing)`.
 
     Mixing the specs is the point: a group spanning a sorted map and a hashed set, or a scalar
     container and an object one, exercises the group-wide passes that pick the strictest mode and
     the canonical order, which a group of identical containers cannot.
     """
     participants = []
-    for class_name, key_type, value_mode, isolation, sharing in specs:
-        container_class = getattr(st, class_name)
+    for container_class, key_type, value_mode, isolation, sharing in specs:
         container = make(container_class, key_type, value_mode, isolation, sharing)
         keys = make_keys(key_type, count_each, rng)
         values = [rng.randrange(1000) for _ in range(count_each)]
@@ -598,7 +658,7 @@ def shadows_of(participants: Sequence[Participant]) -> list[dict | set]:
 
 def adopt_shadows(participants: Sequence[Participant], shadows) -> list[Participant]:
     """Replaces each participant's model with the shadow the round advanced."""
-    return [dataclasses.replace(one, model=shadow) for one, shadow in zip(participants, shadows)]
+    return [replace(one, model=shadow) for one, shadow in zip(participants, shadows)]
 
 
 # endregion Groups

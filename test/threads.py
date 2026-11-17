@@ -18,10 +18,10 @@ import threading
 
 import pytest
 from base import (
-    enumerable_map_names,
+    ENUMERABLE_MAP_CLASSES,
+    MAP_CLASSES,
     make,
-    map_class_names,
-    skip_unless_free_threaded,
+    requires_free_threading,
 )
 
 import smashtable as st
@@ -32,8 +32,7 @@ import smashtable as st
 @pytest.mark.thread_unsafe(
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 def test_concurrent_writers_to_disjoint_keys(container, drive_threads):
     """Threads writing keys nobody else touches all land."""
     per_thread = 50
@@ -47,8 +46,7 @@ def test_concurrent_writers_to_disjoint_keys(container, drive_threads):
     assert len(container) == threads * per_thread
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 def test_concurrent_readers_never_raise(container, drive_threads):
     """Threads reading one container between them never raise and never miss a seeded key."""
     seeded = 200
@@ -63,8 +61,7 @@ def test_concurrent_readers_never_raise(container, drive_threads):
     drive_threads(worker, 4)
 
 
-@pytest.mark.parametrize("class_name", enumerable_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", ENUMERABLE_MAP_CLASSES)
 def test_iteration_concurrent_with_mutation_never_crashes(container_class, key_type, drive_threads, crossing_gate):
     """A walk running alongside writers terminates and never yields one key twice.
 
@@ -119,8 +116,7 @@ def test_iteration_concurrent_with_mutation_never_crashes(container_class, key_t
     assert len(container) == wanted, f"len {len(container)} vs {wanted}"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 def test_swapped_argument_order_does_not_deadlock(container_class, key_type, drive_threads):
     """Two groups naming the same containers in opposite orders both finish.
 
@@ -144,8 +140,7 @@ def test_swapped_argument_order_does_not_deadlock(container_class, key_type, dri
     assert len(second) == threads * rounds, f"len {len(second)} vs {threads * rounds}"
 
 
-@pytest.mark.parametrize("class_name", enumerable_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", ENUMERABLE_MAP_CLASSES)
 def test_only_the_group_in_flight_is_ever_half_visible(container_class, key_type, drive_threads, crossing_gate):
     """A settled group is in both containers, an aborted one in neither, and the skew never reverses.
 
@@ -173,9 +168,11 @@ def test_only_the_group_in_flight_is_ever_half_visible(container_class, key_type
             return
         settled = (round_number - 1) * batch
         if (round_number - 1) % 3:
-            assert settled in earlier and settled in later, f"round {round_number - 1} in one container only"
+            assert settled in earlier, f"round {round_number - 1} missing from earlier"
+            assert settled in later, f"round {round_number - 1} missing from later"
         else:
-            assert settled not in earlier and settled not in later, f"aborted round {round_number - 1} landed"
+            assert settled not in earlier, f"aborted round {round_number - 1} landed in earlier"
+            assert settled not in later, f"aborted round {round_number - 1} landed in later"
 
     def publish_one_round(round_number: int) -> None:
         base = round_number * batch
@@ -227,7 +224,7 @@ def test_only_the_group_in_flight_is_ever_half_visible(container_class, key_type
     assert set(later) == committed, f"{len(later)} keys in the container made second, {len(committed)} committed"
 
 
-@pytest.mark.parametrize("class_name", enumerable_map_names)
+@pytest.mark.parametrize("container_class", ENUMERABLE_MAP_CLASSES)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int"), pytest.param("str", id="str")])
 def test_one_iterator_shared_by_many_threads(container, keygen, drive_threads, crossing_gate):
     """Threads pulling from one iterator between them see every key exactly once.
@@ -272,8 +269,7 @@ def test_one_iterator_shared_by_many_threads(container, keygen, drive_threads, c
     assert set(seen) == set(keys)
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 def test_one_transaction_staged_by_many_threads(container, keygen, drive_threads):
     """Exactly one thread stages a shared group; the rest are told it is no longer open.
 
@@ -310,8 +306,7 @@ def test_one_transaction_staged_by_many_threads(container, keygen, drive_threads
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
 @pytest.mark.slow
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 def test_a_transactional_counter_converges(container, drive_threads):
     """N threads times M increments under watch land at exactly N*M.
 
@@ -342,14 +337,13 @@ def test_a_transactional_counter_converges(container, drive_threads):
 # region Free-threaded
 
 
+@requires_free_threading
 @pytest.mark.thread_unsafe(
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 def test_parallel_disjoint_writers(container, drive_threads):
     """Without the GIL, disjoint writers still all land."""
-    skip_unless_free_threaded()
     per_thread, threads = 200, 8
 
     def worker(index: int) -> None:
@@ -360,11 +354,10 @@ def test_parallel_disjoint_writers(container, drive_threads):
     assert len(container) == threads * per_thread
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@requires_free_threading
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 def test_parallel_readers_see_no_torn_values(container, drive_threads):
     """Without the GIL, a read is always exactly one of the values written, never a mix."""
-    skip_unless_free_threaded()
     written = {"alpha", "beta", "gamma"}
     container[0] = "alpha"
 

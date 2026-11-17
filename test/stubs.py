@@ -13,7 +13,7 @@ import ast
 import pathlib
 
 import pytest
-from base import container_class_names
+from base import CONTAINER_CLASS_NAMES
 
 import smashtable as st
 
@@ -93,6 +93,7 @@ TRANSACTION_NAMES = ["Transaction", "Participant"]
 
 
 def view_types() -> dict[str, type]:
+    """Maps each private view name in the stub to the runtime type a container hands back."""
     container = st.SortedMap(key="int")
     container[1] = 1
     return {
@@ -116,7 +117,7 @@ def test_the_stub_declares_nothing_the_module_lacks(stub):
     assert not invented, f"declared in the stub but missing at runtime: {sorted(invented)}"
 
 
-@pytest.mark.parametrize("class_name", [*container_class_names, *TRANSACTION_NAMES, *VIEW_NAMES])
+@pytest.mark.parametrize("class_name", [*CONTAINER_CLASS_NAMES, *TRANSACTION_NAMES, *VIEW_NAMES])
 def test_every_class_states_its_whole_surface(stub, class_name):
     """Each method and property a class carries has to appear in the stub, and nothing else."""
     subject = view_types()[class_name] if class_name in VIEW_NAMES else getattr(st, class_name)
@@ -129,7 +130,7 @@ def test_every_class_states_its_whole_surface(stub, class_name):
 
 
 @pytest.mark.parametrize(
-    "alias, keyword, reader",
+    ("alias", "keyword", "reader"),
     [
         ("_IsolationName", "isolation", "isolation"),
         ("_SharingName", "sharing", "sharing"),
@@ -152,9 +153,9 @@ def test_every_literal_spells_what_the_parser_accepts(stub, alias, keyword, read
 
 def test_a_name_outside_the_literal_is_refused():
     """The other half of the pair: a spelling the stub excludes must not quietly work."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="isolation must be"):
         st.SortedMap(key="int", isolation="strict-serializable")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="isolation must be"):
         st.SortedMap(key="int", isolation="monotonic")
 
 

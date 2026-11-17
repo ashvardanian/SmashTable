@@ -120,37 +120,37 @@ struct recording_allocator {
 #pragma region Tests
 
 /** The @c make branch of @c emplace_back must compile at all, and must report its failures. */
-static void vector_emplace_back_through_make() {
+static void test_emplace_back_through_make() {
     static_assert(!std::is_nothrow_constructible_v<fallible_element_t, int>,
                   "the test element must not qualify for the nothrow branch");
     static_assert(has_make_method<fallible_element_t, int>, "the test element must qualify for the make branch");
 
     basic_vector<fallible_element_t> vector;
-    st_verify_(vector.emplace_back(7));
-    st_verify_(vector.emplace_back(8));
-    st_verify_eq_(vector.size(), 2u);
-    st_verify_eq_(vector[0].value, 7);
-    st_verify_eq_(vector[1].value, 8);
+    expect_equal(vector.emplace_back(7), success_k);
+    expect_equal(vector.emplace_back(8), success_k);
+    if (!expect_equal(vector.size(), 2u)) return;
+    expect_equal(vector[0].value, 7);
+    expect_equal(vector[1].value, 8);
 
     // A refused `make` propagates its reason and leaves the vector as it was.
-    st_verify_eq_(vector.emplace_back(-1), status_t::invalid_argument_k);
-    st_verify_eq_(vector.size(), 2u);
+    expect_equal(vector.emplace_back(-1), status_t::invalid_argument_k);
+    if (!expect_equal(vector.size(), 2u)) return;
 
-    st_verify_(vector.reserve(8));
-    st_verify_(vector.emplace_back(assume_reserved, 9));
-    st_verify_eq_(vector.size(), 3u);
-    st_verify_eq_(vector[2].value, 9);
-    st_verify_eq_(vector.emplace_back(assume_reserved, -5), status_t::invalid_argument_k);
-    st_verify_eq_(vector.size(), 3u);
+    expect_equal(vector.reserve(8), success_k);
+    expect_equal(vector.emplace_back(assume_reserved, 9), success_k);
+    if (!expect_equal(vector.size(), 3u)) return;
+    expect_equal(vector[2].value, 9);
+    expect_equal(vector.emplace_back(assume_reserved, -5), status_t::invalid_argument_k);
+    expect_equal(vector.size(), 3u);
 
     // The nothrow branch still wins where it applies.
     basic_vector<int> integers;
-    st_verify_(integers.emplace_back(42));
-    st_verify_eq_(integers[0], 42);
+    expect_equal(integers.emplace_back(42), success_k);
+    expect_equal(integers[0], 42);
 }
 
 /** A capacity whose byte count cannot be addressed is refused rather than allocated small. */
-static void vector_reserve_refuses_wrapping_capacity() {
+static void test_reserve_refuses_wrapping_capacity() {
     constexpr std::size_t max_capacity = SIZE_MAX / sizeof(long long);
     using recorded_vector_t = basic_vector<long long, recording_allocator<long long>>;
 
@@ -158,28 +158,28 @@ static void vector_reserve_refuses_wrapping_capacity() {
     recording_allocator<long long>::requests_count = 0;
 
     recorded_vector_t vector;
-    st_verify_eq_(vector.reserve(max_capacity + 2), status_t::out_of_memory_heap_k);
-    st_verify_eq_(vector.capacity(), 0u);
-    st_verify_eq_(vector.size(), 0u);
+    expect_equal(vector.reserve(max_capacity + 2), status_t::out_of_memory_heap_k);
+    expect_equal(vector.capacity(), 0u);
+    expect_equal(vector.size(), 0u);
     // The request never reached the allocator, which would have answered it with a small block.
-    st_verify_eq_(recording_allocator<long long>::requests_count, 0u);
+    expect_equal(recording_allocator<long long>::requests_count, 0u);
 
     // A capacity that is merely unsatisfiable still goes through, and goes through honestly.
-    st_verify_eq_(vector.reserve(max_capacity), status_t::out_of_memory_heap_k);
-    st_verify_eq_(vector.capacity(), 0u);
-    st_verify_eq_(recording_allocator<long long>::requests_count, 1u);
-    st_verify_le_(recording_allocator<long long>::largest_request, max_capacity);
+    expect_equal(vector.reserve(max_capacity), status_t::out_of_memory_heap_k);
+    expect_equal(vector.capacity(), 0u);
+    expect_equal(recording_allocator<long long>::requests_count, 1u);
+    expect_true(recording_allocator<long long>::largest_request <= max_capacity);
 
     // Ordinary growth is untouched by the guard: an empty vector seeds four slots, and the next
     // reserve doubles those rather than granting the five that were asked for. Both counts encode
     // the growth policy, so a change to it is meant to fail here.
     basic_vector<long long> heap_vector;
-    st_verify_(heap_vector.reserve(1));
-    st_verify_eq_(heap_vector.capacity(), 4u);
-    st_verify_(heap_vector.reserve(5));
-    st_verify_eq_(heap_vector.capacity(), 8u);
-    st_verify_(heap_vector.push_back(11));
-    st_verify_eq_(heap_vector[0], 11);
+    expect_equal(heap_vector.reserve(1), success_k);
+    expect_equal(heap_vector.capacity(), 4u);
+    expect_equal(heap_vector.reserve(5), success_k);
+    expect_equal(heap_vector.capacity(), 8u);
+    expect_equal(heap_vector.push_back(11), success_k);
+    expect_equal(heap_vector[0], 11);
 }
 
 /** An allocator whose @c allocate_at_least grants element counts rounded up to a multiple of 16. */
@@ -211,38 +211,38 @@ struct rounding_allocator {
 };
 
 /** An allocator granting more than asked is kept in full. */
-static void vector_keeps_the_granted_capacity() {
+static void test_keeps_the_granted_capacity() {
     basic_vector<int, rounding_allocator<int>> vector;
-    st_verify_(vector.push_back(int {1}));
-    st_verify_(vector.capacity() == 16u);
+    expect_equal(vector.push_back(int {1}), success_k);
+    expect_true(vector.capacity() == 16u);
     std::size_t const granted = vector.capacity();
-    for (std::size_t index = 1; index < granted; ++index) st_verify_(vector.push_back(int {2}));
-    st_verify_eq_(vector.capacity(), granted);
-    st_verify_(vector.push_back(int {3}));
-    st_verify_(vector.capacity() > granted);
+    for (std::size_t index = 1; index < granted; ++index) expect_equal(vector.push_back(int {2}), success_k);
+    expect_equal(vector.capacity(), granted);
+    expect_equal(vector.push_back(int {3}), success_k);
+    expect_true(vector.capacity() > granted);
 }
 
 /** Growth amortizes: appending one at a time must double rather than grow by one. */
-static void vector_growth_is_amortized() {
+static void test_growth_is_amortized() {
     basic_vector<int> vector;
-    for (int value = 0; value < 100; ++value) st_verify_(vector.push_back(int {value}));
-    st_verify_eq_(vector.size(), 100u);
+    for (int value = 0; value < 100; ++value) expect_equal(vector.push_back(int {value}), success_k);
+    if (!expect_equal(vector.size(), 100u)) return;
     // Seeded at 4 and doubled to 8, 16, 32, 64, 128 - the growth policy spelled out, so a change to
     // it fails here instead of hiding inside a range.
-    st_verify_eq_(vector.capacity(), 128u);
-    for (int value = 0; value < 100; ++value) st_verify_eq_(vector[static_cast<std::size_t>(value)], value);
+    expect_equal(vector.capacity(), 128u);
+    for (int value = 0; value < 100; ++value) expect_equal(vector[static_cast<std::size_t>(value)], value);
 
     vector.pop_back();
-    st_verify_eq_(vector.size(), 99u);
+    expect_equal(vector.size(), 99u);
     vector.clear();
-    st_verify_(vector.empty());
-    st_verify_eq_(vector.capacity(), 128u);
+    expect_true(vector.empty());
+    expect_equal(vector.capacity(), 128u);
 }
 
 /** A failed @c resize leaves the elements alone, whatever it did to the capacity. */
-static void vector_resize_rolls_back_elements() {
+static void test_resize_rolls_back_elements() {
     basic_vector<budgeted_element_t> vector;
-    st_verify_(vector.push_back(budgeted_element_t {}));
+    expect_equal(vector.push_back(budgeted_element_t {}), success_k);
     vector[0].value = 3;
 
     budgeted_element_t pattern;
@@ -250,328 +250,328 @@ static void vector_resize_rolls_back_elements() {
 
     // Two copies granted, four demanded: the three constructed before the refusal must be destroyed.
     budgeted_element_t::copies_left = 2;
-    st_verify_eq_(vector.resize(5, pattern), status_t::out_of_memory_heap_k);
-    st_verify_eq_(vector.size(), 1u);
-    st_verify_eq_(vector[0].value, 3);
+    expect_equal(vector.resize(5, pattern), status_t::out_of_memory_heap_k);
+    if (!expect_equal(vector.size(), 1u)) return;
+    expect_equal(vector[0].value, 3);
 
     budgeted_element_t::copies_left = 16;
-    st_verify_(vector.resize(5, pattern));
-    st_verify_eq_(vector.size(), 5u);
-    st_verify_eq_(vector[4].value, 9);
+    expect_equal(vector.resize(5, pattern), success_k);
+    if (!expect_equal(vector.size(), 5u)) return;
+    expect_equal(vector[4].value, 9);
 
-    st_verify_(vector.resize(2));
-    st_verify_eq_(vector.size(), 2u);
+    expect_equal(vector.resize(2), success_k);
+    expect_equal(vector.size(), 2u);
 }
 
 /** The uninitialized @c resize moves the size around the elements it keeps and constructs none. */
-static void vector_resizes_without_constructing() {
+static void test_resizes_without_constructing() {
     static_assert(std::is_trivially_copyable_v<construction_counted_element_t>,
                   "the test element must qualify for the uninitialized resize");
 
     basic_vector<construction_counted_element_t> vector;
-    st_verify_(vector.resize(3));
+    expect_equal(vector.resize(3), success_k);
     for (std::size_t index = 0; index < 3; ++index) vector[index].value = static_cast<int>(index) + 7;
     construction_counted_element_t::constructions = 0;
 
-    st_verify_(vector.resize(assume_uninitialized, 40));
-    st_verify_eq_(vector.size(), 40u);
-    st_verify_ge_(vector.capacity(), 40u);
-    st_verify_eq_(construction_counted_element_t::constructions, 0u);
-    for (std::size_t index = 0; index < 3; ++index) st_verify_eq_(vector[index].value, static_cast<int>(index) + 7);
+    expect_equal(vector.resize(assume_uninitialized, 40), success_k);
+    if (!expect_equal(vector.size(), 40u)) return;
+    expect_true(vector.capacity() >= 40u);
+    expect_equal(construction_counted_element_t::constructions, 0u);
+    for (std::size_t index = 0; index < 3; ++index) expect_equal(vector[index].value, static_cast<int>(index) + 7);
 
     std::size_t const capacity_before = vector.capacity();
-    st_verify_(vector.resize(assume_uninitialized, 2));
-    st_verify_eq_(vector.size(), 2u);
-    st_verify_eq_(vector.capacity(), capacity_before);
-    st_verify_eq_(vector[1].value, 8);
+    expect_equal(vector.resize(assume_uninitialized, 2), success_k);
+    if (!expect_equal(vector.size(), 2u)) return;
+    expect_equal(vector.capacity(), capacity_before);
+    expect_equal(vector[1].value, 8);
 }
 
 /** @c assign replaces shorter and longer contents alike, and takes a vector through its span. */
-static void vector_assign_replaces_contents() {
+static void test_assign_replaces_contents() {
     static_assert(std::is_convertible_v<basic_vector<int> &, std::span<int>>, "a vector lends itself as a span");
 
     basic_vector<int> source;
-    for (int value = 0; value < 6; ++value) st_verify_(source.push_back(int {value}));
+    for (int value = 0; value < 6; ++value) expect_equal(source.push_back(int {value}), success_k);
 
     basic_vector<int> vector;
-    st_verify_(vector.push_back(42));
-    st_verify_(vector.assign(source));
-    st_verify_eq_(vector.size(), 6u);
-    for (std::size_t index = 0; index < 6; ++index) st_verify_eq_(vector[index], source[index]);
+    expect_equal(vector.push_back(42), success_k);
+    expect_equal(vector.assign(source), success_k);
+    if (!expect_equal(vector.size(), 6u)) return;
+    for (std::size_t index = 0; index < 6; ++index) expect_equal(vector[index], source[index]);
 
     int const shorter[2] = {7, 8};
-    st_verify_(vector.assign(shorter));
-    st_verify_eq_(vector.size(), 2u);
-    st_verify_eq_(vector[0], 7);
-    st_verify_eq_(vector[1], 8);
+    expect_equal(vector.assign(shorter), success_k);
+    if (!expect_equal(vector.size(), 2u)) return;
+    expect_equal(vector[0], 7);
+    expect_equal(vector[1], 8);
 }
 
 /** A refused allocation or element copy leaves the elements and the storage as they were. */
-static void vector_refused_growth_changes_nothing() {
+static void test_refused_growth_changes_nothing() {
     allocation_ledger_t ledger;
     {
         basic_vector<int, stateful_allocator<int>> vector {stateful_allocator<int>(ledger)};
-        for (int value = 0; value < 3; ++value) st_verify_(vector.push_back(int {value}));
+        for (int value = 0; value < 3; ++value) expect_equal(vector.push_back(int {value}), success_k);
         std::size_t const capacity_before = vector.capacity();
         int const longer[8] = {10, 11, 12, 13, 14, 15, 16, 17};
 
         ledger.refuse_everything();
-        st_verify_eq_(vector.resize(assume_uninitialized, 64), status_t::out_of_memory_heap_k);
-        st_verify_eq_(vector.assign(longer), status_t::out_of_memory_heap_k);
+        expect_equal(vector.resize(assume_uninitialized, 64), status_t::out_of_memory_heap_k);
+        expect_equal(vector.assign(longer), status_t::out_of_memory_heap_k);
         ledger.allow(unlimited_budget_k);
-        st_verify_eq_(vector.size(), 3u);
-        st_verify_eq_(vector.capacity(), capacity_before);
-        for (std::size_t index = 0; index < 3; ++index) st_verify_eq_(vector[index], static_cast<int>(index));
+        if (!expect_equal(vector.size(), 3u)) return;
+        expect_equal(vector.capacity(), capacity_before);
+        for (std::size_t index = 0; index < 3; ++index) expect_equal(vector[index], static_cast<int>(index));
     }
-    ledger.verify_balanced();
+    ledger.check_balanced();
 
     // Trivially copyable with a deleted copy constructor, so `assign` copies through `.copy()`.
     basic_vector<budgeted_element_t> source;
     for (int value = 0; value < 5; ++value) {
-        st_verify_(source.push_back(budgeted_element_t {}));
+        expect_equal(source.push_back(budgeted_element_t {}), success_k);
         source.back().value = value;
     }
     basic_vector<budgeted_element_t> vector;
-    st_verify_(vector.push_back(budgeted_element_t {}));
+    expect_equal(vector.push_back(budgeted_element_t {}), success_k);
     vector[0].value = 3;
 
     budgeted_element_t::copies_left = 2;
-    st_verify_eq_(vector.assign(source), status_t::out_of_memory_heap_k);
-    st_verify_eq_(vector.size(), 1u);
-    st_verify_eq_(vector[0].value, 3);
+    expect_equal(vector.assign(source), status_t::out_of_memory_heap_k);
+    if (!expect_equal(vector.size(), 1u)) return;
+    expect_equal(vector[0].value, 3);
 
     budgeted_element_t::copies_left = 16;
-    st_verify_(vector.assign(source));
-    st_verify_eq_(vector.size(), 5u);
-    st_verify_eq_(vector[4].value, 4);
+    expect_equal(vector.assign(source), success_k);
+    if (!expect_equal(vector.size(), 5u)) return;
+    expect_equal(vector[4].value, 4);
 }
 
 /** @c copy is all-or-nothing, and @c swap moves the storage across. */
-static void vector_copy_and_swap() {
+static void test_copy_and_swap() {
     basic_vector<fallible_element_t> vector;
-    for (int value = 0; value < 5; ++value) st_verify_(vector.emplace_back(value));
+    for (int value = 0; value < 5; ++value) expect_equal(vector.emplace_back(value), success_k);
 
     auto copied = vector.copy();
-    st_verify_(static_cast<bool>(copied));
-    st_verify_eq_(copied->size(), 5u);
-    for (std::size_t index = 0; index < 5; ++index) st_verify_eq_((*copied)[index].value, vector[index].value);
+    if (!expect_true(static_cast<bool>(copied))) return;
+    expect_equal(copied->size(), 5u);
+    for (std::size_t index = 0; index < 5; ++index) expect_equal((*copied)[index].value, vector[index].value);
 
     basic_vector<fallible_element_t> empty;
-    st_verify_(empty.swap(vector));
-    st_verify_eq_(empty.size(), 5u);
-    st_verify_eq_(vector.size(), 0u);
+    expect_equal(empty.swap(vector), success_k);
+    expect_equal(empty.size(), 5u);
+    expect_equal(vector.size(), 0u);
 
     // A failing copy hands back nothing at all rather than a partial vector.
     basic_vector<budgeted_element_t> budgeted;
-    for (int value = 0; value < 4; ++value) st_verify_(budgeted.push_back(budgeted_element_t {}));
+    for (int value = 0; value < 4; ++value) expect_equal(budgeted.push_back(budgeted_element_t {}), success_k);
     budgeted_element_t::copies_left = 2;
     auto refused = budgeted.copy();
-    st_verify_(!refused);
-    st_verify_eq_(refused.status(), status_t::out_of_memory_heap_k);
-    st_verify_eq_(budgeted.size(), 4u);
+    expect_true(!refused);
+    expect_equal(refused.status(), status_t::out_of_memory_heap_k);
+    expect_equal(budgeted.size(), 4u);
 }
 
 /** Positional inserts land where asked and shift the rest up, at both ends and in the middle. */
-static void vector_inserts_at_a_position() {
+static void test_inserts_at_a_position() {
     basic_vector<int> vector;
-    for (int value = 0; value < 5; ++value) st_verify_(vector.push_back(int {value}));
+    for (int value = 0; value < 5; ++value) expect_equal(vector.push_back(int {value}), success_k);
 
-    st_verify_(vector.insert(0, 99));
-    st_verify_eq_(vector.size(), 6u);
-    st_verify_eq_(vector[0], 99);
-    st_verify_eq_(vector[1], 0);
-    st_verify_eq_(vector[5], 4);
+    expect_equal(vector.insert(0, 99), success_k);
+    if (!expect_equal(vector.size(), 6u)) return;
+    expect_equal(vector[0], 99);
+    expect_equal(vector[1], 0);
+    expect_equal(vector[5], 4);
 
-    st_verify_(vector.insert(vector.size(), 77));
-    st_verify_eq_(vector.size(), 7u);
-    st_verify_eq_(vector[6], 77);
+    expect_equal(vector.insert(vector.size(), 77), success_k);
+    if (!expect_equal(vector.size(), 7u)) return;
+    expect_equal(vector[6], 77);
 
-    st_verify_(vector.insert(3, 55));
-    st_verify_eq_(vector.size(), 8u);
-    st_verify_eq_(vector[2], 1);
-    st_verify_eq_(vector[3], 55);
-    st_verify_eq_(vector[4], 2);
+    expect_equal(vector.insert(3, 55), success_k);
+    if (!expect_equal(vector.size(), 8u)) return;
+    expect_equal(vector[2], 1);
+    expect_equal(vector[3], 55);
+    expect_equal(vector[4], 2);
 
     // An insert into an empty vector is the same call, not a special case for the caller.
     basic_vector<int> empty;
-    st_verify_(empty.insert(0, 7));
-    st_verify_eq_(empty.size(), 1u);
-    st_verify_eq_(empty[0], 7);
+    expect_equal(empty.insert(0, 7), success_k);
+    if (!expect_equal(empty.size(), 1u)) return;
+    expect_equal(empty[0], 7);
 
     // Every element survives an insert that had to grow the storage.
     basic_vector<int> growing;
-    for (int value = 0; value < 64; ++value) st_verify_(growing.insert(0, int {value}));
-    st_verify_eq_(growing.size(), 64u);
+    for (int value = 0; value < 64; ++value) expect_equal(growing.insert(0, int {value}), success_k);
+    if (!expect_equal(growing.size(), 64u)) return;
     for (std::size_t index = 0; index < growing.size(); ++index)
-        st_verify_eq_(growing[index], static_cast<int>(63 - index));
+        expect_equal(growing[index], static_cast<int>(63 - index));
 }
 
 /** Positional erases remove exactly what was named and shift the rest down. */
-static void vector_erases_at_a_position() {
+static void test_erases_at_a_position() {
     basic_vector<int> vector;
-    for (int value = 0; value < 6; ++value) st_verify_(vector.push_back(int {value}));
+    for (int value = 0; value < 6; ++value) expect_equal(vector.push_back(int {value}), success_k);
 
     vector.erase(0);
-    st_verify_eq_(vector.size(), 5u);
-    st_verify_eq_(vector[0], 1);
+    if (!expect_equal(vector.size(), 5u)) return;
+    expect_equal(vector[0], 1);
 
     vector.erase(vector.size() - 1);
-    st_verify_eq_(vector.size(), 4u);
-    st_verify_eq_(vector[3], 4);
+    if (!expect_equal(vector.size(), 4u)) return;
+    expect_equal(vector[3], 4);
 
     vector.erase(1);
-    st_verify_eq_(vector.size(), 3u);
-    st_verify_eq_(vector[0], 1);
-    st_verify_eq_(vector[1], 3);
-    st_verify_eq_(vector[2], 4);
+    if (!expect_equal(vector.size(), 3u)) return;
+    expect_equal(vector[0], 1);
+    expect_equal(vector[1], 3);
+    expect_equal(vector[2], 4);
 
     // A ranged erase takes a whole run out at once, including the run that reaches the end.
     basic_vector<int> ranged;
-    for (int value = 0; value < 8; ++value) st_verify_(ranged.push_back(int {value}));
+    for (int value = 0; value < 8; ++value) expect_equal(ranged.push_back(int {value}), success_k);
     ranged.erase(2, 3);
-    st_verify_eq_(ranged.size(), 5u);
-    st_verify_eq_(ranged[1], 1);
-    st_verify_eq_(ranged[2], 5);
+    if (!expect_equal(ranged.size(), 5u)) return;
+    expect_equal(ranged[1], 1);
+    expect_equal(ranged[2], 5);
     ranged.erase(3, 2);
-    st_verify_eq_(ranged.size(), 3u);
-    st_verify_eq_(ranged[2], 5);
+    if (!expect_equal(ranged.size(), 3u)) return;
+    expect_equal(ranged[2], 5);
     ranged.erase(0, 3);
-    st_verify_eq_(ranged.size(), 0u);
+    expect_equal(ranged.size(), 0u);
 
     // Erasing nothing is legal and moves nothing.
     basic_vector<int> untouched;
-    for (int value = 0; value < 3; ++value) st_verify_(untouched.push_back(int {value}));
+    for (int value = 0; value < 3; ++value) expect_equal(untouched.push_back(int {value}), success_k);
     untouched.erase(1, 0);
-    st_verify_eq_(untouched.size(), 3u);
-    st_verify_eq_(untouched[1], 1);
+    if (!expect_equal(untouched.size(), 3u)) return;
+    expect_equal(untouched[1], 1);
 }
 
 /** A shift moves every element exactly once, so no value is duplicated or lost across the gap. */
-static void vector_shifts_every_element_once() {
+static void test_shifts_every_element_once() {
     basic_vector<fallible_element_t> vector;
-    for (int value = 0; value < 32; ++value) st_verify_(vector.emplace_back(value));
+    for (int value = 0; value < 32; ++value) expect_equal(vector.emplace_back(value), success_k);
 
-    st_verify_(vector.insert(7, fallible_element_t {}));
+    expect_equal(vector.insert(7, fallible_element_t {}), success_k);
     vector[7].value = 999;
-    st_verify_eq_(vector.size(), 33u);
-    for (std::size_t index = 0; index < 7; ++index) st_verify_eq_(vector[index].value, static_cast<int>(index));
-    st_verify_eq_(vector[7].value, 999);
+    if (!expect_equal(vector.size(), 33u)) return;
+    for (std::size_t index = 0; index < 7; ++index) expect_equal(vector[index].value, static_cast<int>(index));
+    expect_equal(vector[7].value, 999);
     for (std::size_t index = 8; index < vector.size(); ++index)
-        st_verify_eq_(vector[index].value, static_cast<int>(index - 1));
+        expect_equal(vector[index].value, static_cast<int>(index - 1));
 
     vector.erase(7);
-    st_verify_eq_(vector.size(), 32u);
+    if (!expect_equal(vector.size(), 32u)) return;
     for (std::size_t index = 0; index < vector.size(); ++index)
-        st_verify_eq_(vector[index].value, static_cast<int>(index));
+        expect_equal(vector[index].value, static_cast<int>(index));
 }
 
 /** The reserved form shifts into room already secured and asks the allocator for nothing. */
-static void vector_inserts_into_reserved_room() {
+static void test_inserts_into_reserved_room() {
     basic_vector<int> vector;
-    st_verify_(vector.reserve(8));
-    for (int value = 0; value < 4; ++value) st_verify_(vector.push_back(int {value}));
+    expect_equal(vector.reserve(8), success_k);
+    for (int value = 0; value < 4; ++value) expect_equal(vector.push_back(int {value}), success_k);
     std::size_t const capacity_before = vector.capacity();
 
-    st_verify_(vector.insert(assume_reserved, 2, 42));
-    st_verify_eq_(vector.size(), 5u);
-    st_verify_eq_(vector.capacity(), capacity_before);
-    st_verify_eq_(vector[1], 1);
-    st_verify_eq_(vector[2], 42);
-    st_verify_eq_(vector[3], 2);
-    st_verify_eq_(vector[4], 3);
+    expect_equal(vector.insert(assume_reserved, 2, 42), success_k);
+    if (!expect_equal(vector.size(), 5u)) return;
+    expect_equal(vector.capacity(), capacity_before);
+    expect_equal(vector[1], 1);
+    expect_equal(vector[2], 42);
+    expect_equal(vector[3], 2);
+    expect_equal(vector[4], 3);
 
-    st_verify_(vector.insert(assume_reserved, vector.size(), 77));
-    st_verify_eq_(vector.size(), 6u);
-    st_verify_eq_(vector[5], 77);
+    expect_equal(vector.insert(assume_reserved, vector.size(), 77), success_k);
+    if (!expect_equal(vector.size(), 6u)) return;
+    expect_equal(vector[5], 77);
 }
 
 /** Every erased element reaches the callback exactly once, before the tail shifts over it. */
-static void vector_erases_hand_each_element_out() {
+static void test_erases_hand_each_element_out() {
     basic_vector<int> vector;
-    for (int value = 0; value < 8; ++value) st_verify_(vector.push_back(int {value}));
+    for (int value = 0; value < 8; ++value) expect_equal(vector.push_back(int {value}), success_k);
 
     int handed[8] = {};
     std::size_t handed_count = 0;
     auto collect = [&](int &element) noexcept { handed[handed_count++] = element; };
 
     vector.erase(2, 3, collect);
-    st_verify_eq_(handed_count, 3u);
-    st_verify_eq_(handed[0], 2);
-    st_verify_eq_(handed[1], 3);
-    st_verify_eq_(handed[2], 4);
-    st_verify_eq_(vector.size(), 5u);
-    st_verify_eq_(vector[1], 1);
-    st_verify_eq_(vector[2], 5);
-    st_verify_eq_(vector[4], 7);
+    expect_equal(handed_count, 3u);
+    expect_equal(handed[0], 2);
+    expect_equal(handed[1], 3);
+    expect_equal(handed[2], 4);
+    if (!expect_equal(vector.size(), 5u)) return;
+    expect_equal(vector[1], 1);
+    expect_equal(vector[2], 5);
+    expect_equal(vector[4], 7);
 
     vector.erase(0, collect);
-    st_verify_eq_(handed_count, 4u);
-    st_verify_eq_(handed[3], 0);
-    st_verify_eq_(vector[0], 1);
+    expect_equal(handed_count, 4u);
+    expect_equal(handed[3], 0);
+    expect_equal(vector[0], 1);
 
     // A count beside the position is a count, never a callback.
     vector.erase(1, 2);
-    st_verify_eq_(handed_count, 4u);
-    st_verify_eq_(vector.size(), 2u);
-    st_verify_eq_(vector[0], 1);
-    st_verify_eq_(vector[1], 7);
+    expect_equal(handed_count, 4u);
+    if (!expect_equal(vector.size(), 2u)) return;
+    expect_equal(vector[0], 1);
+    expect_equal(vector[1], 7);
 }
 
 /** A predicate sweeps in one pass, keeps the survivors in order, and answers how many went. */
-static void vector_erase_if_compacts_in_one_pass() {
+static void test_erase_if_compacts_in_one_pass() {
     basic_vector<int> vector;
-    for (int value = 0; value < 10; ++value) st_verify_(vector.push_back(int {value}));
+    for (int value = 0; value < 10; ++value) expect_equal(vector.push_back(int {value}), success_k);
 
     std::size_t handed_evens = 0;
     auto count_even = [&](int &element) noexcept { handed_evens += element % 2 == 0; };
     auto is_even = [](int const &element) noexcept { return element % 2 == 0; };
 
-    st_verify_eq_(vector.erase_if(is_even, count_even), 5u);
-    st_verify_eq_(handed_evens, 5u);
-    st_verify_eq_(vector.size(), 5u);
+    expect_equal(vector.erase_if(is_even, count_even), 5u);
+    expect_equal(handed_evens, 5u);
+    if (!expect_equal(vector.size(), 5u)) return;
     for (std::size_t index = 0; index < vector.size(); ++index)
-        st_verify_eq_(vector[index], static_cast<int>(2 * index + 1));
+        expect_equal(vector[index], static_cast<int>(2 * index + 1));
 
-    st_verify_eq_(vector.erase_if(is_even), 0u);
-    st_verify_eq_(vector.size(), 5u);
+    expect_equal(vector.erase_if(is_even), 0u);
+    expect_equal(vector.size(), 5u);
 
-    st_verify_eq_(vector.erase_if([](int const &) noexcept { return true; }), 5u);
-    st_verify_eq_(vector.size(), 0u);
+    expect_equal(vector.erase_if([](int const &) noexcept { return true; }), 5u);
+    expect_equal(vector.size(), 0u);
 }
 
 /** Moves transfer ownership and leave the source empty rather than aliasing its storage. */
-static void vector_move_semantics() {
+static void test_move_semantics() {
     auto made = basic_vector<int>::make(16);
-    st_verify_(static_cast<bool>(made));
+    if (!expect_true(static_cast<bool>(made))) return;
     basic_vector<int> vector = std::move(*made);
     // A first reserve grants exactly what it was asked for once that clears the four-slot seed.
-    st_verify_eq_(vector.capacity(), 16u);
-    for (int value = 0; value < 16; ++value) st_verify_(vector.push_back(assume_reserved, int {value}));
+    expect_equal(vector.capacity(), 16u);
+    for (int value = 0; value < 16; ++value) expect_equal(vector.push_back(assume_reserved, int {value}), success_k);
 
     basic_vector<int> moved = std::move(vector);
-    st_verify_eq_(moved.size(), 16u);
-    st_verify_eq_(vector.size(), 0u);
-    st_verify_eq_(vector.capacity(), 0u);
-    st_verify_eq_(vector.data(), nullptr);
+    expect_equal(moved.size(), 16u);
+    expect_equal(vector.size(), 0u);
+    expect_equal(vector.capacity(), 0u);
+    expect_equal(vector.data(), nullptr);
 
     basic_vector<int> assigned;
-    st_verify_(assigned.push_back(1));
+    expect_equal(assigned.push_back(1), success_k);
     assigned = std::move(moved);
-    st_verify_eq_(assigned.size(), 16u);
-    st_verify_eq_(assigned.back(), 15);
-    st_verify_eq_(assigned.front(), 0);
-    st_verify_ne_(assigned.at(15), nullptr);
-    st_verify_eq_(assigned.at(16), nullptr);
+    if (!expect_equal(assigned.size(), 16u)) return;
+    expect_equal(assigned.back(), 15);
+    expect_equal(assigned.front(), 0);
+    expect_true(assigned.at(15) != nullptr);
+    expect_equal(assigned.at(16), nullptr);
 }
 
 /** The suite every sequence answers, over a vector of counted elements and one of tracked
  *  allocations. */
-void vector_sequence_suite() {
-    test_sequence_tags<basic_vector<counted_key_t>>();
-    test_sequence_order<basic_vector<counted_key_t>>();
-    test_sequence_element_lifetimes<basic_vector<counted_key_t>>();
-    test_sequence_move_semantics<basic_vector<counted_key_t>>();
-    test_sequence_allocator_ledger<basic_vector<counted_key_t, stateful_allocator<counted_key_t>>>();
+void test_sequence_suite() {
+    check_sequence_tags<basic_vector<counted_key_t>>();
+    check_sequence_order<basic_vector<counted_key_t>>();
+    check_sequence_element_lifetimes<basic_vector<counted_key_t>>();
+    check_sequence_move_semantics<basic_vector<counted_key_t>>();
+    check_sequence_allocator_ledger<basic_vector<counted_key_t, stateful_allocator<counted_key_t>>>();
 }
 
 #pragma endregion Tests
@@ -580,30 +580,26 @@ void vector_sequence_suite() {
 
 using namespace ashvardanian::smashtable::test;
 
-int main(int, char **arguments) {
-    settings_t const settings = read_settings(arguments[0]);
-    install_test_signal_handlers();
-    print(probe_machine());
-    print(settings);
-    test_tally_t tally;
+int main(int argc, char **argv) {
+    start_test_run(argc, argv);
 
-    tally += run_test(settings, "vector.emplace_back_through_make", vector_emplace_back_through_make);
-    tally += run_test(settings, "vector.reserve_refuses_wrapping_capacity", vector_reserve_refuses_wrapping_capacity);
-    tally += run_test(settings, "vector.keeps_the_granted_capacity", vector_keeps_the_granted_capacity);
-    tally += run_test(settings, "vector.growth_is_amortized", vector_growth_is_amortized);
-    tally += run_test(settings, "vector.resize_rolls_back_elements", vector_resize_rolls_back_elements);
-    tally += run_test(settings, "vector.resizes_without_constructing", vector_resizes_without_constructing);
-    tally += run_test(settings, "vector.assign_replaces_contents", vector_assign_replaces_contents);
-    tally += run_test(settings, "vector.refused_growth_changes_nothing", vector_refused_growth_changes_nothing);
-    tally += run_test(settings, "vector.copy_and_swap", vector_copy_and_swap);
-    tally += run_test(settings, "vector.move_semantics", vector_move_semantics);
-    tally += run_test(settings, "vector.inserts_at_a_position", vector_inserts_at_a_position);
-    tally += run_test(settings, "vector.erases_at_a_position", vector_erases_at_a_position);
-    tally += run_test(settings, "vector.shifts_every_element_once", vector_shifts_every_element_once);
-    tally += run_test(settings, "vector.inserts_into_reserved_room", vector_inserts_into_reserved_room);
-    tally += run_test(settings, "vector.erases_hand_each_element_out", vector_erases_hand_each_element_out);
-    tally += run_test(settings, "vector.erase_if_compacts_in_one_pass", vector_erase_if_compacts_in_one_pass);
-    tally += run_test(settings, "vector.sequence_suite", vector_sequence_suite);
+    run_test_case("test_emplace_back_through_make", test_emplace_back_through_make);
+    run_test_case("test_reserve_refuses_wrapping_capacity", test_reserve_refuses_wrapping_capacity);
+    run_test_case("test_keeps_the_granted_capacity", test_keeps_the_granted_capacity);
+    run_test_case("test_growth_is_amortized", test_growth_is_amortized);
+    run_test_case("test_resize_rolls_back_elements", test_resize_rolls_back_elements);
+    run_test_case("test_resizes_without_constructing", test_resizes_without_constructing);
+    run_test_case("test_assign_replaces_contents", test_assign_replaces_contents);
+    run_test_case("test_refused_growth_changes_nothing", test_refused_growth_changes_nothing);
+    run_test_case("test_copy_and_swap", test_copy_and_swap);
+    run_test_case("test_move_semantics", test_move_semantics);
+    run_test_case("test_inserts_at_a_position", test_inserts_at_a_position);
+    run_test_case("test_erases_at_a_position", test_erases_at_a_position);
+    run_test_case("test_shifts_every_element_once", test_shifts_every_element_once);
+    run_test_case("test_inserts_into_reserved_room", test_inserts_into_reserved_room);
+    run_test_case("test_erases_hand_each_element_out", test_erases_hand_each_element_out);
+    run_test_case("test_erase_if_compacts_in_one_pass", test_erase_if_compacts_in_one_pass);
+    run_test_case("test_sequence_suite", test_sequence_suite);
 
-    return report_test_failures(settings, tally);
+    return finish_test_run();
 }

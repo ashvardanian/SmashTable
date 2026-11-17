@@ -10,8 +10,7 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
 
-#include <random> // `std::mt19937_64`
-#include <span>   // `std::span`
+#include <span> // `std::span`
 
 #include <smashtable/basic_flat_set.hpp>
 
@@ -62,25 +61,25 @@ template <typename value_type_>
 #pragma region Suites
 
 template <typename set_type_>
-void verify_against_presence(set_type_ const &set, std::span<std::uint8_t const, domain_size_k> present) {
+void check_against_presence(set_type_ const &set, std::span<std::uint8_t const, domain_size_k> present) {
     using value_t = typename set_type_::value_t;
     std::size_t below = 0;
     std::size_t listed = 0;
     for (std::size_t index = 0; index < domain_size_k; ++index) {
         value_t const element = element_at<value_t>(index);
-        st_verify_eq_(set.rank(element), below);
-        st_verify_eq_(set.contains(element), present[index] != 0);
+        expect_equal(set.rank(element), below);
+        expect_equal(set.contains(element), present[index] != 0);
         if (present[index]) {
-            st_verify_(same_element(set[listed], element));
+            expect_true(same_element(set[listed], element));
             ++listed;
         }
         below += present[index];
     }
-    st_verify_eq_(set.size(), below);
+    expect_equal(set.size(), below);
 }
 
 template <typename kit_type_, typename value_type_, typename comparator_type_>
-void verify_random_operations(std::mt19937_64 &generator) {
+void check_random_operations(split_mix_generator_t &generator) {
     using set_t = basic_flat_set<value_type_, comparator_type_, kit_type_>;
     std::uint8_t present[domain_size_k] = {};
     set_t set;
@@ -89,24 +88,24 @@ void verify_random_operations(std::mt19937_64 &generator) {
         value_type_ const element = element_at<value_type_>(index);
         switch (generator() % 4) {
         case 0:
-            st_verify_eq_(set.insert(element), present[index] ? status_t::key_already_exists_k : status_t::success_k);
+            expect_equal(set.insert(element), present[index] ? status_t::key_already_exists_k : status_t::success_k);
             present[index] = true;
             break;
         case 1:
-            st_verify_(set.upsert(element));
+            expect_equal(set.upsert(element), success_k);
             present[index] = true;
             break;
         case 2:
-            st_verify_eq_(set.erase(element), present[index] ? status_t::success_k : status_t::key_not_found_k);
+            expect_equal(set.erase(element), present[index] ? status_t::success_k : status_t::key_not_found_k);
             present[index] = false;
             break;
         default:
             value_type_ const *const found = set.find(element);
-            st_verify_eq_(found != nullptr, present[index] != 0);
-            if (found) st_verify_(same_element(*found, element));
+            expect_equal(found != nullptr, present[index] != 0);
+            if (found) expect_true(same_element(*found, element));
             break;
         }
-        if (step % 1000 == 999) verify_against_presence(set, std::span<std::uint8_t const, domain_size_k>(present));
+        if (step % 1000 == 999) check_against_presence(set, std::span<std::uint8_t const, domain_size_k>(present));
     }
 
     // A batch adds only what is missing and reserves once for all of it.
@@ -116,69 +115,61 @@ void verify_random_operations(std::mt19937_64 &generator) {
         element = element_at<value_type_>(index);
         present[index] = true;
     }
-    st_verify_(set.insert_if_missing(incoming, incoming + 64));
-    verify_against_presence(set, std::span<std::uint8_t const, domain_size_k>(present));
+    expect_equal(set.insert_if_missing(incoming, incoming + 64), success_k);
+    check_against_presence(set, std::span<std::uint8_t const, domain_size_k>(present));
 
     auto copied = set.copy();
-    st_verify_(copied);
-    verify_against_presence(*copied, std::span<std::uint8_t const, domain_size_k>(present));
+    if (!expect_equal(copied.status(), success_k)) return;
+    check_against_presence(*copied, std::span<std::uint8_t const, domain_size_k>(present));
     set.clear();
-    st_verify_(set.empty());
-    st_verify_eq_(copied->size() > 0, true);
+    expect_true(set.empty());
+    expect_equal(copied->size() > 0, true);
 }
 
 template <typename kit_type_>
-void verify_kit(test_context_t const &context, kit_type_) {
-    std::mt19937_64 generator(mix_seed(context.seed, name_of(kit_type_::kit_k)));
-    verify_random_operations<kit_type_, std::uint32_t, less_t>(generator);
-    verify_random_operations<kit_type_, std::uint64_t, less_t>(generator);
-    verify_random_operations<kit_type_, std::int64_t, less_t>(generator);
-    verify_random_operations<kit_type_, key128_t, less_t>(generator);
-    verify_random_operations<kit_type_, request_t, request_order_t>(generator);
-}
-
-void verify_through(test_context_t const &context, row_kit_t kit) {
-    if (row_kit_supported(kit))
-        visit_row_kit(kit, [&](row_kit auto kit_instance) noexcept { verify_kit(context, kit_instance); });
+void check_kit(kit_type_) {
+    split_mix_generator_t generator {case_stream_key()};
+    check_random_operations<kit_type_, std::uint32_t, less_t>(generator);
+    check_random_operations<kit_type_, std::uint64_t, less_t>(generator);
+    check_random_operations<kit_type_, std::int64_t, less_t>(generator);
+    check_random_operations<kit_type_, key128_t, less_t>(generator);
+    check_random_operations<kit_type_, request_t, request_order_t>(generator);
 }
 
 #pragma endregion Suites
 
 #pragma region Tests
 
-void flat_set_serial_kit(test_context_t const &context) { verify_through(context, row_kit_t::serial_k); }
-void flat_set_haswell_kit(test_context_t const &context) { verify_through(context, row_kit_t::haswell_k); }
-void flat_set_skylake_kit(test_context_t const &context) { verify_through(context, row_kit_t::skylake_k); }
-void flat_set_icelake_kit(test_context_t const &context) { verify_through(context, row_kit_t::icelake_k); }
-void flat_set_neon_kit(test_context_t const &context) { verify_through(context, row_kit_t::neon_k); }
-void flat_set_sve_kit(test_context_t const &context) { verify_through(context, row_kit_t::sve_k); }
-void flat_set_rvv_kit(test_context_t const &context) { verify_through(context, row_kit_t::rvv_k); }
-void flat_set_powervsx_kit(test_context_t const &context) { verify_through(context, row_kit_t::powervsx_k); }
-void flat_set_v128_kit(test_context_t const &context) { verify_through(context, row_kit_t::v128_k); }
+/** @c check_kit through @p kit , skipped where this machine cannot run it. */
+case_result_t test_kit(row_kit_t kit) {
+    if (!row_kit_supported(kit)) return case_result_t::skipped(needs_kit_reason(kit));
+    visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { check_kit(kit_instance); });
+    return {};
+}
 
 /** A refused allocation reports itself and leaves the set as it was. */
-void flat_set_refused_allocation() {
+void test_refused_allocation() {
     using refused_set_t = basic_flat_set<std::uint64_t, less_t, serial_row_kit_t, refusing_allocator<std::uint64_t>>;
-    st_verify_eq_(refused_set_t::make(16).status(), status_t::out_of_memory_heap_k);
+    expect_equal(refused_set_t::make(16).status(), status_t::out_of_memory_heap_k);
     refused_set_t set;
-    st_verify_eq_(set.insert(7), status_t::out_of_memory_heap_k);
-    st_verify_eq_(set.size(), 0u);
+    expect_equal(set.insert(7), status_t::out_of_memory_heap_k);
+    expect_equal(set.size(), 0u);
     std::uint64_t const incoming[] = {1, 2, 3};
-    st_verify_eq_(set.insert_if_missing(incoming, incoming + 3), status_t::out_of_memory_heap_k);
-    st_verify_(set.empty());
+    expect_equal(set.insert_if_missing(incoming, incoming + 3), status_t::out_of_memory_heap_k);
+    expect_true(set.empty());
 
     auto made = basic_flat_set<std::uint64_t>::make(32);
-    st_verify_(made);
-    st_verify_ge_(made->capacity(), 32u);
+    if (!expect_equal(made.status(), success_k)) return;
+    expect_true(made->capacity() >= 32u);
     basic_flat_set<std::uint64_t> moved = std::move(*made);
-    st_verify_(moved.insert(3));
-    st_verify_(moved.insert(1));
-    st_verify_eq_(moved[0], 1u);
-    st_verify_eq_(moved.rank(std::uint64_t {2}), 1u);
+    expect_equal(moved.insert(3), success_k);
+    expect_equal(moved.insert(1), success_k);
+    expect_equal(moved[0], 1u);
+    expect_equal(moved.rank(std::uint64_t {2}), 1u);
 }
 
 /** The suites every associative container answers, over the element shapes a flat set can hold. */
-void flat_set_shared_suites(test_context_t const &context) {
+void test_shared_suites() {
     using trivial_set_t =
         basic_flat_set<trivial_key_t, std::less<trivial_key_t>, serial_row_kit_t, std::allocator<trivial_key_t>>;
     using tracking_set_t = basic_flat_set<trivial_key_t, stateful_comparator_t, serial_row_kit_t, stateful_allocator_t>;
@@ -187,81 +178,78 @@ void flat_set_shared_suites(test_context_t const &context) {
     using heavy_set_t = basic_flat_set<heavy_key_t, std::less<void>, serial_row_kit_t, std::allocator<heavy_key_t>>;
     using native_set_t = basic_flat_set<std::uint64_t>;
 
-    test_empty_container_operations<trivial_set_t>();
-    test_empty_container_operations<tracking_set_t>();
-    test_empty_container_operations<native_set_t>();
-    test_single_element_operations<trivial_set_t>();
-    test_single_element_operations<heavy_set_t>();
-    test_basic_insertion_patterns<trivial_set_t>(context);
-    test_basic_insertion_patterns<native_set_t>(context);
-    test_bulk_insertion_from_iterators<trivial_set_t>();
-    test_bulk_insertion_from_iterators<heavy_set_t>();
-    test_range_query_head_state<trivial_set_t>();
-    test_range_query_head_state<native_set_t>();
-    test_erase_range_head_state<trivial_set_t>();
-    test_erase_range_head_state<native_set_t>();
-    test_heterogeneous_composite_find<composite_set_t>();
-    test_heterogeneous_heavy_string_view_find<heavy_set_t>();
+    check_empty_container_operations<trivial_set_t>();
+    check_empty_container_operations<tracking_set_t>();
+    check_empty_container_operations<native_set_t>();
+    check_single_element_operations<trivial_set_t>();
+    check_single_element_operations<heavy_set_t>();
+    check_basic_insertion_patterns<trivial_set_t>();
+    check_basic_insertion_patterns<native_set_t>();
+    check_bulk_insertion_from_iterators<trivial_set_t>();
+    check_bulk_insertion_from_iterators<heavy_set_t>();
+    check_range_query_head_state<trivial_set_t>();
+    check_range_query_head_state<native_set_t>();
+    check_erase_range_head_state<trivial_set_t>();
+    check_erase_range_head_state<native_set_t>();
+    check_heterogeneous_composite_find<composite_set_t>();
+    check_heterogeneous_heavy_string_view_find<heavy_set_t>();
 }
 
 /** Every range modifier refused at every point it asks for memory or copies an element leaves the
  *  set as it was. */
-void flat_set_batch_is_all_or_nothing() {
+void test_batch_is_all_or_nothing() {
     using ledger_set_t = basic_flat_set<trivial_key_t, less_t, serial_row_kit_t, stateful_allocator_t>;
-    test_every_offered_surface<ledger_set_t>(
+    check_every_offered_surface<ledger_set_t>(
         [](allocation_ledger_t &ledger) noexcept { return ledger_set_t(less_t {}, stateful_allocator_t(1, ledger)); });
-    test_batch_refuses_copies_whole<
+    check_batch_refuses_copies_whole<
         basic_flat_set<budgeted_key_t, std::less<void>, serial_row_kit_t, std::allocator<budgeted_key_t>>>();
 }
 
 /** One predicate sweep keeps the survivors ordered and yields each removed element in turn. */
-void flat_set_erase_if_keeps_order() {
+void test_erase_if_keeps_order() {
     basic_flat_set<std::uint64_t> set;
-    for (std::uint64_t value = 0; value < 16; ++value) st_verify_(set.insert(std::uint64_t {value}));
+    for (std::uint64_t value = 0; value < 16; ++value) expect_equal(set.insert(std::uint64_t {value}), success_k);
 
     std::size_t handed = 0;
     std::size_t const removed = set.erase_if([](std::uint64_t const &element) noexcept { return element % 4 == 0; },
                                              [&](std::uint64_t &) noexcept { ++handed; });
-    st_verify_eq_(removed, 4u);
-    st_verify_eq_(handed, 4u);
-    st_verify_eq_(set.size(), 12u);
+    expect_equal(removed, 4u);
+    expect_equal(handed, 4u);
+    expect_equal(set.size(), 12u);
     std::uint64_t previous = 0;
     for (std::uint64_t const &element : set) {
-        st_verify_(element % 4 != 0);
-        st_verify_(previous < element || previous == 0);
+        expect_true(element % 4 != 0);
+        expect_true(previous < element || previous == 0);
         previous = element;
     }
-    st_verify_eq_(set.erase_if([](std::uint64_t const &) noexcept { return false; }), 0u);
-    st_verify_eq_(set.size(), 12u);
+    expect_equal(set.erase_if([](std::uint64_t const &) noexcept { return false; }), 0u);
+    expect_equal(set.size(), 12u);
 }
 
 #pragma endregion Tests
 
 } // namespace ashvardanian::smashtable::test
 
+using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::test;
 
-int main(int, char **arguments) {
-    settings_t const settings = read_settings(arguments[0]);
-    install_test_signal_handlers();
-    print(probe_machine());
-    print(settings);
-    test_tally_t tally;
+int main(int argc, char **argv) {
+    start_test_run(argc, argv);
 
-    tally += run_test(settings, "flat_set.serial_kit", flat_set_serial_kit);
-    tally += run_test(settings, "flat_set.haswell_kit", flat_set_haswell_kit);
-    tally += run_test(settings, "flat_set.skylake_kit", flat_set_skylake_kit);
-    tally += run_test(settings, "flat_set.icelake_kit", flat_set_icelake_kit);
-    tally += run_test(settings, "flat_set.neon_kit", flat_set_neon_kit);
-    tally += run_test(settings, "flat_set.sve_kit", flat_set_sve_kit);
-    tally += run_test(settings, "flat_set.rvv_kit", flat_set_rvv_kit);
-    tally += run_test(settings, "flat_set.powervsx_kit", flat_set_powervsx_kit);
-    tally += run_test(settings, "flat_set.v128_kit", flat_set_v128_kit);
-    tally += run_test(settings, "flat_set.refused_allocation", flat_set_refused_allocation);
-    tally += run_test(settings, "flat_set.shared_suites", flat_set_shared_suites);
+    run_test_case("test_kit(row_kit_t::serial_k)", test_kit, row_kit_t::serial_k);
+    run_test_case("test_kit(row_kit_t::haswell_k)", test_kit, row_kit_t::haswell_k);
+    run_test_case("test_kit(row_kit_t::skylake_k)", test_kit, row_kit_t::skylake_k);
+    run_test_case("test_kit(row_kit_t::icelake_k)", test_kit, row_kit_t::icelake_k);
+    run_test_case("test_kit(row_kit_t::neon_k)", test_kit, row_kit_t::neon_k);
+    run_test_case("test_kit(row_kit_t::sve_k)", test_kit, row_kit_t::sve_k);
+    run_test_case("test_kit(row_kit_t::rvv_k)", test_kit, row_kit_t::rvv_k);
+    run_test_case("test_kit(row_kit_t::powervsx_k)", test_kit, row_kit_t::powervsx_k);
+    run_test_case("test_kit(row_kit_t::v128_k)", test_kit, row_kit_t::v128_k);
+    run_test_case("test_refused_allocation", test_refused_allocation);
+    run_test_case("test_shared_suites", test_shared_suites);
 
-    tally += run_test(settings, "flat_set.batch_is_all_or_nothing", flat_set_batch_is_all_or_nothing);
-    tally += run_test(settings, "flat_set.erase_if_keeps_order", flat_set_erase_if_keeps_order);
+    run_test_case("test_batch_is_all_or_nothing", test_batch_is_all_or_nothing);
+    run_test_case("test_erase_if_keeps_order", test_erase_if_keeps_order);
 
-    return report_test_failures(settings, tally);
+    return finish_test_run();
 }

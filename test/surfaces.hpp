@@ -57,16 +57,16 @@ struct suite_waived_for : std::false_type {};
  *  @param[in] make_container Hands back a container allocating through the ledger it is given.
  */
 template <typename container_type_, typename factory_type_>
-void test_every_offered_surface(factory_type_ &&make_container) {
+void check_every_offered_surface(factory_type_ &&make_container) {
 
     static_assert(tagged_collection<container_type_>,
                   "every container names its element, its key and its shape before any suite asks it anything");
 
     if constexpr (batches_atomically<container_type_>) {
         if constexpr (!suite_waived_for<suite_t::batch_atomicity_k, container_type_>::value)
-            test_batch_is_all_or_nothing<container_type_>(make_container);
+            check_batch_is_all_or_nothing<container_type_>(make_container);
         if constexpr (!suite_waived_for<suite_t::batch_contracts_k, container_type_>::value)
-            test_batch_contracts<container_type_>();
+            check_batch_contracts<container_type_>();
     }
 }
 

@@ -24,7 +24,7 @@ import subprocess
 import sys
 
 import pytest
-from base import sharing_modes
+from base import SHARING_MODES
 
 import smashtable as st
 
@@ -43,38 +43,45 @@ def _watcher(container, seen):
 
 
 def overwrite(container, watcher_class):
+    """Releases the watched value by overwriting its key."""
     container[1] = watcher_class()
     container[1] = None
 
 
 def delete_item(container, watcher_class):
+    """Releases the watched value by deleting its key."""
     container[1] = watcher_class()
     del container[1]
 
 
 def clear(container, watcher_class):
+    """Releases the watched value by clearing the container."""
     container[1] = watcher_class()
     container.clear()
 
 
 def delete_slice(container, watcher_class):
+    """Releases the watched value by deleting a slice that covers its key."""
     container[1] = watcher_class()
     del container[0:9]
 
 
 def handle_write(container, watcher_class):
+    """Releases the watched value by overwriting it through a transaction view."""
     container[1] = watcher_class()
     with st.transaction(container) as (view,):
         view[1] = None
 
 
 def handle_delete(container, watcher_class):
+    """Releases the watched value by deleting it through a transaction view."""
     container[1] = watcher_class()
     with st.transaction(container) as (view,):
         del view[1]
 
 
 def teardown(container, watcher_class):
+    """Leaves the watched value for the container's own teardown while another store is written."""
     container[1] = watcher_class()
     replacement = st.SortedMap(key=int, value="object")
     replacement[1] = 1
@@ -110,8 +117,8 @@ def exercise_every_path() -> None:
 # region Tests
 
 
-@pytest.mark.slow
 @pytest.mark.thread_unsafe(reason="it spawns an interpreter and asserts on its exit")
+@pytest.mark.slow
 def test_no_release_path_deadlocks():
     """A `__del__` reaching into its own container must not block against the write that freed it.
 
@@ -130,7 +137,7 @@ def test_no_release_path_deadlocks():
     assert finished.returncode == 0, f"exited {finished.returncode}: {finished.stderr[-500:]}"
 
 
-@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_a_finalizer_may_touch_its_container_during_collection(sharing):
     """The collector breaking a cycle drops the container's objects, which runs their finalizers.
 
@@ -154,7 +161,7 @@ def test_a_finalizer_may_touch_its_container_during_collection(sharing):
     assert observed == [1], "a finalizer fired by the collector could not read its own container"
 
 
-@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_a_finalizer_sees_the_write_completed(sharing):
     """The finalizer runs after the operation, so it observes the store the write left behind.
 

@@ -4,25 +4,17 @@
  *  @date September 25, 2026
  *  @brief Harness for the benchmarks - settings, the machine, and the timed loop with its rows.
  *
- *  Environment variables, read once by @c read_settings:
- *
- *  @verbatim
- *  SMASHTABLE_FILTER      unset     ECMAScript regex over benchmark names, or a substring when it does not compile
- *  SMASHTABLE_SEED        42        Seed for the key draws, or "random" to draw one
- *  SMASHTABLE_WARMUP      1s        Untimed run ahead of each benchmark, "<int>ms" or "<int>s"
- *  SMASHTABLE_TIME_LIMIT  10s       Timed run of each benchmark, "<int>ms" or "<int>s"
- *  SMASHTABLE_ROWS        4096      Sorted rows per row-kit benchmark
- *  SMASHTABLE_KEYS        16777216  Sorted keys per layout benchmark
- *  SMASHTABLE_QUERIES     1048576   Queries drawn per benchmark, searched in turn
- *  @endverbatim
+ *  Every setting is a @c SMASHTABLE_<NAME> variable that a @c --name flag overrides;
+ *  CONTRIBUTING.md lists them beside the test suites' own.
  */
 #pragma once
 #include <cctype>  // `std::tolower`
+#include <cmath>   // `std::isfinite`
 #include <cstddef> // `std::ptrdiff_t`
 #include <cstdint> // `std::uint32_t`, `std::uint64_t`
 #include <cstdio>  // `std::FILE`, `std::fputc`, `std::fopen`, `std::fgets`
-#include <cstdlib> // `std::exit`, `std::getenv`
-#include <cstring> // `std::strchr`, `std::strncmp`, `std::strcspn`
+#include <cstdlib> // `std::exit`, `std::getenv`, `std::strtod`
+#include <cstring> // `std::strchr`, `std::strncmp`, `std::strcspn`, `std::strcmp`
 
 #include <array>        // `std::array`
 #include <charconv>     // `std::from_chars`
@@ -42,6 +34,176 @@ namespace ashvardanian::smashtable::bench {
 
 using steady_clock_t = std::chrono::steady_clock;
 using time_point_t = steady_clock_t::time_point;
+
+#pragma region Shared Settings
+
+/** Exits with one line naming a setting that does not parse, so a bad value never runs anything. */
+[[noreturn]] inline void exit_unparsed(char const *variable, char const *text, char const *expected) noexcept {
+    std::fprintf(stderr, "%s=\"%s\" does not parse, expected %s\n", variable, text, expected);
+    std::exit(1);
+}
+
+/** The text of a setting: its @p flag when given, else its environment @p variable , else null. */
+inline char const *setting_text(int argc, char **argv, char const *variable, std::string_view flag) noexcept {
+    for (int index = 1; index < argc; ++index) {
+        std::string_view const argument {argv[index]};
+        if (argument == flag)
+            return index + 1 < argc && std::strncmp(argv[index + 1], "--", 2) != 0 ? argv[index + 1] : "1";
+        if (argument.size() > flag.size() && argument.starts_with(flag) && argument[flag.size()] == '=')
+            return argv[index] + flag.size() + 1;
+    }
+    char const *text = std::getenv(variable);
+    return text && *text ? text : nullptr;
+}
+
+/** A switch, @p fallback when unset: 0, false, off and no turn it off, anything else on. */
+inline bool read_flag_setting(int argc, char **argv, char const *variable, std::string_view flag,
+                              bool fallback = false) noexcept {
+    char const *text = setting_text(argc, argv, variable, flag);
+    if (!text) return fallback;
+    for (char const *off : {"0", "false", "off", "no"})
+        if (std::strcmp(text, off) == 0) return false;
+    return true;
+}
+
+/** A whole number, @p fallback when unset. */
+inline std::size_t read_count_setting(int argc, char **argv, char const *variable, std::string_view flag,
+                                      std::size_t fallback) noexcept {
+    char const *text = setting_text(argc, argv, variable, flag);
+    if (!text) return fallback;
+    std::string_view const spelled {text};
+    std::size_t count = 0;
+    auto const [end, error] = std::from_chars(spelled.data(), spelled.data() + spelled.size(), count);
+    if (error != std::errc {} || end != spelled.data() + spelled.size())
+        exit_unparsed(variable, text, "a whole number");
+    return count;
+}
+
+/** A positive real, @p fallback when unset. */
+inline double read_real_setting(int argc, char **argv, char const *variable, std::string_view flag,
+                                double fallback) noexcept {
+    char const *text = setting_text(argc, argv, variable, flag);
+    if (!text) return fallback;
+    char *end = nullptr;
+    double const value = std::strtod(text, &end);
+    if (*end != '\0' || !(value > 0) || !std::isfinite(value))
+        exit_unparsed(variable, text, "a positive number like 0.1 or 10");
+    return value;
+}
+
+/** A positive duration such as 200ms, 10s or 2m, @p fallback when unset. */
+inline std::chrono::milliseconds read_duration_setting(int argc, char **argv, char const *variable,
+                                                       std::string_view flag,
+                                                       std::chrono::milliseconds fallback) noexcept {
+    char const *text = setting_text(argc, argv, variable, flag);
+    if (!text) return fallback;
+    std::string_view const spelled {text};
+    std::uint32_t count = 0;
+    auto const [end, error] = std::from_chars(spelled.data(), spelled.data() + spelled.size(), count);
+    std::string_view const unit = spelled.substr(static_cast<std::size_t>(end - spelled.data()));
+    if (error == std::errc {} && count != 0) {
+        if (unit == "ms") return std::chrono::milliseconds(count);
+        if (unit == "s") return std::chrono::seconds(count);
+        if (unit == "m") return std::chrono::minutes(count);
+    }
+    exit_unparsed(variable, text, "a duration like 200ms, 10s or 2m");
+}
+
+/** The run's seed: 42 when unset, drawn afresh for @c random , else any unsigned 64-bit value. */
+inline std::uint64_t read_seed_setting(int argc, char **argv, char const *variable, std::string_view flag) noexcept {
+    char const *text = setting_text(argc, argv, variable, flag);
+    if (!text) return 42;
+    std::string_view const spelled {text};
+    if (spelled == "random") {
+        std::random_device device;
+        return (static_cast<std::uint64_t>(device()) << 32) ^ device();
+    }
+    std::uint64_t seed = 0;
+    auto const [end, error] = std::from_chars(spelled.data(), spelled.data() + spelled.size(), seed);
+    if (error != std::errc {} || end != spelled.data() + spelled.size())
+        exit_unparsed(variable, text, "an unsigned integer or random");
+    return seed;
+}
+
+/** Which labels a run selects: a regex search when the pattern compiles, else a substring. */
+struct filter_t {
+    std::string pattern;
+    std::optional<std::regex> regex;
+
+    bool selects(std::string_view label) const noexcept {
+        if (pattern.empty()) return true;
+        if (regex) return std::regex_search(label.begin(), label.end(), *regex);
+        return label.find(pattern) != std::string_view::npos;
+    }
+};
+
+/** The filter a setting spells, compiled once; empty, selecting everything, when unset. */
+inline filter_t read_filter_setting(int argc, char **argv, char const *variable, std::string_view flag) noexcept {
+    filter_t filter;
+    char const *text = setting_text(argc, argv, variable, flag);
+    if (!text) return filter;
+    filter.pattern = text;
+#if defined(__cpp_exceptions) && __cpp_exceptions
+    try {
+        filter.regex.emplace(filter.pattern);
+    }
+    catch (std::regex_error const &) {
+    }
+#else
+    filter.regex.emplace(filter.pattern);
+#endif
+    return filter;
+}
+
+/** What every suite and bench reads before its own settings; @c program starts the rerun lines. */
+struct common_settings_t {
+    std::uint64_t seed = 42;
+    filter_t filter;
+    char const *program = "";
+};
+
+/** SplitMix64's finalizer, a bijection that spreads every input bit over all 64 output bits. */
+constexpr std::uint64_t split_mix_bits(std::uint64_t value) noexcept {
+    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ull;
+    value = (value ^ (value >> 27)) * 0x94D049BB133111EBull;
+    return value ^ (value >> 31);
+}
+
+/** The @p index -th stream of the family @p name under @p seed , identical in every language. */
+constexpr std::uint64_t stream_key(std::uint64_t seed, std::string_view name, std::uint64_t index = 0) noexcept {
+    std::uint64_t hashed = 0xCBF29CE484222325ull;
+    for (char const character : name) hashed = (hashed ^ static_cast<std::uint8_t>(character)) * 0x100000001B3ull;
+    return split_mix_bits(split_mix_bits(seed ^ hashed) + index);
+}
+
+/**
+ *  @brief SplitMix64 over one 64-bit state, seeded by a @ref stream_key , bit-identical to the
+ *      JavaScript generator NumKong ships.
+ *
+ *  Distributions are not specified to draw the same sequence on every standard library, so a
+ *  failure would stop reproducing from its seed when the toolchain changed; @ref below is the
+ *  portable bounded draw.
+ */
+struct split_mix_generator_t {
+    using result_type = std::uint64_t;
+    std::uint64_t state = 0;
+
+    explicit split_mix_generator_t(std::uint64_t key) noexcept : state(key) {}
+    static constexpr result_type(min)() noexcept { return 0; }
+    static constexpr result_type(max)() noexcept { return ~result_type {0}; }
+    result_type operator()() noexcept { return split_mix_bits(state += 0x9E3779B97F4A7C15ull); }
+
+    /** A uniform draw below @p bound , zero for an empty bound, without the bias of a modulo. */
+    std::uint64_t below(std::uint64_t bound) noexcept {
+        if (bound == 0) return 0;
+        std::uint64_t const rejection_floor = (0u - bound) % bound;
+        std::uint64_t draw = (*this)();
+        while (draw < rejection_floor) draw = (*this)();
+        return draw % bound;
+    }
+};
+
+#pragma endregion Shared Settings
 
 /** Output iterator handing each character straight to a @c std::FILE. */
 struct file_output_iterator_t {
@@ -71,85 +233,10 @@ inline void print_line(std::FILE *stream, std::format_string<args_types_...> pat
     std::fputc('\n', stream);
 }
 
-/** The text of the environment variable @p name, or nothing when it is unset or empty. */
-inline std::optional<std::string_view> env_text(char const *name) noexcept {
-    char const *const text = std::getenv(name);
-    if (!text || !*text) return std::nullopt;
-    return std::string_view(text);
-}
-
-/** Parses the environment variable @p name with @p parse, or returns @p fallback when it is unset
- *  or empty. Text that does not parse prints `NAME="text" does not parse, expected <expected>` and
- *  exits with status 1, which leaves crash handlers quiet. */
-template <typename value_type_, typename parse_type_>
-[[nodiscard]] value_type_ env_parsed(char const *name, value_type_ fallback, parse_type_ &&parse,
-                                     char const *expected) noexcept {
-    std::optional<std::string_view> const text = env_text(name);
-    if (!text) return fallback;
-    if (std::optional<value_type_> value = parse(*text)) return *std::move(value);
-    print_line(stderr, "{}=\"{}\" does not parse, expected {}", name, *text, expected);
-    std::exit(1);
-}
-
-/** A positive whole number, like "64". */
-inline std::optional<std::size_t> parse_count(std::string_view text) noexcept {
-    std::size_t count = 0;
-    auto const [end, error] = std::from_chars(text.data(), text.data() + text.size(), count);
-    if (error != std::errc {} || end != text.data() + text.size() || !count) return std::nullopt;
-    return count;
-}
-
-/** A positive duration in whole milliseconds or seconds, like "200ms" or "10s". */
-inline std::optional<std::chrono::milliseconds> parse_duration(std::string_view text) noexcept {
-    std::uint32_t count = 0;
-    auto const [end, error] = std::from_chars(text.data(), text.data() + text.size(), count);
-    if (error != std::errc {} || !count) return std::nullopt;
-    std::string_view const unit = text.substr(end - text.data());
-    if (unit == "ms") return std::chrono::milliseconds(count);
-    if (unit == "s") return std::chrono::seconds(count);
-    return std::nullopt;
-}
-
-/** A 32-bit seed, or "random" for a fresh draw from @c std::random_device. */
-inline std::optional<std::uint32_t> parse_seed(std::string_view text) noexcept {
-    if (text == "random") return static_cast<std::uint32_t>(std::random_device {}());
-    std::uint32_t seed = 0;
-    auto const [end, error] = std::from_chars(text.data(), text.data() + text.size(), seed);
-    if (error != std::errc {} || end != text.data() + text.size()) return std::nullopt;
-    return seed;
-}
-
-inline std::size_t env_count(char const *name, std::size_t fallback) noexcept {
-    return env_parsed(name, fallback, parse_count, "a positive count");
-}
-
-inline std::chrono::milliseconds env_duration(char const *name, std::chrono::milliseconds fallback) noexcept {
-    return env_parsed(name, fallback, parse_duration, "a duration like 200ms or 10s");
-}
-
-inline std::uint32_t env_seed(char const *name, std::uint32_t fallback) noexcept {
-    return env_parsed(name, fallback, parse_seed, "an unsigned integer or random");
-}
-
 /** Spells @p duration as a user types it: whole seconds as "10s", anything else as "1500ms". */
 inline std::string spell_duration(std::chrono::milliseconds duration) {
     auto const count = duration.count();
     return count % 1000 ? std::to_string(count) + "ms" : std::to_string(count / 1000) + "s";
-}
-
-/** SplitMix64's finalizer, a bijection that spreads every input bit over the whole output. */
-[[nodiscard]] constexpr std::uint64_t mix(std::uint64_t value) noexcept {
-    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ull;
-    value = (value ^ (value >> 27)) * 0x94D049BB133111EBull;
-    return value ^ (value >> 31);
-}
-
-/** The key of the generator stream @p name draws from, two mixes away from @p seed, so neither
- *  adjacent seeds nor two names ever give overlapping streams. */
-[[nodiscard]] constexpr std::uint64_t stream_key(std::uint32_t seed, std::string_view name) noexcept {
-    std::uint64_t hashed = 0xCBF29CE484222325ull;
-    for (char const character : name) hashed = (hashed ^ static_cast<unsigned char>(character)) * 0x100000001B3ull;
-    return mix(mix(seed ^ hashed));
 }
 
 /** Keeps @p value, and every write before it, from being optimized away. */
@@ -181,13 +268,13 @@ struct row_t {
 
 /** Prints @p row on one line, with its speed-up over @p baseline calls per second when known. */
 inline void print(row_t const &row, double baseline = 0) noexcept {
-    if (row.skipped) return print_line(stdout, "{:<56} skipped: {}", row.name, row.skipped);
+    if (row.skipped) return print_line(stdout, "{:<64} skipped: {}", row.name, row.skipped);
     double per_second = row.calls_per_second;
     char const *prefix = "";
     for (char const *next : {"k", "M", "G", "T", "P"})
         if (per_second >= 1000) per_second /= 1000, prefix = next;
     file_output_iterator_t output =
-        std::format_to(file_output_iterator_t {stdout}, "{:<56}  calls {:.3f} {}/s", row.name, per_second, prefix);
+        std::format_to(file_output_iterator_t {stdout}, "{:<64}  calls {:.3f} {}/s", row.name, per_second, prefix);
     for (counter_t const &counter : row.counters)
         if (counter.name) output = std::format_to(output, "  {} {:.3f}", counter.name, counter.value);
     if (baseline > 0) output = std::format_to(output, "  {:.2f}x", row.calls_per_second / baseline);
@@ -252,15 +339,8 @@ class loop_t {
     }
 };
 
-/** Every benchmark setting, its default as the initializer, filled once by @c read_settings. */
-struct settings_t {
-
-    /** Benchmarks to run, by ECMAScript regex or else substring. */
-    std::string_view filter;
-    std::optional<std::regex> filter_regex;
-
-    /** Seed every key draw derives its stream from. */
-    std::uint32_t seed = 42;
+/** What a benchmark reads: the common settings, then how long to time and how much to build. */
+struct bench_settings_t : common_settings_t {
 
     /** Untimed run ahead of each benchmark. */
     std::chrono::milliseconds warmup = std::chrono::seconds(1);
@@ -276,39 +356,33 @@ struct settings_t {
 
     /** Queries drawn from the keys, searched in turn by every benchmark. */
     std::size_t queries = std::size_t {1} << 20;
-
-    /** Whether @p name passes the filter. */
-    bool selects(std::string_view name) const {
-        if (filter.empty()) return true;
-        if (filter_regex) return std::regex_search(name.begin(), name.end(), *filter_regex);
-        return name.find(filter) != std::string_view::npos;
-    }
 };
 
-/** Reads every @c settings_t variable, rejecting a zero count. */
-inline settings_t read_settings() noexcept {
-    settings_t settings;
-    settings.filter = env_text("SMASHTABLE_FILTER").value_or("");
-    if (!settings.filter.empty()) {
-        try {
-            settings.filter_regex.emplace(settings.filter.begin(), settings.filter.end());
-        }
-        catch (std::regex_error const &) {
-        }
-    }
-    settings.seed = env_seed("SMASHTABLE_SEED", settings.seed);
-    settings.warmup = env_duration("SMASHTABLE_WARMUP", settings.warmup);
-    settings.time_limit = env_duration("SMASHTABLE_TIME_LIMIT", settings.time_limit);
-    settings.rows = env_count("SMASHTABLE_ROWS", settings.rows);
-    settings.keys = env_count("SMASHTABLE_KEYS", settings.keys);
-    settings.queries = env_count("SMASHTABLE_QUERIES", settings.queries);
+/** Reads every @c bench_settings_t field, rejecting a zero count, which every benchmark divides
+ *  by. */
+inline bench_settings_t read_bench_settings(int argc, char **argv) noexcept {
+    bench_settings_t settings;
+    settings.seed = read_seed_setting(argc, argv, "SMASHTABLE_SEED", "--seed");
+    settings.filter = read_filter_setting(argc, argv, "SMASHTABLE_FILTER", "--filter");
+    auto const read_positive = [&](char const *variable, std::string_view flag, std::size_t fallback) noexcept {
+        std::size_t const count = read_count_setting(argc, argv, variable, flag, fallback);
+        if (count == 0) exit_unparsed(variable, "0", "a positive whole number");
+        return count;
+    };
+    settings.warmup = read_duration_setting(argc, argv, "SMASHTABLE_WARMUP", "--warmup", settings.warmup);
+    settings.time_limit =
+        read_duration_setting(argc, argv, "SMASHTABLE_TIME_LIMIT", "--time-limit", settings.time_limit);
+    settings.rows = read_positive("SMASHTABLE_ROWS", "--rows", settings.rows);
+    settings.keys = read_positive("SMASHTABLE_KEYS", "--keys", settings.keys);
+    settings.queries = read_positive("SMASHTABLE_QUERIES", "--queries", settings.queries);
     return settings;
 }
 
 /** Prints each setting as "- Name: value", in the grammar it parses from. */
-inline void print(settings_t const &settings) noexcept {
+inline void print(bench_settings_t const &settings) noexcept {
     print_line(stdout, "- Seed: {}", settings.seed);
-    print_line(stdout, "- Filter: {}", settings.filter.empty() ? std::string_view("none") : settings.filter);
+    print_line(stdout, "- Filter: {}",
+               settings.filter.pattern.empty() ? std::string_view("none") : settings.filter.pattern);
     print_line(stdout, "- Warm-up: {}", spell_duration(settings.warmup));
     print_line(stdout, "- Time limit: {}", spell_duration(settings.time_limit));
     print_line(stdout, "- Rows: {}", settings.rows);
@@ -369,7 +443,7 @@ inline void print(machine_t const &machine) noexcept {
 
 /** Everything a benchmark reads, built once in @c main and passed down by reference. */
 struct environment_t {
-    settings_t settings;
+    bench_settings_t settings;
     machine_t machine;
 };
 
@@ -377,7 +451,7 @@ struct environment_t {
  *  @p baseline. Returns the row's calls per second, or 0 when it was filtered out or skipped. */
 template <typename measure_type_>
 double run(environment_t const &env, std::string_view name, double baseline, measure_type_ &&measure) noexcept {
-    if (!env.settings.selects(name)) return 0;
+    if (!env.settings.filter.selects(name)) return 0;
     loop_t loop(env.settings.warmup, env.settings.time_limit);
     measure(loop);
     row_t const row = loop.row(name);

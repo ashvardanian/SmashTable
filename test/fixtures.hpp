@@ -27,7 +27,6 @@
 #include <functional>  // `std::less`, `std::equal_to`
 #include <limits>      // `std::numeric_limits`
 #include <new>         // `std::nothrow`
-#include <random>      // `std::mt19937`
 #include <string_view> // `std::string_view`
 #include <type_traits> // `std::remove_cvref_t`
 #include <vector>      // `std::vector`
@@ -227,7 +226,7 @@ class guarded_payload_t {
 
   public:
     guarded_payload_t() noexcept {
-        verify_not_double_constructed();
+        check_not_double_constructed();
         canary_front_ = canary_front_k;
         canary_back_ = canary_back_k;
         state_ = state_t::constructed_k;
@@ -235,7 +234,7 @@ class guarded_payload_t {
     }
 
     explicit guarded_payload_t(trivial_id_t v) noexcept {
-        verify_not_double_constructed();
+        check_not_double_constructed();
         canary_front_ = canary_front_k;
         canary_back_ = canary_back_k;
         state_ = state_t::constructed_k;
@@ -245,11 +244,11 @@ class guarded_payload_t {
     }
 
     ~guarded_payload_t() noexcept {
-        verify_canaries();
-        assert(destruction_count_ == 0 && "Double destruction detected!");
-        assert(state_ != state_t::destroyed_k && "Destructor called twice!");
-        assert((state_ == state_t::constructed_k || state_ == state_t::moved_from_k) &&
-               "Destructing unconstructed object!");
+        check_canaries();
+        expect_true(destruction_count_ == 0, "Double destruction detected!");
+        expect_true(state_ != state_t::destroyed_k, "Destructor called twice!");
+        expect_true(state_ == state_t::constructed_k || state_ == state_t::moved_from_k,
+                    "Destructing unconstructed object!");
 
         destruction_count_ = 1;
         state_ = state_t::destroyed_k;
@@ -258,8 +257,8 @@ class guarded_payload_t {
 
     // Copy constructor - creates new independent object
     guarded_payload_t(guarded_payload_t const &other) noexcept {
-        other.verify_readable();
-        verify_not_double_constructed();
+        other.check_readable();
+        check_not_double_constructed();
 
         canary_front_ = canary_front_k;
         canary_back_ = canary_back_k;
@@ -272,8 +271,8 @@ class guarded_payload_t {
 
     // Move constructor - transfers value, marks source
     guarded_payload_t(guarded_payload_t &&other) noexcept {
-        other.verify_readable();
-        verify_not_double_constructed();
+        other.check_readable();
+        check_not_double_constructed();
 
         canary_front_ = canary_front_k;
         canary_back_ = canary_back_k;
@@ -288,16 +287,16 @@ class guarded_payload_t {
     }
 
     guarded_payload_t &operator=(guarded_payload_t const &other) noexcept {
-        other.verify_readable();
-        verify_writable();
+        other.check_readable();
+        check_writable();
         value_ = other.value_;
         generation_++;
         return *this;
     }
 
     guarded_payload_t &operator=(guarded_payload_t &&other) noexcept {
-        other.verify_readable();
-        verify_writable();
+        other.check_readable();
+        check_writable();
         value_ = other.value_;
         generation_++;
         other.state_ = state_t::moved_from_k;
@@ -305,58 +304,58 @@ class guarded_payload_t {
     }
 
     guarded_payload_t &operator=(trivial_id_t v) noexcept {
-        verify_writable();
+        check_writable();
         value_ = v;
         generation_++;
         return *this;
     }
 
     trivial_id_t get() const noexcept {
-        verify_readable();
+        check_readable();
         return value_;
     }
 
     std::uint32_t generation() const noexcept {
-        verify_readable();
+        check_readable();
         return generation_;
     }
 
     bool operator==(trivial_id_t other) const noexcept {
-        verify_readable();
+        check_readable();
         return value_ == other;
     }
 
     bool operator!=(trivial_id_t other) const noexcept { return !(*this == other); }
 
     bool operator==(guarded_payload_t const &other) const noexcept {
-        verify_readable();
-        other.verify_readable();
+        check_readable();
+        other.check_readable();
         return value_ == other.value_;
     }
 
   private:
-    void verify_canaries() const noexcept {
-        assert(canary_front_ == canary_front_k && "Front canary corrupted - buffer overflow or memcpy?");
-        assert(canary_back_ == canary_back_k && "Back canary corrupted - buffer overflow or memcpy?");
+    void check_canaries() const noexcept {
+        expect_true(canary_front_ == canary_front_k, "Front canary corrupted - buffer overflow or memcpy?");
+        expect_true(canary_back_ == canary_back_k, "Back canary corrupted - buffer overflow or memcpy?");
     }
 
-    void verify_not_double_constructed() const noexcept {
-        assert(construction_count_ == 0 && "Double construction detected!");
-        assert(state_ == state_t::uninitialized_k && "Constructing over existing object!");
+    void check_not_double_constructed() const noexcept {
+        expect_true(construction_count_ == 0, "Double construction detected!");
+        expect_true(state_ == state_t::uninitialized_k, "Constructing over existing object!");
     }
 
-    void verify_readable() const noexcept {
-        verify_canaries();
-        assert(state_ == state_t::constructed_k && "Reading invalid object (use-after-free or use-after-move)!");
-        assert(construction_count_ == 1 && "Reading unconstructed object!");
-        assert(destruction_count_ == 0 && "Use after free!");
+    void check_readable() const noexcept {
+        check_canaries();
+        expect_true(state_ == state_t::constructed_k, "Reading invalid object (use-after-free or use-after-move)!");
+        expect_true(construction_count_ == 1, "Reading unconstructed object!");
+        expect_true(destruction_count_ == 0, "Use after free!");
     }
 
-    void verify_writable() noexcept {
-        verify_canaries();
-        assert(state_ == state_t::constructed_k && "Writing to invalid object!");
-        assert(construction_count_ == 1 && "Writing to unconstructed object!");
-        assert(destruction_count_ == 0 && "Writing to destroyed object!");
+    void check_writable() noexcept {
+        check_canaries();
+        expect_true(state_ == state_t::constructed_k, "Writing to invalid object!");
+        expect_true(construction_count_ == 1, "Writing to unconstructed object!");
+        expect_true(destruction_count_ == 0, "Writing to destroyed object!");
     }
 };
 
@@ -428,29 +427,29 @@ struct counted_key_t {
     explicit counted_key_t(trivial_id_t identifier) noexcept : unique_id(identifier) { note_construction(); }
 
     counted_key_t(counted_key_t const &other) noexcept : unique_id(other.unique_id) {
-        other.verify_alive();
+        other.check_alive();
         copies.fetch_add(1, std::memory_order_relaxed);
         note_construction();
     }
 
     /** Leaves the source alive, so its own destructor still balances the pair. */
     counted_key_t(counted_key_t &&other) noexcept : unique_id(other.unique_id) {
-        other.verify_alive();
+        other.check_alive();
         moves.fetch_add(1, std::memory_order_relaxed);
         note_construction();
     }
 
     counted_key_t &operator=(counted_key_t const &other) noexcept {
-        other.verify_alive();
-        verify_alive();
+        other.check_alive();
+        check_alive();
         unique_id = other.unique_id;
         copies.fetch_add(1, std::memory_order_relaxed);
         return *this;
     }
 
     counted_key_t &operator=(counted_key_t &&other) noexcept {
-        other.verify_alive();
-        verify_alive();
+        other.check_alive();
+        check_alive();
         unique_id = other.unique_id;
         moves.fetch_add(1, std::memory_order_relaxed);
         return *this;
@@ -466,21 +465,21 @@ struct counted_key_t {
     }
 
     std::strong_ordering operator<=>(counted_key_t const &other) const noexcept {
-        verify_alive();
-        other.verify_alive();
+        check_alive();
+        other.check_alive();
         return unique_id <=> other.unique_id;
     }
     bool operator==(counted_key_t const &other) const noexcept {
-        verify_alive();
-        other.verify_alive();
+        check_alive();
+        other.check_alive();
         return unique_id == other.unique_id;
     }
     std::strong_ordering operator<=>(trivial_id_t other) const noexcept {
-        verify_alive();
+        check_alive();
         return unique_id <=> other;
     }
     bool operator==(trivial_id_t other) const noexcept {
-        verify_alive();
+        check_alive();
         return unique_id == other;
     }
 
@@ -503,10 +502,10 @@ struct counted_key_t {
         return static_cast<std::ptrdiff_t>(constructions_count()) - static_cast<std::ptrdiff_t>(destructions_count());
     }
 
-    /** Aborts unless every built object was destroyed exactly once, and none used afterward. */
-    static void verify_balanced() noexcept {
-        st_verify_eq_(alive(), std::ptrdiff_t {0});
-        st_verify_eq_(defects_count(), std::size_t {0});
+    /** Fails a check unless every built object was destroyed exactly once, none used afterward. */
+    static void check_balanced() noexcept {
+        expect_equal(alive(), std::ptrdiff_t {0});
+        expect_equal(defects_count(), std::size_t {0});
     }
 
   private:
@@ -516,7 +515,7 @@ struct counted_key_t {
     }
 
     /** Records, rather than asserts, a read of an object that was already destroyed. */
-    void verify_alive() const noexcept {
+    void check_alive() const noexcept {
         if (magic != alive_magic_k) defects.fetch_add(1, std::memory_order_relaxed);
     }
 };
@@ -741,7 +740,7 @@ template <typename member_type_>
 auto trivial_id_to_key(trivial_id_t value) {
     if constexpr (has_make_method<member_type_, trivial_id_t>) {
         auto made = member_type_::make(value);
-        st_verify_((made) && "the fixture key must be constructible from an identifier");
+        expect_true(made.has_value(), "the fixture key must be constructible from an identifier");
         return *std::move(made);
     }
     else if constexpr (is_mapping<member_type_>) return trivial_id_to_key<typename member_type_::key_type>(value);
@@ -753,7 +752,7 @@ template <typename member_type_>
 auto trivial_id_to_member(trivial_id_t value) {
     if constexpr (has_make_method<member_type_, trivial_id_t>) {
         auto made = member_type_::make(value);
-        st_verify_((made) && "the fixture member must be constructible from an identifier");
+        expect_true(made.has_value(), "the fixture member must be constructible from an identifier");
         return *std::move(made);
     }
     else if constexpr (is_mapping<member_type_>)
@@ -787,31 +786,42 @@ struct allocation_request_t {
  *  counts kept in the allocator itself would scatter across those copies instead of accumulating.
  */
 struct allocation_ledger_t {
-    std::size_t allocations_till_fail {unlimited_budget_k};
-    std::size_t granted_count {0};
-    std::size_t refused_count {0};
-    std::size_t deallocation_count {0};
-    std::size_t unlogged_count {0}; // ? Requests the log itself had no memory to record
+    std::size_t allocations {0};
+    std::size_t deallocations {0};
+
+    /** Bytes granted and not yet returned, so a block handed back at another size shows. */
+    std::ptrdiff_t live_bytes {0};
+    std::size_t refusals {0};
+
+    /** The request, counting grants and refusals alike from zero, from which all are refused. */
+    std::size_t refuse_from {unlimited_budget_k};
+
+    /** Requests the log itself had no memory to record. */
+    std::size_t unlogged_count {0};
     basic_vector<allocation_request_t> requests;
 
     void reset() noexcept {
-        allocations_till_fail = unlimited_budget_k;
-        granted_count = 0;
-        refused_count = 0;
-        deallocation_count = 0;
+        allocations = 0;
+        deallocations = 0;
+        live_bytes = 0;
+        refusals = 0;
+        refuse_from = unlimited_budget_k;
         unlogged_count = 0;
         requests.clear();
     }
 
     /** Permits @p count more allocations, refusing every one after them. */
-    void allow(std::size_t count) noexcept { allocations_till_fail = count; }
+    void allow(std::size_t count) noexcept {
+        std::size_t const requests_count = allocations + refusals;
+        refuse_from = count > unlimited_budget_k - requests_count ? unlimited_budget_k : requests_count + count;
+    }
 
     /** Answers @c nullptr from the very next request onwards. */
-    void refuse_everything() noexcept { allocations_till_fail = 0; }
+    void refuse_everything() noexcept { refuse_from = 0; }
 
     /** Blocks granted and not yet returned - negative when something was freed twice. */
     std::ptrdiff_t live_allocations() const noexcept {
-        return static_cast<std::ptrdiff_t>(granted_count) - static_cast<std::ptrdiff_t>(deallocation_count);
+        return static_cast<std::ptrdiff_t>(allocations) - static_cast<std::ptrdiff_t>(deallocations);
     }
 
     /** The element count of the largest request seen, granted or refused. */
@@ -822,26 +832,31 @@ struct allocation_ledger_t {
         return largest;
     }
 
-    /** Aborts unless every granted block has been returned, and the log is complete. */
-    void verify_balanced() const noexcept {
-        st_verify_eq_(live_allocations(), std::ptrdiff_t {0});
-        st_verify_eq_(unlogged_count, std::size_t {0});
+    /** Fails a check unless each granted block came back at its size, with the log whole. */
+    void check_balanced() const noexcept {
+        expect_equal(live_allocations(), std::ptrdiff_t {0});
+        expect_equal(live_bytes, std::ptrdiff_t {0});
+        expect_equal(unlogged_count, std::size_t {0});
     }
 
     /** Answers one request, spending the budget and appending to the log. */
     budget_outcome_t note_request(std::size_t elements_count, std::size_t element_size) noexcept {
         budget_outcome_t const outcome =
-            allocations_till_fail == 0 ? budget_outcome_t::refused_k : budget_outcome_t::granted_k;
+            allocations + refusals >= refuse_from ? budget_outcome_t::refused_k : budget_outcome_t::granted_k;
         if (outcome == budget_outcome_t::granted_k) {
-            if (allocations_till_fail != unlimited_budget_k) --allocations_till_fail;
-            ++granted_count;
+            ++allocations;
+            live_bytes += static_cast<std::ptrdiff_t>(elements_count * element_size);
         }
-        else { ++refused_count; }
+        else { ++refusals; }
         if (failed(requests.push_back(allocation_request_t {elements_count, element_size, outcome}))) ++unlogged_count;
         return outcome;
     }
 
-    void note_deallocation() noexcept { ++deallocation_count; }
+    /** Takes back one block of @p bytes . */
+    void note_deallocation(std::size_t bytes) noexcept {
+        ++deallocations;
+        live_bytes -= static_cast<std::ptrdiff_t>(bytes);
+    }
 };
 
 /**
@@ -878,8 +893,8 @@ struct stateful_allocator {
         return static_cast<value_type_ *>(::operator new(count * element_size_k, std::nothrow)); // allocator primitive
     }
 
-    void deallocate(value_type_ *pointer, std::size_t) noexcept {
-        if (ledger) ledger->note_deallocation();
+    void deallocate(value_type_ *pointer, std::size_t count) noexcept {
+        if (ledger) ledger->note_deallocation(count * element_size_k);
         ::operator delete(pointer, std::nothrow); // allocator primitive
     }
 
@@ -928,15 +943,15 @@ struct refusing_allocator {
  *
  *  With no other thread about, a mutex that cannot be taken at once is a hold its own thread never
  *  gave back, and waiting for it would hang the suite rather than fail it. The check runs inside
- *  the store's @c noexcept calls, so a failure terminates, and the harness backtraces it.
+ *  the store's @c noexcept calls, so a failure counts against the case and the call goes on.
  */
 class solitary_mutex_t {
     spin_shared_mutex_t held_;
 
   public:
-    void lock() noexcept { st_verify_((held_.try_lock()) && "a lock its own thread still holds"); }
+    void lock() noexcept { expect_true(held_.try_lock(), "a lock its own thread still holds"); }
     void unlock() noexcept { held_.unlock(); }
-    void lock_shared() noexcept { st_verify_((held_.try_lock_shared()) && "a read blocked by its own thread's hold"); }
+    void lock_shared() noexcept { expect_true(held_.try_lock_shared(), "a read blocked by its own thread's hold"); }
     void unlock_shared() noexcept { held_.unlock_shared(); }
 };
 
@@ -953,7 +968,7 @@ void erase_range_of(container_type_ &container, lower_type_ const &lower, upper_
 
 /** Tests operations on empty container don't crash */
 template <typename container_type_>
-void test_empty_container_operations() {
+void check_empty_container_operations() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -961,14 +976,14 @@ void test_empty_container_operations() {
     container_t container;
 
     // Operations on empty container should not crash
-    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(1)), false);
+    expect_equal(container.contains(trivial_id_to_key<member_t>(1)), false);
     erase_range_of(container, trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(10));
-    st_verify_eq_(container.size(), 0);
+    expect_equal(container.size(), 0);
 }
 
 /** Tests operations on single-element container */
 template <typename container_type_>
-void test_single_element_operations() {
+void check_single_element_operations() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -976,16 +991,16 @@ void test_single_element_operations() {
     container_t container;
 
     auto new_member = trivial_id_to_member<member_t>(42);
-    st_verify_(container.upsert(std::move(new_member)));
-    st_verify_eq_(container.size(), 1);
-    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(42)), true);
+    expect_true(succeeded(container.upsert(std::move(new_member))));
+    expect_equal(container.size(), 1);
+    expect_equal(container.contains(trivial_id_to_key<member_t>(42)), true);
     erase_range_of(container, trivial_id_to_key<member_t>(42), trivial_id_to_key<member_t>(43));
-    st_verify_eq_(container.size(), 0);
+    expect_equal(container.size(), 0);
 }
 
 /** Tests insertion in ascending, descending, and random order */
 template <typename container_type_>
-void test_basic_insertion_patterns(test_context_t const &context, std::size_t size = 100) {
+void check_basic_insertion_patterns(std::size_t size = 100) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -995,38 +1010,38 @@ void test_basic_insertion_patterns(test_context_t const &context, std::size_t si
     // Test 1: Ascending insertion
     for (std::size_t index = 0; index < size; ++index) {
         auto new_member = trivial_id_to_member<member_t>(index);
-        st_verify_(container.upsert(std::move(new_member)));
-        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
-        st_verify_eq_(container.size(), index + 1);
+        expect_true(succeeded(container.upsert(std::move(new_member))));
+        expect_equal(container.contains(trivial_id_to_key<member_t>(index)), true);
+        expect_equal(container.size(), index + 1);
     }
-    st_verify_eq_(container.size(), size);
+    expect_equal(container.size(), size);
     clear_container(container);
-    st_verify_eq_(container.size(), 0);
+    expect_equal(container.size(), 0);
 
     // Test 2: Descending insertion (tests AVL rebalancing)
     for (std::size_t index = size; index > 0; --index) {
         auto new_member = trivial_id_to_member<member_t>(index);
-        st_verify_(container.upsert(std::move(new_member)));
-        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+        expect_true(succeeded(container.upsert(std::move(new_member))));
+        expect_equal(container.contains(trivial_id_to_key<member_t>(index)), true);
     }
-    st_verify_eq_(container.size(), size);
+    expect_equal(container.size(), size);
     clear_container(container);
-    st_verify_eq_(container.size(), 0);
+    expect_equal(container.size(), 0);
 
     // Test 3: Random insertion (tests worst-case AVL patterns)
     // Local, so one suite's draws never depend on what another drew from a shared generator.
-    std::mt19937 generator(mix_seed(context.seed, __func__));
+    split_mix_generator_t generator {case_stream_key()};
     for (std::size_t index = 0; index < size; ++index) {
         trivial_id_t const random_id = static_cast<trivial_id_t>(generator());
         auto new_member = trivial_id_to_member<member_t>(random_id);
-        st_verify_(container.upsert(std::move(new_member)));
-        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(random_id)), true);
+        expect_true(succeeded(container.upsert(std::move(new_member))));
+        expect_equal(container.contains(trivial_id_to_key<member_t>(random_id)), true);
     }
 }
 
 /** Tests bulk insertion via @b move iterators */
 template <typename container_type_>
-void test_bulk_insertion_from_iterators(std::size_t size = 100) {
+void check_bulk_insertion_from_iterators(std::size_t size = 100) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -1037,25 +1052,27 @@ void test_bulk_insertion_from_iterators(std::size_t size = 100) {
     members.reserve(size);
     for (std::size_t index = 0; index < size; ++index) members.push_back(trivial_id_to_member<member_t>(index));
 
-    st_verify_(
-        container.insert_if_missing(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())));
-    st_verify_eq_(container.size(), size);
+    expect_equal(
+        container.insert_if_missing(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())),
+        success_k);
+    expect_equal(container.size(), size);
     for (std::size_t index = 0; index < size; ++index) {
-        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+        expect_equal(container.contains(trivial_id_to_key<member_t>(index)), true);
     }
     clear_container(container);
-    st_verify_eq_(container.size(), 0);
+    expect_equal(container.size(), 0);
 
     // Lets do the same with update-or-insert semantics, on entries the first pass has not emptied
     members.clear();
     for (std::size_t index = 0; index < size; ++index) members.push_back(trivial_id_to_member<member_t>(index));
-    st_verify_(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())));
-    st_verify_eq_(container.size(), size);
+    expect_equal(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())),
+                 success_k);
+    expect_equal(container.size(), size);
     for (std::size_t index = 0; index < size; ++index) {
-        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+        expect_equal(container.contains(trivial_id_to_key<member_t>(index)), true);
     }
     clear_container(container);
-    st_verify_eq_(container.size(), 0);
+    expect_equal(container.size(), 0);
 }
 
 /**
@@ -1065,7 +1082,7 @@ void test_bulk_insertion_from_iterators(std::size_t size = 100) {
  *  uses upsert semantics (overwrite) rather than insert_if_missing semantics (skip).
  */
 template <typename container_type_>
-void test_bulk_upsert_with_duplicates() {
+void check_bulk_upsert_with_duplicates() {
 
     static_assert(container_type_::is_associative::value, //
                   "Container must be associative for upsert test");
@@ -1079,12 +1096,12 @@ void test_bulk_upsert_with_duplicates() {
     // First, insert some initial values
     for (std::size_t index = 0; index < 10; ++index) {
         auto new_member = trivial_id_to_member<member_t>(index);
-        st_verify_(container.upsert(std::move(new_member)));
+        expect_true(succeeded(container.upsert(std::move(new_member))));
     }
-    st_verify_eq_(container.size(), 10);
+    expect_equal(container.size(), 10);
 
     // Verify initial values exist
-    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(5)), true);
+    expect_equal(container.contains(trivial_id_to_key<member_t>(5)), true);
 
     // Now bulk insert with overlapping keys but different values
     std::vector<member_t> members;
@@ -1094,32 +1111,33 @@ void test_bulk_upsert_with_duplicates() {
         members.push_back(std::move(new_member));
     }
 
-    st_verify_(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())));
+    expect_equal(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())),
+                 success_k);
 
     // Size should be 15 (0-14), not 20
-    st_verify_eq_(container.size(), 15);
+    expect_equal(container.size(), 15);
 
     // Verify that overlapping keys (5-9) have UPDATED values (for int-valued maps only)
     for (std::size_t index = 5; index < 10; ++index) {
         auto found_entry = container.find_copy(trivial_id_to_key<member_t>(index));
-        st_verify_((found_entry) && "key missing after bulk upsert");
-        st_verify_eq_(found_entry->mapped, static_cast<int>(index * 100));
+        if (!expect_true(found_entry.has_value(), "key missing after bulk upsert")) return;
+        expect_equal(found_entry->mapped, static_cast<int>(index * 100));
     }
 
     // Verify new keys (10-14) were inserted
     for (std::size_t index = 10; index < 15; ++index) {
-        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+        expect_equal(container.contains(trivial_id_to_key<member_t>(index)), true);
     }
 
     // Verify old keys (0-4) still exist
     for (std::size_t index = 0; index < 5; ++index) {
-        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+        expect_equal(container.contains(trivial_id_to_key<member_t>(index)), true);
     }
 }
 
 /** Tests range queries on committed HEAD state */
 template <typename container_type_>
-void test_range_query_head_state(std::size_t size = 100) {
+void check_range_query_head_state(std::size_t size = 100) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -1129,7 +1147,7 @@ void test_range_query_head_state(std::size_t size = 100) {
 
     container_t container;
     for (std::size_t index = 0; index < size; ++index)
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(index)));
+        expect_true(succeeded(container.upsert(trivial_id_to_member<member_t>(index))));
 
     // The keys are contiguous, so a ten-wide window has one answer and only one. A closed range would
     // show eleven keys and a top of index+10, which is what pins the half-open convention here.
@@ -1137,16 +1155,17 @@ void test_range_query_head_state(std::size_t size = 100) {
         std::size_t count = 0;
         auto min_key = trivial_id_to_key<member_t>(size);
         auto max_key = trivial_id_to_key<member_t>(0);
-        st_verify_(container.range(trivial_id_to_key<member_t>(index), trivial_id_to_key<member_t>(index + 10),
-                                   [&](member_t const &member) noexcept {
-                                       auto const &key = mapping_key_or_itself<member_t>(member);
-                                       if (key < min_key) min_key = key;
-                                       if (max_key < key) max_key = key;
-                                       count++;
-                                   }));
-        st_verify_eq_(count, 10, "a half-open ten-wide window over contiguous keys holds ten of them");
-        st_verify_eq_(min_key, trivial_id_to_key<member_t>(index));
-        st_verify_eq_(max_key, trivial_id_to_key<member_t>(index + 9));
+        expect_equal(container.range(trivial_id_to_key<member_t>(index), trivial_id_to_key<member_t>(index + 10),
+                                     [&](member_t const &member) noexcept {
+                                         auto const &key = mapping_key_or_itself<member_t>(member);
+                                         if (key < min_key) min_key = key;
+                                         if (max_key < key) max_key = key;
+                                         count++;
+                                     }),
+                     success_k);
+        expect_equal(count, 10, "a half-open ten-wide window over contiguous keys holds ten of them");
+        expect_equal(min_key, trivial_id_to_key<member_t>(index));
+        expect_equal(max_key, trivial_id_to_key<member_t>(index + 9));
     }
 
     // Contiguous keys give both bounds one answer each, and they are different answers - which is what
@@ -1155,18 +1174,18 @@ void test_range_query_head_state(std::size_t size = 100) {
         auto const sought_key = trivial_id_to_key<member_t>(index);
 
         auto const above = container.upper_bound_copy(sought_key);
-        st_verify_(above);
-        st_verify_eq_(mapping_key_or_itself(*above), trivial_id_to_key<member_t>(index + 1));
+        if (!expect_equal(above.status(), success_k)) return;
+        expect_equal(mapping_key_or_itself(*above), trivial_id_to_key<member_t>(index + 1));
 
         auto const at_or_above = container.lower_bound_copy(sought_key);
-        st_verify_(at_or_above);
-        st_verify_eq_(mapping_key_or_itself(*at_or_above), sought_key);
+        if (!expect_equal(at_or_above.status(), success_k)) return;
+        expect_equal(mapping_key_or_itself(*at_or_above), sought_key);
     }
 }
 
 /** Tests @c erase_range on committed HEAD state */
 template <typename container_type_>
-void test_erase_range_head_state(std::size_t size = 100) {
+void check_erase_range_head_state(std::size_t size = 100) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -1174,14 +1193,14 @@ void test_erase_range_head_state(std::size_t size = 100) {
     container_t container;
 
     for (std::size_t index = 0; index < size; ++index)
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(index)));
+        expect_true(succeeded(container.upsert(trivial_id_to_member<member_t>(index))));
 
     for (std::size_t index = 0; index < size; index += 10) {
         auto start_key = trivial_id_to_key<member_t>(index);
         auto end_key = trivial_id_to_key<member_t>(index + 10);
         erase_range_of(container, start_key, end_key);
         for (std::size_t i = index; i < index + 10; ++i) {
-            st_verify_eq_(container.contains(trivial_id_to_key<member_t>(i)), false);
+            expect_equal(container.contains(trivial_id_to_key<member_t>(i)), false);
         }
     }
 }
@@ -1194,7 +1213,7 @@ void test_erase_range_head_state(std::size_t size = 100) {
  *  composite_key_t stores metadata plus unique_id, but supports lookup by just the identifier.
  *  Verifies transparent comparator allows searching without materializing full key. */
 template <typename container_type_>
-void test_heterogeneous_composite_find() {
+void check_heterogeneous_composite_find() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -1207,7 +1226,7 @@ void test_heterogeneous_composite_find() {
             new_member.key.some_metadata = i * 100;
             new_member.key.some_float = static_cast<double>(i) / 3.0;
         }
-        st_verify_(container.upsert(std::move(new_member)));
+        expect_true(succeeded(container.upsert(std::move(new_member))));
     }
 
     // Test heterogeneous lookups
@@ -1215,15 +1234,15 @@ void test_heterogeneous_composite_find() {
         auto lookup_by_id = container.find_copy(static_cast<trivial_id_t>(i));
         auto lookup_by_key = container.find_copy(trivial_id_to_key<member_t>(i));
 
-        st_verify_((lookup_by_id) && "heterogeneous lookup must find the key");
-        st_verify_((lookup_by_key) && "key lookup must find the key");
+        if (!expect_true(lookup_by_id.has_value(), "heterogeneous lookup must find the key")) return;
+        if (!expect_true(lookup_by_key.has_value(), "key lookup must find the key")) return;
 
-        st_verify_eq_(mapping_key_or_itself<member_t>(*lookup_by_id).unique_id, i);
-        st_verify_eq_(mapping_key_or_itself<member_t>(*lookup_by_key).unique_id, i);
+        expect_equal(mapping_key_or_itself<member_t>(*lookup_by_id).unique_id, i);
+        expect_equal(mapping_key_or_itself<member_t>(*lookup_by_key).unique_id, i);
 
         if constexpr (container_t::is_associative::value) {
-            st_verify_eq_(lookup_by_id->key.some_metadata, i * 100);
-            st_verify_eq_(lookup_by_key->key.some_metadata, i * 100);
+            expect_equal(lookup_by_id->key.some_metadata, i * 100);
+            expect_equal(lookup_by_key->key.some_metadata, i * 100);
         }
     }
 
@@ -1232,8 +1251,8 @@ void test_heterogeneous_composite_find() {
         auto lookup_by_id = container.find_copy(static_cast<trivial_id_t>(999));
         auto lookup_by_key = container.find_copy(trivial_id_to_key<member_t>(999));
 
-        st_verify_(!(lookup_by_id));
-        st_verify_(!(lookup_by_key));
+        expect_true(!(lookup_by_id));
+        expect_true(!(lookup_by_key));
     }
 }
 
@@ -1241,7 +1260,7 @@ void test_heterogeneous_composite_find() {
  *  heap-allocated text, but supports lookup by @c string_view. Verifies transparent comparator
  *  allows searching without materializing full key. */
 template <typename container_type_>
-void test_heterogeneous_heavy_string_view_find() {
+void check_heterogeneous_heavy_string_view_find() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -1260,7 +1279,7 @@ void test_heterogeneous_heavy_string_view_find() {
     // Insert heavy keys from strings
     for (auto const &text : test_strings) {
         auto new_member = make_new_member(text);
-        st_verify_(container.upsert(std::move(new_member)));
+        expect_true(succeeded(container.upsert(std::move(new_member))));
     }
 
     // Test heterogeneous lookup
@@ -1269,11 +1288,11 @@ void test_heterogeneous_heavy_string_view_find() {
         auto lookup_by_id = container.find_copy(text);
         auto lookup_by_key = container.find_copy(make_new_key(text));
 
-        st_verify_((lookup_by_id) && "heterogeneous lookup must find the string key");
-        st_verify_((lookup_by_key) && "key lookup must find the string key");
+        if (!expect_true(lookup_by_id.has_value(), "heterogeneous lookup must find the string key")) return;
+        if (!expect_true(lookup_by_key.has_value(), "key lookup must find the string key")) return;
 
-        st_verify_eq_(mapping_key_or_itself<member_t>(*lookup_by_id), text);
-        st_verify_eq_(mapping_key_or_itself<member_t>(*lookup_by_key), text);
+        expect_equal(mapping_key_or_itself<member_t>(*lookup_by_id), text);
+        expect_equal(mapping_key_or_itself<member_t>(*lookup_by_key), text);
     }
 
     // Test that non-existent keys are not found
@@ -1281,8 +1300,8 @@ void test_heterogeneous_heavy_string_view_find() {
         auto lookup_by_id = container.find_copy("missing"sv);
         auto lookup_by_key = container.find_copy(make_new_key("missing"sv));
 
-        st_verify_(!(lookup_by_id));
-        st_verify_(!(lookup_by_key));
+        expect_true(!(lookup_by_id));
+        expect_true(!(lookup_by_key));
     }
 }
 

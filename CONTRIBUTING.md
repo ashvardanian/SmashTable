@@ -21,45 +21,6 @@ cmake --build --preset debug --target smashtable_test_avl_tree
 build_debug/smashtable_test_avl_tree
 ```
 
-### Running Tests
-
-Every container family runs the same suites, so one `ctest` run covers every binary at once:
-
-```bash
-ctest --preset debug
-```
-
-Run one binary directly, or steer it with the two environment variables the harness reads:
-
-```bash
-build_debug/smashtable_test_avl_tree
-SMASHTABLE_FILTER=transactional_consistency build_debug/smashtable_test_avl_tree
-SMASHTABLE_FILTER=basic_ops.insertion build_debug/smashtable_test_wb_tree
-SMASHTABLE_SEED=1234 build_debug/smashtable_test_wb_tree
-```
-
-`SMASHTABLE_FILTER` is an ECMAScript regex searched for in each test's `suite.name`, so only the matching tests run, and the binary announces every one it skips.
-A pattern that does not compile matches as a plain substring instead.
-A filter matching nothing fails the binary rather than reporting an empty run as green, so a typo is loud instead of reassuring.
-
-`SMASHTABLE_SEED` is the seed every randomized suite draws from, so a failing run names the sequence that produced it.
-It defaults to 42, which keeps CI and an unattended build deterministic, and `random` draws a fresh one; either way the binary prints it on its `- Seed:` line.
-Hunting for a rare defect is therefore a loop in the shell rather than an edit to the source:
-
-```bash
-for seed in $(seq 1 64); do SMASHTABLE_SEED=$seed build_debug/smashtable_test_avl_tree || break; done
-```
-
-A failed check prints the expression, file and line, then reports its test as failed and continues with the next one, so a run lists every defect it reaches and exits with 1 at the end.
-Beneath each failure the binary prints a `rerun:` line with the seed and a filter that selects only the failing test:
-
-```text
-rerun: SMASHTABLE_SEED=42 SMASHTABLE_FILTER='^basic_ops.insertion_patterns$' build_debug/smashtable_test_wb_tree
-```
-
-A check inside a `noexcept` callback or a spawned thread cannot leave its test, so it terminates the binary instead, as a crash does.
-The backtrace follows, and the last test started on stdout is the one that died.
-
 ### Before Opening a Pull Request
 
 CI builds with warnings as errors on both compilers, and checks that every header compiles as the first thing a translation unit sees.
@@ -102,15 +63,7 @@ pytest test/ --parallel-threads=4 --iterations=2
 python -c "import sys, smashtable; assert not sys._is_gil_enabled()"
 ```
 
-`SMASHTABLE_SEED` pins the Python suite's seed too, with the same default of 42, and `random` again draws a fresh one per run.
-Either way pytest prints it in its own header, as `- Seed: <n>`, so a failing run is reproducible by copying the number back.
-`SMASHTABLE_FILTER` keeps the tests whose node id matches it, as a regex or else as a substring, alongside `-k`:
-
-```bash
-SMASHTABLE_SEED=random pytest test/
-SMASHTABLE_SEED=1234 pytest test/
-SMASHTABLE_FILTER="sortedmap.*str" pytest test/
-```
+The settings both suites read are listed under [Environment](#environment).
 
 ### Model Checking
 
@@ -132,6 +85,157 @@ After touching a check, run its fixtures, which feed known-good and known-bad fi
 ```bash
 .githooks/selftest
 ```
+
+## Test Suites
+
+### Principles
+
+Tests reach the library through its public surface only: the headers under `include/smashtable/` and the `smashtable` Python module.
+Every container family runs the same suites, one binary per family, so a behavioural difference between two families surfaces as a failure rather than a surprise.
+The suites shared between families live in `test/*.hpp` as `check_*` bodies over one container type, and each family's file instantiates them in its own cases.
+Oracles never compile out, so a test checks with `expect_true` and its siblings, never `assert`, and every test unit opens with `#undef NDEBUG // ! A test's oracle must stay live in every build`.
+The benchmark never includes `test/`, each tree keeps its own harness, and neither uses a test or benchmark framework.
+The harness owns stdout, while test bodies write their diagnostics to stderr.
+Settings are read once, and a value that does not parse prints one line naming it and exits with 1.
+Skips are honest: a filter that selects no case fails the run, and a case that cannot run here says why.
+
+A threaded suite keeps no atomic tally of its own: each worker counts into its own slot, and the main thread sums the slots after the join.
+The one exception is the harness's single mutable global, `test_run`, the run in progress: its settings, the case under way, the count of failed checks with the last one's file and line, and the passed, failed and skipped cases.
+A check fires wherever the code under test calls back - inside a `noexcept` visitor, an allocator, a comparator or a worker - where no slot is owned and no join follows, so the failed-check count is atomic, and `run_test_case` diffs it around each case rather than threading a tally through every call.
+A debugger reads it from a core dump as `p 'ashvardanian::smashtable::test::test_run'`, and the crash handlers print the case in progress before the backtrace.
+
+### Running
+
+```bash
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
+```
+
+Each binary is one family or one kit: `smashtable_test_std_set`, `_avl_tree`, `_wb_tree` and `_partitioned` for the ordered stores, `_hash_table` and `_monotonic_hash` for the unordered ones, `_snapshot_store` for the stamped stores, `_shared` for the vocabulary, locks and transaction groups, `_vector`, `_ring`, `_pools` and `_intrusive_stack` for the building blocks, and `_row_search`, `_flat_set`, `_hash_index` and `_elias_fano` for the row kits.
+A run prints the library and the machine, then its settings, one verdict line per case, and a summary:
+
+```text
+SmashTable 1.0.0
+- Compiled for: serial,neon,sve
+- This machine: serial,neon,sve
+- Dispatches to: sve
+- Seed: 42, scale: 1, filter: none
+- test_kit(row_kit_t::serial_k) ... ok (0.02 s)
+- test_kit(row_kit_t::haswell_k) ... skipped: needs row_kit_t::haswell_k
+7 passed, 0 failed, 6 skipped, seed 42
+```
+
+A failed check prints where it failed, then its details four spaces in - both operands for `expect_equal`, then the message when one was given - and the case goes on, so one run lists every mismatch it reaches.
+A case with a failed check prints its verdict and a `rerun:` line on stderr, naming the binary, the seed, and a filter that selects only that case, then the run moves on:
+
+```text
+  check failed at /path/to/SmashTable/test/ring.cpp:28
+    expected success_k, got invalid_argument_k
+- test_capacity_rules ... FAILED: 1 failed check(s)
+  rerun: build_debug/smashtable_test_ring --seed 42 --filter '^test_capacity_rules$'
+```
+
+The run exits with 1 when a case failed, a check failed outside any case, or the filter selected nothing, and with 3 when `SMASHTABLE_NO_SKIPS=1` refused a skip.
+`SMASHTABLE_TRAP_ON_FAILURE=1` raises `SIGTRAP` at the first failed check instead, which stops a debugger there, or dumps a core without one:
+
+```bash
+SMASHTABLE_TRAP_ON_FAILURE=1 SMASHTABLE_FILTER='^test_capacity_rules$' gdb -ex run --args build_debug/smashtable_test_ring
+```
+
+A crash stops the run with `*** SIGSEGV in case '<label>' - backtrace follows ***` and a backtrace where the C library has one.
+
+The Python suite runs as the CI runs it, after installing the `test` group, and on a free-threaded interpreter once more under contention, as [Compiling Python Bindings](#compiling-python-bindings) shows.
+The header pytest prints names the module it imported, `SmashTable <version> from <path>`, and ends with the same `- Seed: 42, scale: 1, filter: none` line as the C++ runner.
+
+### Environment
+
+Each setting is an environment variable, and in the C++ runners and the benchmark a `--name` flag of the same name overrides it, as `--seed 7` or `--filter='^avl_tree\.'`:
+
+| Variable                     | Flag                | Default    | Meaning                                                                                |
+| :--------------------------- | :------------------ | :--------- | :------------------------------------------------------------------------------------- |
+| `SMASHTABLE_SEED`            | `--seed`            | `42`       | Any unsigned 64-bit seed, or `random` to draw one, which a run prints                  |
+| `SMASHTABLE_FILTER`          | `--filter`          | unset      | Regex searched in C++ case labels, benchmark rows or pytest node ids, else a substring |
+| `SMASHTABLE_SCALE`           | `--scale`           | `1`        | C++ only: multiplier for the rounds of the randomized and threaded suites, like `0.1`  |
+| `SMASHTABLE_TRAP_ON_FAILURE` | `--trap-on-failure` | `0`        | C++ only: raises `SIGTRAP` at the first failed check, to stop there under a debugger   |
+| `SMASHTABLE_NO_SKIPS`        | `--no-skips`        | `0`        | C++ only: exits with 3 when any case skipped, for runners that must cover everything   |
+| `SMASHTABLE_WARMUP`          | `--warmup`          | `1s`       | Benchmark only: untimed run ahead of each row, like `200ms`, `10s` or `2m`             |
+| `SMASHTABLE_TIME_LIMIT`      | `--time-limit`      | `10s`      | Benchmark only: timed run of each row, like `200ms`, `10s` or `2m`                     |
+| `SMASHTABLE_ROWS`            | `--rows`            | `4096`     | Benchmark only: sorted rows per row-kit benchmark                                      |
+| `SMASHTABLE_KEYS`            | `--keys`            | `16777216` | Benchmark only: sorted keys per layout benchmark                                       |
+| `SMASHTABLE_QUERIES`         | `--queries`         | `1048576`  | Benchmark only: queries drawn per benchmark, searched in turn                          |
+
+A switch is off when unset, empty or `0`, and on otherwise, and a count of zero is refused.
+Python reads only the variables, beside `pytest -k` and pytest's own options, and prints the scale it read without sizing anything by it yet.
+
+`SMASHTABLE_SEED` keys every case's own stream by the case's label, as `stream_key(seed, name, index)`, identical in C++ and Python.
+A case's inputs therefore never depend on which cases ran before it, so `SMASHTABLE_SEED` together with `SMASHTABLE_FILTER` is a faithful reproduction recipe, and hunting for a rare defect is a loop in the shell rather than an edit to the source:
+
+```bash
+SMASHTABLE_SEED=random build_debug/smashtable_test_avl_tree                          # A fresh seed, which the run prints
+SMASHTABLE_SCALE=10 build_debug/smashtable_test_snapshot_store --filter='^test_random_'  # Ten times the fuzz rounds
+for seed in $(seq 1 64); do build_debug/smashtable_test_snapshot_store --seed $seed || break; done
+SMASHTABLE_FILTER="SortedMap.*str" python -X faulthandler -m pytest -x                # A filter over pytest node ids
+```
+
+### Writing a Test
+
+A C++ case is a `void` function, or one returning `case_result_t` when it may skip, that `main` runs as `run_test_case("<label>", function, arguments...)`.
+It takes no settings or context, as the run is `test_run`, and it skips only by returning `case_result_t::skipped(reason)`, with a reason like `needs row_kit_t::haswell_k` or `no GPU device`.
+A label spells the code it runs, so it greps to its source: the test function as written, with its template arguments, in call notation when `main` passes a runtime choice, as `test_watch_on_erased_key_can_commit`, `test_reader_holds_its_stamp<strict_serializable_avl_map_t>` and `test_kit(row_kit_t::neon_k)`.
+So `SMASHTABLE_FILTER='^test_reader_holds_its_stamp<'` runs one behaviour over every store, and `SMASHTABLE_FILTER='row_kit_t::neon_k'` one kit.
+Every `main` is the same three steps, as `start_test_run` prints the machine before the settings:
+
+```cpp
+int main(int argc, char **argv) {
+    start_test_run(argc, argv);
+    run_test_case("test_kit(row_kit_t::serial_k)", test_kit, row_kit_t::serial_k);
+    return finish_test_run();
+}
+```
+
+It checks with functions from `test/harness.hpp`, each of which counts a failed check at the caller's line, lets the case go on, and returns whether it held:
+
+- `expect_true(held)`, for any condition;
+- `expect_equal(actual, wanted)`, which compares whole numbers across signedness and prints both operands, naming a status rather than numbering it.
+
+Both take an optional message last, a format string and its arguments, as `expect_equal(set.size(), count, "after {} inserts", count)`.
+Where the step after a failed check would index or dereference past what it checked, the case stops on the check's answer, as in `if (!expect_equal(made.status(), success_k)) return;`.
+A case draws from `split_mix_generator_t generator {case_stream_key()}`, keyed by the run's seed and the case's label, and sizes its rounds through `scaled_iterations(baseline)`, which scales by `SMASHTABLE_SCALE` and floors at 1.
+A wait polls through `spin_until(predicate)`, which gives up after `wait_limit_k`, so a hang fails the case rather than the CI job, as in `expect_true(spin_until([&] { return ready.load(); }))`.
+The allocators a case starves are `stateful_allocator`, over an `allocation_ledger_t` counting `allocations`, `deallocations`, `live_bytes` and `refusals` and refusing from the `refuse_from`-th request, and `refusing_allocator`, which refuses them all.
+
+A Python test is `test_<subject>_<behaviour>`, read as a sentence, with a one-line docstring saying what holds.
+It draws from the `seed` or `rng` fixture, never from a literal seed.
+The seed is `stream_key(SMASHTABLE_SEED, name, step)`, where `name` is the test function and its parameters and `step` is the pytest-repeat step.
+Axis names follow one vocabulary - `container_class`, `key_type`, `value_type`, `value_mode`, `count`, `isolation` and `sharing` - parametrized directly, with the matrices in `test/base.py` named in upper snake case, like `ALL_CLASSES` and `COUNTS`.
+Marks sit above the parametrizes, which run in that order, and parametrize names are tuples.
+`MAX_CASES_PER_TEST` in `test/base.py` caps how many cases one test function expands to, and raising it is a decision for review.
+A test that needs a free-threaded interpreter takes the `@requires_free_threading` mark of `test/base.py`, and anything only a run can find out skips inside a fixture.
+`test/harness.hpp`, `bench/harness.hpp`, `test/base.py` and `test/conftest.py` each hold a pinned `Shared` region, which the pre-commit hook keeps identical to its canonical copy, so edit around it.
+
+### Benchmarks
+
+`bench/harness.hpp` carries the same pinned settings readers as `test/harness.hpp`, so its variables parse, refuse and take `--name` flags the same way, under the same `SMASHTABLE_` prefix.
+It is built on request and never run by CTest:
+
+```bash
+cmake -B build_release -D CMAKE_BUILD_TYPE=Release -D SMASHTABLE_BUILD_TEST=ON -D SMASHTABLE_BUILD_BENCH=ON
+cmake --build build_release
+build_release/smashtable_bench_row_search --filter='layouts\.u64\.' --time-limit=200ms
+```
+
+A run prints the same machine header as the tests, its `- Name: value` settings, and one row per benchmark, named in the label grammar as `row_search.rows.<bytes>b.<keys>.<row layout>.<kit>` and `row_search.layouts.<keys>.<bytes>b.<tree>.<kit>`, which is what `SMASHTABLE_FILTER` matches.
+
+### Devices
+
+The row kits are the CPU's devices: each case that runs per kit, like `test_kit_rows(row_kit_t::<kit>_k)` in `_row_search` and `test_kit(row_kit_t::<kit>_k)` in `_flat_set`, `_hash_index` and `_elias_fano`, runs every kit this build compiled and this machine supports, and reports `skipped: needs row_kit_t::<kit>_k` for the rest.
+`test/atomic_cuda.cu` drives the pinned lock-free table from kernels and from the host over one managed allocation, and is built only where `nvcc` is visible, for the code `SMASHTABLE_CUDA_ARCH` names.
+On a machine without a device its cases report `skipped: no GPU device`, on a device older than compute capability 7.0 `skipped: needs compute capability 7.0`, and the mixed case without concurrent managed access `skipped: needs cudaDevAttrConcurrentManagedAccess`.
+
+### Private Surface Waivers
+
+None: every test reaches the library through `include/smashtable/` and the Python module.
 
 ## Code Styling Guidelines
 

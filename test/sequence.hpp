@@ -30,7 +30,7 @@ template <typename container_type_>
 
 /** Tests that a sequence names its element and its allocator the way the library does. */
 template <typename container_type_>
-void test_sequence_tags() {
+void check_sequence_tags() {
 
     using container_t = container_type_;
     static_assert(std::is_same_v<typename container_t::value_type, typename container_t::value_t>,
@@ -44,33 +44,33 @@ void test_sequence_tags() {
 
 /** Tests that elements read back in the order they arrived, and that clearing keeps the slots. */
 template <typename container_type_>
-void test_sequence_order(std::size_t size = 64) {
+void check_sequence_order(std::size_t size = 64) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
 
     expected<container_t> made = container_t::make(size);
-    st_verify_(made);
+    if (!expect_equal(made.status(), success_k)) return;
     container_t &container = *made;
-    st_verify_(container.empty());
-    st_verify_ge_(container.capacity(), size);
+    expect_true(container.empty());
+    expect_true(container.capacity() >= size);
 
     for (std::size_t index = 0; index < size; ++index) {
-        st_verify_(append_to(container, member_t(static_cast<trivial_id_t>(index))));
-        st_verify_eq_(container.size(), index + 1);
+        expect_equal(append_to(container, member_t(static_cast<trivial_id_t>(index))), success_k);
+        expect_equal(container.size(), index + 1);
     }
     for (std::size_t index = 0; index < size; ++index)
-        st_verify_eq_(container[index].unique_id, static_cast<trivial_id_t>(index));
+        expect_equal(container[index].unique_id, static_cast<trivial_id_t>(index));
 
     container.clear();
-    st_verify_(container.empty());
-    st_verify_eq_(container.size(), 0u);
-    st_verify_ge_(container.capacity(), size);
+    expect_true(container.empty());
+    expect_equal(container.size(), 0u);
+    expect_true(container.capacity() >= size);
 }
 
 /** Tests every element a sequence holds is destroyed exactly once, by a clear or by teardown. */
 template <typename container_type_>
-void test_sequence_element_lifetimes(std::size_t size = 32) {
+void check_sequence_element_lifetimes(std::size_t size = 32) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -79,47 +79,47 @@ void test_sequence_element_lifetimes(std::size_t size = 32) {
     counted_key_t::reset();
     {
         expected<container_t> made = container_t::make(size);
-        st_verify_(made);
+        if (!expect_equal(made.status(), success_k)) return;
         for (std::size_t index = 0; index < size; ++index)
-            st_verify_(append_to(*made, member_t(static_cast<trivial_id_t>(index))));
+            expect_equal(append_to(*made, member_t(static_cast<trivial_id_t>(index))), success_k);
         made->clear();
-        st_verify_eq_(counted_key_t::alive(), std::ptrdiff_t {0});
+        expect_equal(counted_key_t::alive(), std::ptrdiff_t {0});
 
         for (std::size_t index = 0; index < size; ++index)
-            st_verify_(append_to(*made, member_t(static_cast<trivial_id_t>(index))));
+            expect_equal(append_to(*made, member_t(static_cast<trivial_id_t>(index))), success_k);
     }
-    counted_key_t::verify_balanced();
+    counted_key_t::check_balanced();
 }
 
 /** Tests that a move hands the whole sequence over and leaves the source empty. */
 template <typename container_type_>
-void test_sequence_move_semantics(std::size_t size = 16) {
+void check_sequence_move_semantics(std::size_t size = 16) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
 
     expected<container_t> made = container_t::make(size);
-    st_verify_(made);
+    if (!expect_equal(made.status(), success_k)) return;
     for (std::size_t index = 0; index < size; ++index)
-        st_verify_(append_to(*made, member_t(static_cast<trivial_id_t>(index))));
+        expect_equal(append_to(*made, member_t(static_cast<trivial_id_t>(index))), success_k);
 
     container_t moved_into(std::move(*made));
-    st_verify_eq_(moved_into.size(), size);
-    st_verify_(made->empty());
+    if (!expect_equal(moved_into.size(), size)) return;
+    expect_true(made->empty());
     for (std::size_t index = 0; index < size; ++index)
-        st_verify_eq_(moved_into[index].unique_id, static_cast<trivial_id_t>(index));
+        expect_equal(moved_into[index].unique_id, static_cast<trivial_id_t>(index));
 
     container_t assigned_into;
     assigned_into = std::move(moved_into);
-    st_verify_eq_(assigned_into.size(), size);
-    st_verify_(moved_into.empty());
+    if (!expect_equal(assigned_into.size(), size)) return;
+    expect_true(moved_into.empty());
     for (std::size_t index = 0; index < size; ++index)
-        st_verify_eq_(assigned_into[index].unique_id, static_cast<trivial_id_t>(index));
+        expect_equal(assigned_into[index].unique_id, static_cast<trivial_id_t>(index));
 }
 
 /** Tests that a sequence over a budgeted allocator returns every block it was granted. */
 template <typename container_type_>
-void test_sequence_allocator_ledger(std::size_t size = 16) {
+void check_sequence_allocator_ledger(std::size_t size = 16) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -127,23 +127,23 @@ void test_sequence_allocator_ledger(std::size_t size = 16) {
     allocation_ledger_t ledger;
     {
         expected<container_t> made = container_t::make(size, typename container_t::allocator_t(1, ledger));
-        st_verify_(made);
-        st_verify_eq_(ledger.live_allocations(), std::ptrdiff_t {1});
+        if (!expect_equal(made.status(), success_k)) return;
+        expect_equal(ledger.live_allocations(), std::ptrdiff_t {1});
         for (std::size_t index = 0; index < size; ++index)
-            st_verify_(append_to(*made, member_t(static_cast<trivial_id_t>(index))));
+            expect_equal(append_to(*made, member_t(static_cast<trivial_id_t>(index))), success_k);
 
         // A move assignment carries the allocator, so the destination frees what the source was granted.
         container_t assigned_into;
         assigned_into = std::move(*made);
-        st_verify_eq_(assigned_into.size(), size);
+        expect_equal(assigned_into.size(), size);
     }
-    ledger.verify_balanced();
+    ledger.check_balanced();
 
     ledger.reset();
     ledger.refuse_everything();
-    st_verify_eq_(container_t::make(size, typename container_t::allocator_t(2, ledger)).status(),
-                  status_t::out_of_memory_heap_k);
-    ledger.verify_balanced();
+    expect_equal(container_t::make(size, typename container_t::allocator_t(2, ledger)).status(),
+                 status_t::out_of_memory_heap_k);
+    ledger.check_balanced();
 }
 
 #pragma endregion Sequence Test Templates

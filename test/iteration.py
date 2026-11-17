@@ -17,26 +17,26 @@ import gc
 
 import pytest
 from base import (
-    enumerable_class_names,
+    ENUMERABLE_CLASSES,
+    KEY_TYPES,
+    SORTED_CLASSES,
     is_map_class,
-    key_types,
     populate,
-    sorted_class_names,
 )
 
 # region Termination
 
 
-@pytest.mark.parametrize("class_name", enumerable_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", ENUMERABLE_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_iterating_nothing_stops_immediately(container):
     """An empty container yields nothing rather than hanging or raising."""
     assert list(container) == []
     assert list(iter(container)) == []
 
 
-@pytest.mark.parametrize("class_name", enumerable_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", ENUMERABLE_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_each_key_is_visited_exactly_once(container, keygen):
     """A walk sees every element and never repeats one."""
     keys = keygen(50)
@@ -51,7 +51,7 @@ def test_each_key_is_visited_exactly_once(container, keygen):
 # region Mutation during iteration
 
 
-@pytest.mark.parametrize("class_name", sorted_class_names)
+@pytest.mark.parametrize("container_class", SORTED_CLASSES)
 def test_insertion_ahead_of_the_cursor_is_observed(container_class):
     """A key inserted beyond the cursor appears, because the position is re-derived each step."""
     container = container_class(key="int")
@@ -64,7 +64,7 @@ def test_insertion_ahead_of_the_cursor_is_observed(container_class):
     assert walked == [0, 5, 10]
 
 
-@pytest.mark.parametrize("class_name", sorted_class_names)
+@pytest.mark.parametrize("container_class", SORTED_CLASSES)
 def test_insertion_behind_the_cursor_is_not_observed(container_class):
     """A key inserted below the cursor is missed, which is the cost of not snapshotting."""
     container = container_class(key="int")
@@ -77,7 +77,7 @@ def test_insertion_behind_the_cursor_is_not_observed(container_class):
     assert walked == [5, 10]
 
 
-@pytest.mark.parametrize("class_name", sorted_class_names)
+@pytest.mark.parametrize("container_class", SORTED_CLASSES)
 def test_deleting_the_current_key_does_not_strand_the_walk(container_class):
     """Erasing the key just yielded is harmless: the cursor is a value, not a node pointer."""
     container = container_class(key="int")
@@ -92,7 +92,7 @@ def test_deleting_the_current_key_does_not_strand_the_walk(container_class):
     assert len(container) == 0
 
 
-@pytest.mark.parametrize("class_name", sorted_class_names)
+@pytest.mark.parametrize("container_class", SORTED_CLASSES)
 def test_deletion_ahead_of_the_cursor_is_skipped(container_class):
     """A key removed before the cursor reaches it is simply never yielded."""
     container = container_class(key="int")
@@ -119,7 +119,7 @@ runaway_ceiling = 100
 """
 
 
-@pytest.mark.parametrize("class_name", enumerable_class_names)
+@pytest.mark.parametrize("container_class", ENUMERABLE_CLASSES)
 def test_mutation_during_iteration_does_not_raise(container_class):
     """Unlike dict, changing the container mid-walk is legal here."""
     container = container_class(key="int")
@@ -137,13 +137,15 @@ def test_mutation_during_iteration_does_not_raise(container_class):
 def test_a_dict_would_have_raised_on_the_same_sequence():
     """The contrast is deliberate: a dict raises where these containers keep going."""
     model = dict.fromkeys(seeded_keys, 0)
-    with pytest.raises(RuntimeError):
-        for index, _ in enumerate(model):
-            if index == 2:
-                model[key_above_the_seed] = 0
+    walk = iter(model)
+    for _ in range(3):
+        next(walk)
+    model[key_above_the_seed] = 0
+    with pytest.raises(RuntimeError, match="changed size during iteration"):
+        next(walk)
 
 
-@pytest.mark.parametrize("class_name", enumerable_class_names)
+@pytest.mark.parametrize("container_class", ENUMERABLE_CLASSES)
 def test_clear_during_iteration_terminates(container_class):
     """Emptying the container mid-walk ends the walk on the next step rather than looping."""
     container = container_class(key="int")
@@ -163,7 +165,7 @@ def test_clear_during_iteration_terminates(container_class):
 # region Lifetime and independence
 
 
-@pytest.mark.parametrize("class_name", enumerable_class_names)
+@pytest.mark.parametrize("container_class", ENUMERABLE_CLASSES)
 def test_an_iterator_keeps_its_container_alive(container_class):
     """Dropping the last named reference mid-walk must not free the store underneath."""
     container = container_class(key="int")
@@ -178,7 +180,7 @@ def test_an_iterator_keeps_its_container_alive(container_class):
     assert remaining == keys[1:]
 
 
-@pytest.mark.parametrize("class_name", enumerable_class_names)
+@pytest.mark.parametrize("container_class", ENUMERABLE_CLASSES)
 def test_two_walks_do_not_interfere(container_class):
     """Each cursor carries its own position, so nested walks are independent."""
     container = container_class(key="int")
@@ -188,7 +190,7 @@ def test_two_walks_do_not_interfere(container_class):
     assert len(pairs) == len(keys) * len(keys)
 
 
-@pytest.mark.parametrize("class_name", enumerable_class_names)
+@pytest.mark.parametrize("container_class", ENUMERABLE_CLASSES)
 def test_an_exhausted_walk_stays_exhausted(container_class):
     """A cursor that ended does not restart when the container grows again."""
     container = container_class(key="int")

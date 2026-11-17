@@ -16,10 +16,10 @@
  *
  *  Most suites assert a concrete outcome. A threaded one folds its tallies into atomics its main
  *  thread reads after the join, and the few checks that do run inside a worker guard a status the
- *  very next line depends on, aborting there rather than carrying a broken value forward.
+ *  very next line depends on, returning there rather than carrying a broken value forward.
  *
- *  Two are different. @c test_sharded_walks_never_race_erasures and
- *  @c test_sharded_lower_bound_probes_twice drive a walker reading a key an eraser is freeing,
+ *  Two are different. @c check_sharded_walks_never_race_erasures and
+ *  @c check_sharded_lower_bound_probes_twice drive a walker reading a key an eraser is freeing,
  *  which nothing but ThreadSanitizer can see, so their tallies check that the probes ran and TSan
  *  is the oracle for what they found.
  *
@@ -73,7 +73,7 @@ inline constexpr std::size_t sharded_threads_count_k = 4;
  *  const signature and to no non-const one, beside the descending overload taking a fourth tag.
  */
 template <typename container_type_>
-void test_range_walk_takes_partitions_shared() {
+void check_range_walk_takes_partitions_shared() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -103,15 +103,16 @@ void test_range_walk_takes_partitions_shared() {
  *  writer never touches, which is asserted key by key after the join.
  */
 template <typename container_type_>
-void test_sharded_range_walks_share_partitions(std::size_t key_span = 256, std::size_t rounds = 40) {
+void check_sharded_range_walks_share_partitions(std::size_t key_span = 256) {
+    std::size_t const rounds = scaled_iterations(40);
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
 
-    test_range_walk_takes_partitions_shared<container_t>();
+    check_range_walk_takes_partitions_shared<container_t>();
     // The one-mutex wrapper carried the same redundant pair, so it is checked over the same store.
     if constexpr (requires { typename container_t::inner_store_t; })
-        test_range_walk_takes_partitions_shared<locked_store<typename container_t::inner_store_t>>();
+        check_range_walk_takes_partitions_shared<locked_store<typename container_t::inner_store_t>>();
 
     container_t container;
     std::vector<member_t> batch;
@@ -122,9 +123,9 @@ void test_sharded_range_walks_share_partitions(std::size_t key_span = 256, std::
     // A bulk upsert opens a transaction underneath, and a refusal there is an allocation failure -
     // never the serialization conflict this once reported.
     auto const seeded = container.upsert(std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
-    st_verify_(seeded);
-    st_verify_ne_(seeded, status_t::consistency_k, "a bulk upsert that cannot open is out of memory, not in conflict");
-    st_verify_eq_(container.size(), key_span);
+    expect_equal(seeded, success_k);
+    expect_true(seeded != status_t::consistency_k, "a bulk upsert that cannot open is out of memory, not in conflict");
+    expect_equal(container.size(), key_span);
 
     std::atomic<std::size_t> elements_seen {0};
     std::vector<std::thread> threads;
@@ -148,23 +149,25 @@ void test_sharded_range_walks_share_partitions(std::size_t key_span = 256, std::
         threads.emplace_back([&]() noexcept {
             std::size_t counted = 0;
             for (std::size_t round = 0; round != rounds; ++round)
-                st_verify_(container.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(key_span),
-                                           [&](auto const &) noexcept { ++counted; }));
+                expect_equal(container.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(key_span),
+                                             [&](auto const &) noexcept { ++counted; }),
+                             success_k);
             elements_seen += counted;
         });
 
     for (auto &thread : threads) thread.join();
-    st_verify_ne_(elements_seen.load(), 0, "the walkers must have seen something, or this proves nothing");
+    expect_true(elements_seen.load() != 0, "the walkers must have seen something, or this proves nothing");
 
     // The half the writer never touched is still whole, so a walk that skipped an unlock or lost an
     // element to the erasing writer would show here.
     for (std::size_t identifier = key_span / 2; identifier < key_span; ++identifier) {
-        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(identifier)), true);
+        expect_equal(container.contains(trivial_id_to_key<member_t>(identifier)), true);
     }
 
     // Erasing everything reports a status now, and the collection must be empty afterwards.
-    st_verify_(container.erase_range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(key_span * 2)));
-    st_verify_eq_(container.size(), std::size_t {0});
+    expect_equal(container.erase_range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(key_span * 2)),
+                 success_k);
+    expect_equal(container.size(), std::size_t {0});
 }
 
 /**
@@ -175,21 +178,22 @@ void test_sharded_range_walks_share_partitions(std::size_t key_span = 256, std::
  *  is what the documented warning says and what this drives under ThreadSanitizer.
  */
 template <typename container_type_>
-void test_sharded_lower_bound_probes_twice(std::size_t key_span = 128, std::size_t rounds = 60) {
+void check_sharded_lower_bound_probes_twice(std::size_t key_span = 128) {
+    std::size_t const rounds = scaled_iterations(60);
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
 
     container_t container;
     for (std::size_t identifier = 0; identifier < key_span; identifier += 2)
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
+        expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
     // Quiescent: the exact probe answers for an even key, the successor probe for an odd one.
     for (std::size_t identifier = 0; identifier + 2 < key_span; identifier += 2) {
         auto const exact = container.lower_bound_copy(trivial_id_to_key<member_t>(identifier));
-        st_verify_((exact) && "an element present at the bound is its own lower bound");
+        expect_true(exact.has_value(), "an element present at the bound is its own lower bound");
         auto const successor = container.lower_bound_copy(trivial_id_to_key<member_t>(identifier + 1));
-        st_verify_((successor) && "a bound between elements answers with the next one");
+        expect_true(successor.has_value(), "a bound between elements answers with the next one");
     }
 
     std::atomic<std::size_t> answers {0};
@@ -217,7 +221,7 @@ void test_sharded_lower_bound_probes_twice(std::size_t key_span = 128, std::size
     for (auto &thread : threads) thread.join();
     // A liveness guard, not the oracle: what this suite drives is a data race, which only
     // ThreadSanitizer can see. A zero here would mean the probes never ran.
-    st_verify_ne_(answers.load(), 0, "the probes must have answered something, or this proves nothing");
+    expect_true(answers.load() != 0, "the probes must have answered something, or this proves nothing");
 }
 
 /**
@@ -231,14 +235,15 @@ void test_sharded_lower_bound_probes_twice(std::size_t key_span = 128, std::size
  *  threaded walks get is not a number this can pin; only the post-join walk is asserted exactly.
  */
 template <typename container_type_>
-void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::size_t rounds = 200) {
+void check_sharded_walks_never_race_erasures(std::size_t key_span = 400) {
+    std::size_t const rounds = scaled_iterations(200);
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
 
     container_t container;
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
+        expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
     // One walk of the merged order from the seed it is handed, exclusive, answering how many keys it
     // stepped over before running out of successors.
@@ -246,10 +251,12 @@ void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::siz
         std::size_t stepped = 0;
         for (; stepped != key_span; ++stepped) {
             bool advanced = false;
-            st_verify_(container.upper_bound(cursor, [&](auto const &element) noexcept {
-                cursor = decltype(cursor)(mapping_key_or_itself(element));
-                advanced = true;
-            }));
+            expect_equal(container.upper_bound(cursor,
+                                               [&](auto const &element) noexcept {
+                                                   cursor = decltype(cursor)(mapping_key_or_itself(element));
+                                                   advanced = true;
+                                               }),
+                         success_k);
             if (!advanced) break;
         }
         return stepped;
@@ -278,7 +285,7 @@ void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::siz
         });
 
     for (auto &thread : threads) thread.join();
-    st_verify_ne_(steps_walked.load(), 0, "the walkers must have made progress, or this proves nothing");
+    expect_true(steps_walked.load() != 0, "the walkers must have made progress, or this proves nothing");
 
     // The same walk driven by a comparable that is not the identifier, which is what keeps the
     // heterogeneous API reachable: the bound travels to each partition as it arrived, never narrowed
@@ -288,8 +295,8 @@ void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::siz
         using probe_key_t = typename comparator_t::value_type;
         // One short of the whole store: the walk seeds from a default-constructed probe, which orders
         // at the smallest identifier, and an exclusive bound steps past it.
-        st_verify_eq_(walk_from(probe_key_t {}), key_span - 1,
-                      "a heterogeneous bound must walk everything above its seed");
+        expect_equal(walk_from(probe_key_t {}), key_span - 1,
+                     "a heterogeneous bound must walk everything above its seed");
     }
 }
 
@@ -301,7 +308,7 @@ void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::siz
  *  built it has to destroy - a moved-from element still has a destructor - and the buffer has to be
  *  aligned for the element rather than for @c char.
  */
-inline void test_partition_array_leaves_no_scratch_behind() {
+inline void check_partition_array_leaves_no_scratch_behind() {
 
     /** The lifetime events the elements below report, owned by this call rather than the process. */
     struct tally_t {
@@ -328,10 +335,10 @@ inline void test_partition_array_leaves_no_scratch_behind() {
     {
         auto built = generate_array_safely<counted_t, 16>(
             [&tally](std::size_t) noexcept { return expected<counted_t> {counted_t {tally}}; });
-        st_verify_((built) && "every element was offered, so the array must be there");
+        expect_true(built.has_value(), "every element was offered, so the array must be there");
     }
-    st_verify_eq_(tally.misaligned_sources, std::size_t {0});
-    st_verify_eq_(tally.constructed, tally.destructed);
+    expect_equal(tally.misaligned_sources, std::size_t {0});
+    expect_equal(tally.constructed, tally.destructed);
 }
 
 /**
@@ -342,13 +349,13 @@ inline void test_partition_array_leaves_no_scratch_behind() {
  *  several threads opening transactions at once could read and write together.
  */
 template <typename store_type_>
-void test_concurrent_transactions_get_distinct_generations(std::size_t per_thread = 500) {
+void check_concurrent_transactions_get_distinct_generations(std::size_t per_thread = 500) {
 
     using store_t = store_type_;
     using generation_t = typename store_t::generation_t;
 
     auto made = store_t::make();
-    st_verify_((made) && "the store must build");
+    if (!expect_true(made.has_value(), "the store must build")) return;
     auto &store = *made;
 
     std::vector<std::vector<generation_t>> observed(sharded_threads_count_k);
@@ -374,8 +381,8 @@ void test_concurrent_transactions_get_distinct_generations(std::size_t per_threa
             ++total;
         }
 
-    st_verify_ne_(total, 0, "no transaction opened at all");
-    st_verify_eq_(distinct.size(), total, "two transactions were handed the same generation");
+    expect_true(total != 0, "no transaction opened at all");
+    expect_equal(distinct.size(), total, "two transactions were handed the same generation");
 }
 
 /**
@@ -389,7 +396,7 @@ void test_concurrent_transactions_get_distinct_generations(std::size_t per_threa
  *  store's own methods and a transaction reaches its partitions without passing through them.
  */
 template <typename container_type_>
-void test_sharded_stage_unwinds_on_partial_failure(std::size_t key_span = 64) {
+void check_sharded_stage_unwinds_on_partial_failure(std::size_t key_span = 64) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -397,7 +404,7 @@ void test_sharded_stage_unwinds_on_partial_failure(std::size_t key_span = 64) {
 
     // Both a collection and a transaction are built out of the same per-partition array builder, so
     // its bookkeeping is checked here rather than given a suite of its own.
-    test_partition_array_leaves_no_scratch_behind();
+    check_partition_array_leaves_no_scratch_behind();
 
     container_t container;
 
@@ -411,49 +418,49 @@ void test_sharded_stage_unwinds_on_partial_failure(std::size_t key_span = 64) {
         conflicting_partition = partition;
         conflicting_identifier = identifier;
     }
-    st_verify_eq_(conflicting_partition, container_t::partitions_k - 1,
-                  "the refusal must land on the last partition, or the undo has less than everything to walk");
+    expect_equal(conflicting_partition, container_t::partitions_k - 1,
+                 "the refusal must land on the last partition, or the undo has less than everything to walk");
 
     auto transaction = container.transaction();
-    st_verify_((transaction) && "a transaction must open");
-    st_verify_(transaction->watch(trivial_id_to_key<member_t>(conflicting_identifier)));
+    if (!expect_true(transaction.has_value(), "a transaction must open")) return;
+    expect_equal(transaction->watch(trivial_id_to_key<member_t>(conflicting_identifier)), success_k);
 
     // Spread writes across partitions, so a refusal partway through has predecessors to undo.
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
-        st_verify_(transaction->upsert(trivial_id_to_member<member_t>(identifier, identifier)));
+        expect_equal(transaction->upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
     // Publish over the watched key from outside, so the stage is refused where the watch sits.
     {
         auto interloper = container.transaction();
-        st_verify_((interloper) && "the interloping transaction must open");
-        st_verify_(interloper->upsert(trivial_id_to_member<member_t>(conflicting_identifier, key_span)));
-        st_verify_(interloper->stage());
-        st_verify_(interloper->commit());
+        if (!expect_true(interloper.has_value(), "the interloping transaction must open")) return;
+        expect_equal(interloper->upsert(trivial_id_to_member<member_t>(conflicting_identifier, key_span)), success_k);
+        expect_equal(interloper->stage(), success_k);
+        expect_equal(interloper->commit(), success_k);
     }
 
     status_t const refused = transaction->stage();
-    st_verify_((failed(refused)) && "a moved watch must refuse the stage");
-    st_verify_eq_(refused, status_t::read_conflict_k);
+    expect_true(failed(refused), "a moved watch must refuse the stage");
+    expect_equal(refused, status_t::read_conflict_k);
 
     // An undo that never ran leaves the staged prefix holding its writes, so a change set that is
     // whole again is what says every partition handed them back.
-    st_verify_eq_(transaction->changes_count(), key_span,
-                  "a refused stage must roll every partition it staged back into the transaction");
+    expect_equal(transaction->changes_count(), key_span,
+                 "a refused stage must roll every partition it staged back into the transaction");
 
     // Whatever the outcome, nothing may be visible and nothing may be left reserved: a later
     // transaction writing the same keys must find every one of them free to take.
     auto follower = container.transaction();
-    st_verify_((follower) && "a transaction must open after the unwind");
+    if (!expect_true(follower.has_value(), "a transaction must open after the unwind")) return;
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
-        st_verify_(follower->upsert(trivial_id_to_member<member_t>(identifier, identifier + key_span)));
-    st_verify_(follower->stage());
-    st_verify_(follower->commit());
+        expect_equal(follower->upsert(trivial_id_to_member<member_t>(identifier, identifier + key_span)), success_k);
+    expect_equal(follower->stage(), success_k);
+    expect_equal(follower->commit(), success_k);
 
     for (std::size_t identifier = 0; identifier < key_span; ++identifier) {
         auto found = container.find_copy(trivial_id_to_key<member_t>(identifier));
-        st_verify_((found.has_value()) && "every key the follower committed must be visible");
+        expect_true(found.has_value(), "every key the follower committed must be visible");
     }
-    st_verify_eq_(container.size(), key_span);
+    expect_equal(container.size(), key_span);
 }
 
 /** A comparator the caller must supply, since a container cannot manufacture one. */
@@ -482,21 +489,25 @@ inline void test_locked_store_forwards_construction_and_writes() {
     using guarded_t = locked_store<inner_t>;
 
     auto made = guarded_t::make(no_default_less_t {7}, std::allocator<entry_t> {});
-    st_verify_((made) && "a comparator without a default constructor must still reach the inner store");
+    if (!expect_true(made.has_value(), "a comparator without a default constructor must still reach the inner store"))
+        return;
     auto &store = *made;
-    st_verify_(store.upsert({1, 100}));
+    expect_equal(store.upsert({1, 100}), success_k);
 
     bool inserted = false, existing = false;
-    st_verify_(store.insert_if_missing(
-        {1, 999}, [&](entry_t const &) noexcept { inserted = true; },
-        [&](entry_t const &) noexcept { existing = true; }));
-    st_verify_((!inserted && existing) && "an occupied key must report the incumbent, not a fresh insert");
+    expect_equal(store.insert_if_missing(
+                     {1, 999}, [&](entry_t const &) noexcept { inserted = true; },
+                     [&](entry_t const &) noexcept { existing = true; }),
+                 success_k);
+    expect_true(!inserted && existing, "an occupied key must report the incumbent, not a fresh insert");
 
     bool found = false, missing = false;
-    st_verify_(store.erase(
-        std::uint64_t {1}, [&](entry_t const &) noexcept { found = true; }, [&]() noexcept { missing = true; }));
-    st_verify_((found && !missing) && "erase must report presence without a second probe");
-    st_verify_eq_(store.size(), 0u);
+    expect_equal(
+        store.erase(
+            std::uint64_t {1}, [&](entry_t const &) noexcept { found = true; }, [&]() noexcept { missing = true; }),
+        success_k);
+    expect_true(found && !missing, "erase must report presence without a second probe");
+    expect_equal(store.size(), 0u);
 }
 
 /** What one reader thread saw, summed after the join rather than under an atomic. */
@@ -556,14 +567,15 @@ static commit_span_sweep_t read_every_key(reader_type_ &reader, std::size_t keys
  *  weaker rung carries is pinned by a schedule at the end instead.
  */
 template <typename container_type_>
-void test_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16, std::size_t rounds = 300) {
+void check_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16) {
+    std::size_t const rounds = scaled_iterations(300);
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
 
     container_t container;
     for (std::size_t identifier = 0; identifier != keys_count; ++identifier)
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, 0)));
+        expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier, 0)), success_k);
 
     std::atomic<bool> writing {true};
 
@@ -577,7 +589,7 @@ void test_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16,
     // Every round writes the same value to every key, so any two keys disagreeing is a commit read
     // half applied - the one thing a snapshot spanning the partitions has to make impossible.
     threads.emplace_back([&]() noexcept {
-        while (readers_ready.load() != sharded_threads_count_k) std::this_thread::yield();
+        expect_true(spin_until([&] { return readers_ready.load() == sharded_threads_count_k; }));
         for (std::size_t round = 1; round <= rounds; ++round) {
             auto writer = container.transaction();
             if (!writer) break;
@@ -621,30 +633,30 @@ void test_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16,
 
     // The gate above starts the writer only once every reader is looping, so this can only trip if a
     // reader gave up before taking a single pass.
-    st_verify_ne_(total.passes, std::size_t {0}, "no reader ever crossed the writer, so this proves nothing");
-    st_verify_eq_(total.refused, std::size_t {0}, "a point read inside an open transaction must not fail");
-    st_verify_eq_(total.missing, std::size_t {0},
-                  "every key was seeded before the readers started, so none may go missing");
+    expect_true(total.passes != std::size_t {0}, "no reader ever crossed the writer, so this proves nothing");
+    expect_equal(total.refused, std::size_t {0}, "a point read inside an open transaction must not fail");
+    expect_equal(total.missing, std::size_t {0},
+                 "every key was seeded before the readers started, so none may go missing");
 
     if constexpr (at_least(container_t::isolation_k, whole_commits_from_k))
-        st_verify_eq_(total.torn, std::size_t {0}, "a reader saw one commit half applied across partitions");
-    else st_verify_ne_(total.torn, std::size_t {0}, "a level that licenses a torn walk never produced one");
+        expect_equal(total.torn, std::size_t {0}, "a reader saw one commit half applied across partitions");
+    else expect_true(total.torn != std::size_t {0}, "a level that licenses a torn walk never produced one");
 
     // Repeating the walk inside one transaction is a separate promise, which only a snapshot makes.
     if constexpr (at_least(container_t::isolation_k, repeatable_reads_from_k)) {
-        st_verify_eq_(total.unrepeatable, std::size_t {0}, "one transaction read two different commits");
+        expect_equal(total.unrepeatable, std::size_t {0}, "one transaction read two different commits");
     }
     else {
         // Whether any threaded pair straddled a commit is the scheduler's to decide, so the licence
         // below the rung is pinned by a schedule rather than counted out of the race above.
         auto reader = container.transaction();
-        st_verify_(reader);
+        if (!expect_equal(reader.status(), success_k)) return;
         commit_span_sweep_t const before = read_every_key<member_t>(*reader, keys_count);
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(0, before.first_value + 1)));
+        expect_equal(container.upsert(trivial_id_to_member<member_t>(0, before.first_value + 1)), success_k);
 
         commit_span_sweep_t const after = read_every_key<member_t>(*reader, keys_count);
-        st_verify_ne_(after.first_value, before.first_value,
-                      "a level below repeatable reads must show a commit landing mid-transaction");
+        expect_true(after.first_value != before.first_value,
+                    "a level below repeatable reads must show a commit landing mid-transaction");
     }
 }
 
@@ -656,14 +668,16 @@ void test_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16,
  *  nearly every round here, which is what makes the refusals frequent enough to check.
  */
 template <typename container_type_>
-void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::size_t rounds = 60) {
+void test_refused_commit_publishes_nothing() {
+    constexpr std::size_t keys_count = 128;
+    std::size_t const rounds = scaled_iterations(60);
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
 
     container_t container;
     for (std::size_t identifier = 0; identifier != keys_count; ++identifier)
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, 0)));
+        expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier, 0)), success_k);
 
     std::atomic<std::size_t> commit_refusals {0};
     std::atomic<std::size_t> published_refusals {0};
@@ -675,12 +689,13 @@ void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::si
         ++commit_refusals;
         bool published = false;
         for (std::size_t identifier = 0; identifier != keys_count && !published; ++identifier)
-            st_verify_(container.find(
-                trivial_id_to_key<member_t>(identifier),
-                [&](auto const &member) noexcept {
-                    published = published || static_cast<std::size_t>(member.mapped) == marker;
-                },
-                []() noexcept {}));
+            expect_equal(container.find(
+                             trivial_id_to_key<member_t>(identifier),
+                             [&](auto const &member) noexcept {
+                                 published = published || static_cast<std::size_t>(member.mapped) == marker;
+                             },
+                             []() noexcept {}),
+                         success_k);
         if (published) ++published_refusals;
     };
 
@@ -690,15 +705,15 @@ void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::si
     {
         auto first = container.transaction();
         auto second = container.transaction();
-        st_verify_(first);
-        st_verify_(second);
-        st_verify_(first->upsert(trivial_id_to_member<member_t>(0, 1)));
-        st_verify_(second->upsert(trivial_id_to_member<member_t>(0, 2)));
-        st_verify_(first->stage());
-        st_verify_(second->stage());
-        st_verify_(first->commit());
-        st_verify_eq_(second->commit(), status_t::write_conflict_k,
-                      "a second writer over one key must be refused for writing it");
+        if (!expect_equal(first.status(), success_k)) return;
+        if (!expect_equal(second.status(), success_k)) return;
+        expect_equal(first->upsert(trivial_id_to_member<member_t>(0, 1)), success_k);
+        expect_equal(second->upsert(trivial_id_to_member<member_t>(0, 2)), success_k);
+        expect_equal(first->stage(), success_k);
+        expect_equal(second->stage(), success_k);
+        expect_equal(first->commit(), success_k);
+        expect_equal(second->commit(), status_t::write_conflict_k,
+                     "a second writer over one key must be refused for writing it");
         note_refusal(2);
         [[maybe_unused]] status_t const undone = second->reset();
     }
@@ -729,9 +744,9 @@ void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::si
         });
 
     for (auto &thread : threads) thread.join();
-    st_verify_eq_(published_refusals.load(), 0, "a commit that refused had already published its writes");
+    expect_equal(published_refusals.load(), 0, "a commit that refused had already published its writes");
     // The staged pair above guarantees one, so this can only trip if a refusal stopped being counted.
-    st_verify_ne_(commit_refusals.load(), 0, "no commit ever refused, so nothing here was exercised");
+    expect_true(commit_refusals.load() != 0, "no commit ever refused, so nothing here was exercised");
 }
 
 /**
@@ -744,15 +759,16 @@ void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::si
  *  promise: they may or may not turn up, and either answer is allowed, but never twice in one walk.
  */
 template <typename container_type_>
-void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count = 128, std::size_t churn_count = 128,
-                                                        std::size_t rounds = 40) {
+void check_sharded_enumeration_sees_every_stable_element(std::size_t stable_count = 128,
+                                                         std::size_t churn_count = 128) {
+    std::size_t const rounds = scaled_iterations(40);
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
 
     container_t container;
     for (std::size_t identifier = 0; identifier != stable_count; ++identifier)
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
+        expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
     std::atomic<bool> churning {true};
     std::atomic<bool> churn_started {false};
@@ -776,13 +792,14 @@ void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count
     for (std::size_t thread_index = 0; thread_index != sharded_threads_count_k; ++thread_index)
         walkers.emplace_back([&]() noexcept {
             std::vector<std::size_t> visits(stable_count + churn_count, 0);
-            while (!churn_started.load()) {}
+            expect_true(spin_until([&] { return churn_started.load(); }));
             do {
                 for (std::size_t &seen : visits) seen = 0;
-                st_verify_(container.for_each([&](member_t const &member) noexcept {
+                expect_equal(container.for_each([&](member_t const &member) noexcept {
                     std::size_t const identifier = static_cast<std::size_t>(member.unique_id);
                     if (identifier < visits.size()) ++visits[identifier];
-                }));
+                }),
+                             success_k);
                 for (std::size_t identifier = 0; identifier != stable_count; ++identifier)
                     if (visits[identifier] == 0) ++stable_misses;
                 for (std::size_t identifier = 0; identifier != visits.size(); ++identifier)
@@ -794,10 +811,10 @@ void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count
     writer.join();
     for (auto &walker : walkers) walker.join();
 
-    st_verify_ge_(walks_taken.load(), sharded_threads_count_k,
-                  "every walker must complete a walk begun after the writer started, or this proves nothing");
-    st_verify_eq_(stable_misses.load(), 0, "an element present for the whole walk was never handed over");
-    st_verify_eq_(repeat_visits.load(), 0, "one walk handed the same key to the callback twice");
+    expect_true(walks_taken.load() >= sharded_threads_count_k,
+                "every walker must complete a walk begun after the writer started, or this proves nothing");
+    expect_equal(stable_misses.load(), 0, "an element present for the whole walk was never handed over");
+    expect_equal(repeat_visits.load(), 0, "one walk handed the same key to the callback twice");
 }
 
 /**
@@ -825,12 +842,12 @@ struct publication_gate_t {
         armed.store(false, std::memory_order_release);
     }
     static void wait_until_reached() noexcept {
-        while (!reached.load(std::memory_order_acquire)) std::this_thread::yield();
+        expect_true(spin_until([] { return reached.load(std::memory_order_acquire); }));
     }
     static void pass(std::int64_t key) noexcept {
         if (key != gated_key_k || !armed.load(std::memory_order_acquire)) return;
         reached.store(true, std::memory_order_release);
-        while (holding.load(std::memory_order_acquire)) std::this_thread::yield();
+        expect_true(spin_until([] { return !holding.load(std::memory_order_acquire); }));
     }
 };
 
@@ -853,17 +870,17 @@ struct gated_less_t {
  *  window deliberate rather than hoped for, by stopping an earlier commit mid-publication.
  */
 template <typename container_type_>
-void test_commit_is_visible_to_what_opens_after_it() {
+void check_commit_is_visible_to_what_opens_after_it() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
     constexpr bool waits_k = at_least(container_t::isolation_k, isolation_t::strict_serializable_k);
 
     auto made = container_t::make(gated_less_t {}, hash<std::int64_t> {});
-    st_verify_(made);
+    if (!expect_equal(made.status(), success_k)) return;
     container_t &store = *made;
 
-    st_verify_(store.upsert(member_t {publication_gate_t::gated_key_k, 0}));
+    expect_equal(store.upsert(member_t {publication_gate_t::gated_key_k, 0}), success_k);
 
     // The second key must land in another partition, or the later commit waits on the mutex the held
     // one owns and the test times the wrong wait.
@@ -876,15 +893,15 @@ void test_commit_is_visible_to_what_opens_after_it() {
     // one of them belongs to the held commit, so a transaction opened during the hold would be waiting
     // on a mutex rather than on the watermark, which is not the wait under test.
     auto opened = store.transaction();
-    st_verify_(opened);
+    if (!expect_equal(opened.status(), success_k)) return;
     auto writer = std::move(*opened);
 
     // The earlier commit, stopped inside its own publication, so its stamp stays in flight and pins the
     // watermark one below itself for as long as the gate holds.
     auto holder = store.transaction();
-    st_verify_(holder);
-    st_verify_(holder->upsert(member_t {publication_gate_t::gated_key_k, 1}));
-    st_verify_(holder->stage());
+    if (!expect_equal(holder.status(), success_k)) return;
+    expect_equal(holder->upsert(member_t {publication_gate_t::gated_key_k, 1}), success_k);
+    expect_equal(holder->stage(), success_k);
 
     publication_gate_t::arm();
     std::thread earlier {[&]() noexcept { [[maybe_unused]] status_t const answered = holder->commit(); }};
@@ -903,14 +920,14 @@ void test_commit_is_visible_to_what_opens_after_it() {
         // Opening this one is itself the question: a strict commit has already waited by the time it
         // returns, so nothing is held and the snapshot it draws covers its own write.
         auto reader = store.transaction();
-        st_verify_(reader);
+        if (!expect_equal(reader.status(), success_k)) return;
         bool found = false;
         [[maybe_unused]] status_t const read =
             reader->find(later_key, [&](member_t const &member) noexcept { found = member.mapped == 42; }, no_op_t {});
         saw_its_own_commit.store(found, std::memory_order_release);
     }};
 
-    while (!reached_commit.load(std::memory_order_acquire)) std::this_thread::yield();
+    expect_true(spin_until([&] { return reached_commit.load(std::memory_order_acquire); }));
 
     // Nothing below races. The gate holds an older stamp in flight, so the watermark cannot reach the
     // later one, and a strict commit has no state in which it is allowed to answer - the sleep only
@@ -918,8 +935,8 @@ void test_commit_is_visible_to_what_opens_after_it() {
     // not something a second thread can assert.
     if constexpr (waits_k) {
         std::this_thread::sleep_for(std::chrono::milliseconds {50});
-        st_verify_((!answered_commit.load(std::memory_order_acquire)) &&
-                   "a strict commit cannot answer while an earlier commit still pins the watermark");
+        expect_true(!answered_commit.load(std::memory_order_acquire),
+                    "a strict commit cannot answer while an earlier commit still pins the watermark");
     }
 
     publication_gate_t::release();
@@ -927,19 +944,22 @@ void test_commit_is_visible_to_what_opens_after_it() {
     earlier.join();
 
     if constexpr (waits_k)
-        st_verify_(saw_its_own_commit.load(std::memory_order_acquire) &&
-                   "a transaction opened after a strict commit returned must see it");
+        expect_true(saw_its_own_commit.load(std::memory_order_acquire),
+                    "a transaction opened after a strict commit returned must see it");
 
     // Both writes land at either level; only when they become visible differs.
     bool gated_is_current = false;
     bool later_is_current = false;
-    st_verify_(store.find(
-        publication_gate_t::gated_key_k,
-        [&](member_t const &member) noexcept { gated_is_current = member.mapped == 1; }, no_op_t {}));
-    st_verify_(store.find(
-        later_key, [&](member_t const &member) noexcept { later_is_current = member.mapped == 42; }, no_op_t {}));
-    st_verify_(gated_is_current);
-    st_verify_(later_is_current);
+    expect_equal(store.find(
+                     publication_gate_t::gated_key_k,
+                     [&](member_t const &member) noexcept { gated_is_current = member.mapped == 1; }, no_op_t {}),
+                 success_k);
+    expect_equal(
+        store.find(
+            later_key, [&](member_t const &member) noexcept { later_is_current = member.mapped == 42; }, no_op_t {}),
+        success_k);
+    expect_true(gated_is_current);
+    expect_true(later_is_current);
 }
 
 /**
@@ -957,7 +977,7 @@ void test_commit_is_visible_to_what_opens_after_it() {
  *      T1:  stage()  →  commit()  →  phantom from @c validated_reads_from_k up, lands below it
  */
 template <typename container_type_>
-void test_sharded_window_read_is_validated() {
+void check_sharded_window_read_is_validated() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -969,40 +989,42 @@ void test_sharded_window_read_is_validated() {
     constexpr trivial_id_t window_lower_k = 20, window_upper_k = 80;
     container_t container;
     for (trivial_id_t identifier = 0; identifier < span_k; identifier += seeded_every_k)
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, int(identifier))));
+        expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier, int(identifier))), success_k);
 
     // Both bounds are seeded keys, so the half-open window holds one key per step across it.
     auto reader = container.transaction();
-    st_verify_(reader);
+    if (!expect_equal(reader.status(), success_k)) return;
     std::size_t seen = 0;
-    st_verify_(reader->range(trivial_key_t {window_lower_k}, trivial_key_t {window_upper_k},
-                             [&](auto const &) noexcept { ++seen; }));
-    st_verify_eq_(seen, std::size_t {(window_upper_k - window_lower_k) / seeded_every_k},
-                  "the window must hold every key seeded into it");
+    expect_equal(reader->range(trivial_key_t {window_lower_k}, trivial_key_t {window_upper_k},
+                               [&](auto const &) noexcept { ++seen; }),
+                 success_k);
+    expect_equal(seen, std::size_t {(window_upper_k - window_lower_k) / seeded_every_k},
+                 "the window must hold every key seeded into it");
 
     // Written outside the window, so only the recorded read can refuse this transaction.
-    st_verify_(reader->upsert(trivial_id_to_member<member_t>(span_k + 1, 1)));
+    expect_equal(reader->upsert(trivial_id_to_member<member_t>(span_k + 1, 1)), success_k);
 
     auto other = container.transaction();
-    st_verify_(other);
-    st_verify_(other->upsert(trivial_id_to_member<member_t>(45, 45)));
-    st_verify_(other->stage());
-    st_verify_(other->commit());
+    if (!expect_equal(other.status(), success_k)) return;
+    expect_equal(other->upsert(trivial_id_to_member<member_t>(45, 45)), success_k);
+    expect_equal(other->stage(), success_k);
+    expect_equal(other->commit(), success_k);
 
     status_t const staged = reader->stage();
     status_t const answered = succeeded(staged) ? reader->commit() : staged;
 
     if constexpr (at_least(container_t::isolation_k, validated_reads_from_k)) {
-        st_verify_eq_(answered, status_t::phantom_conflict_k,
-                      "a key committed into a scanned window must refuse the commit");
+        expect_equal(answered, status_t::phantom_conflict_k,
+                     "a key committed into a scanned window must refuse the commit");
     }
-    else { st_verify_(answered); }
+    else { expect_equal(answered, success_k); }
 }
 
 /** A group over two stores in one order is read whole: a reader pinning one store's snapshot and
  *  reading the other at the same stamp sees one round in both, whatever the interleaving. */
 template <typename container_type_>
-void test_group_commit_is_read_whole_across_stores(std::size_t rounds = 300) {
+void test_group_commit_is_read_whole_across_stores() {
+    std::size_t const rounds = scaled_iterations(300);
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -1010,8 +1032,8 @@ void test_group_commit_is_read_whole_across_stores(std::size_t rounds = 300) {
 
     order_t order;
     container_t first {order}, second {order};
-    st_verify_(first.upsert(trivial_id_to_member<member_t>(1, 0)));
-    st_verify_(second.upsert(trivial_id_to_member<member_t>(1, 0)));
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, 0)), success_k);
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(1, 0)), success_k);
 
     std::atomic<bool> writing {true};
     std::atomic<std::size_t> readers_ready {0};
@@ -1022,7 +1044,7 @@ void test_group_commit_is_read_whole_across_stores(std::size_t rounds = 300) {
 
     // Every round writes the same value into both stores, so the two disagreeing is a group read half applied.
     threads.emplace_back([&]() noexcept {
-        while (readers_ready.load() != sharded_threads_count_k) std::this_thread::yield();
+        expect_true(spin_until([&] { return readers_ready.load() == sharded_threads_count_k; }));
         for (std::size_t round = 1; round <= rounds; ++round) {
             auto group = make_transaction_group(first, second);
             if (!group) break;
@@ -1053,14 +1075,15 @@ void test_group_commit_is_read_whole_across_stores(std::size_t rounds = 300) {
         });
 
     for (std::thread &thread : threads) thread.join();
-    st_verify_((passes.load() != 0) && "the readers must have overlapped the writer");
-    st_verify_eq_(torn.load(), std::size_t {0}, "a group in one order is never read half applied");
+    expect_true(passes.load() != 0, "the readers must have overlapped the writer");
+    expect_equal(torn.load(), std::size_t {0}, "a group in one order is never read half applied");
 }
 
 /** Tests that a group over stores in no shared order refuses whole, and that groups racing over
  *  one key neither deadlock on what each still holds nor land in different orders. */
 template <typename first_type_, typename second_type_>
-void test_group_across_orders_commits_whole(std::size_t rounds = 1000) {
+void check_group_across_orders_commits_whole() {
+    std::size_t const rounds = scaled_iterations(1000);
 
     using first_member_t = typename first_type_::value_type;
     using second_member_t = typename second_type_::value_type;
@@ -1072,18 +1095,18 @@ void test_group_across_orders_commits_whole(std::size_t rounds = 1000) {
         first_type_ first;
         second_type_ second;
     } stores;
-    st_verify_(stores.second.upsert(trivial_id_to_member<second_member_t>(0, 0)));
+    expect_equal(stores.second.upsert(trivial_id_to_member<second_member_t>(0, 0)), success_k);
     {
         auto group = make_transaction_group(stores.first, stores.second);
-        st_verify_(group);
-        st_verify_(group->template participant<0>().upsert(trivial_id_to_member<first_member_t>(1, 1)));
-        st_verify_(group->template participant<1>().watch(trivial_id_to_key<second_member_t>(0)));
-        st_verify_(group->stage());
-        st_verify_(stores.second.upsert(trivial_id_to_member<second_member_t>(0, 1)));
-        st_verify_(failed(group->commit()));
-        st_verify_eq_(stores.first.size(), std::size_t {0});
-        st_verify_eq_(group->staging(), staging_t::staged_k);
-        st_verify_(group->rollback());
+        if (!expect_equal(group.status(), success_k)) return;
+        expect_equal(group->template participant<0>().upsert(trivial_id_to_member<first_member_t>(1, 1)), success_k);
+        expect_equal(group->template participant<1>().watch(trivial_id_to_key<second_member_t>(0)), success_k);
+        expect_equal(group->stage(), success_k);
+        expect_equal(stores.second.upsert(trivial_id_to_member<second_member_t>(0, 1)), success_k);
+        expect_true(failed(group->commit()));
+        expect_equal(stores.first.size(), std::size_t {0});
+        expect_equal(group->staging(), staging_t::staged_k);
+        expect_equal(group->rollback(), success_k);
     }
 
     std::vector<std::thread> threads;
@@ -1106,9 +1129,9 @@ void test_group_across_orders_commits_whole(std::size_t rounds = 1000) {
 
     auto first_reader = stores.first.transaction();
     auto second_reader = stores.second.transaction();
-    st_verify_(first_reader && second_reader);
-    st_verify_eq_(read_every_key<first_member_t>(*first_reader, 1).first_value,
-                  read_every_key<second_member_t>(*second_reader, 1).first_value);
+    if (!expect_true(first_reader && second_reader)) return;
+    expect_equal(read_every_key<first_member_t>(*first_reader, 1).first_value,
+                 read_every_key<second_member_t>(*second_reader, 1).first_value);
 }
 
 #pragma endregion Sharded Concurrency

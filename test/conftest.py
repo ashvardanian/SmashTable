@@ -5,12 +5,26 @@ Author: Ash Vardanian
 Date: August 17, 2026
 """
 
+import collections
 import concurrent.futures
+import enum
 import random
+import sys
 import threading
 
 import pytest
-from base import SETTINGS, exported_container_names, free_threaded, make, make_keys, make_values, populate
+from base import (
+    BACKEND_AXES,
+    CONTAINER_CLASS_NAMES,
+    FREE_THREADED,
+    MAX_CASES_PER_TEST,
+    SETTINGS,
+    make,
+    make_keys,
+    make_values,
+    populate,
+    stream_key,
+)
 
 import smashtable as st
 
@@ -18,51 +32,73 @@ import smashtable as st
 def pytest_report_header() -> list[str]:
     """What this run exercises, printed where pytest prints its own header."""
     return [
-        f"- Free-threaded: {str(free_threaded()).lower()}",
-        f"- SmashTable: {st.__version__} from {st.__file__}",
-        f"- Containers: {', '.join(exported_container_names())}",
-        f"- Seed: {SETTINGS.seed}",
-        f"- Filter: {SETTINGS.filter or 'none'}",
+        f"SmashTable {st.__version__} from {st.__file__}",
+        f"- Free-threaded: {str(FREE_THREADED).lower()}",
+        f"- Containers: {', '.join(CONTAINER_CLASS_NAMES)}",
+        f"- Seed: {SETTINGS.seed}, scale: {SETTINGS.scale:g}, filter: {SETTINGS.filter.pattern or 'none'}",
     ]
 
 
+# region Shared Pytest
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Keeps only the tests whose node id `SMASHTABLE_FILTER` selects, on top of any `-k`."""
-    deselected = [item for item in items if not SETTINGS.selects(item.nodeid)]
+    """Refuses a test whose cases outgrow MAX_CASES_PER_TEST, then deselects what the filter setting leaves out."""
+    variants: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
+    for item in items:
+        callspec = getattr(item, "callspec", None)
+        parameters = dict(callspec.params) if callspec is not None else {}
+        parameters.pop("__pytest_repeat_step_number", None)
+        kept = {key: value for key, value in parameters.items() if key not in BACKEND_AXES}
+        variants[(item.module.__name__, getattr(item, "originalname", item.name))].add(repr(kept))
+    oversized = [
+        f"{module}::{name} has {len(cases)}"
+        for (module, name), cases in variants.items()
+        if len(cases) > MAX_CASES_PER_TEST
+    ]
+    if oversized:
+        raise pytest.UsageError(f"over MAX_CASES_PER_TEST={MAX_CASES_PER_TEST}: " + "; ".join(oversized))
+    deselected = [item for item in items if not SETTINGS.filter.selects(item.nodeid)]
     if deselected:
         config.hook.pytest_deselected(items=deselected)
-        items[:] = [item for item in items if SETTINGS.selects(item.nodeid)]
+        items[:] = [item for item in items if SETTINGS.filter.selects(item.nodeid)]
+
+
+def pytest_make_parametrize_id(config: pytest.Config, val: object, argname: str) -> str | None:
+    """Names enum parameters as the code spells them, `Backend.LINUX_URING618`, so an id greps to its source."""
+    return f"{type(val).__name__}.{val.name}" if isinstance(val, enum.Enum) else None
 
 
 @pytest.fixture
-def seed(__pytest_repeat_step_number) -> int:
-    """A per-test seed that moves with the repeat step, so repetitions differ but reproduce.
-
-    The parameter carries no default on purpose: pytest builds a fixture's closure from the
-    parameters that have none, so a defaulted one is never injected and every repeat replays the
-    first step's draws. `pytest-repeat` hands `None` to a test that is not repeated, which is what
-    the `or 0` is for.
-    """
-    return SETTINGS.seed + (__pytest_repeat_step_number or 0)
+def seed(request: pytest.FixtureRequest) -> int:
+    """Share inputs across backends while keeping other parameters and repeat steps distinct."""
+    callspec = getattr(request.node, "callspec", None)
+    parameters = dict(callspec.params) if callspec is not None else {}
+    repeat_step = parameters.pop("__pytest_repeat_step_number", 0)
+    name = request.node.originalname or request.node.name
+    name += repr({key: value for key, value in parameters.items() if key not in BACKEND_AXES})
+    return stream_key(SETTINGS.seed, name, repeat_step)
 
 
 @pytest.fixture
 def rng(seed: int) -> random.Random:
-    """An RNG private to this test, so a neighbour's draws cannot shift this one's."""
+    """A generator private to this test, so a neighbour's draws cannot shift this one's."""
     return random.Random(seed)
 
 
 @pytest.fixture
-def container_class(class_name: str) -> type:
-    """The exported class named by the `class_name` axis, or a skip while phase 2 is pending.
+def unraisable(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Collects what the interpreter reports as unraisable, like a finalizer's exception, for the test to check."""
+    seen: list[object] = []
+    monkeypatch.setattr(sys, "unraisablehook", seen.append)
+    return seen
 
-    A fixture rather than an axis: the axis is the name, which exists in every build, so the
-    matrix and its ids stay stable and a missing class reports as a skip rather than a gap.
-    """
-    resolved = getattr(st, class_name, None)
-    if resolved is None:
-        pytest.skip(f"{class_name} is not exported by this build")
-    return resolved
+
+# endregion Shared Pytest
+
+
+@pytest.fixture
+def key_type() -> str:
+    """The key type of a test that does not sweep it: `int`, as its keys only need to exist."""
+    return "int"
 
 
 @pytest.fixture
@@ -86,21 +122,21 @@ def valuegen(value_type: str, rng: random.Random):
 
 
 @pytest.fixture
-def value_mode(request) -> str:
-    """The container's value mode, defaulting to scalars when a test does not sweep it."""
-    return getattr(request, "param", "scalar")
+def value_mode() -> str:
+    """The value mode of a test that does not sweep it: scalars."""
+    return "scalar"
 
 
 @pytest.fixture
-def isolation(request) -> str | None:
-    """The level asked for, or None to leave the container's default in place."""
-    return getattr(request, "param", None)
+def isolation() -> str | None:
+    """The level of a test that does not sweep it: None, which leaves the container's default in place."""
+    return None
 
 
 @pytest.fixture
-def sharing(request) -> str | None:
-    """How the store is shared, or None to leave the container's default in place."""
-    return getattr(request, "param", None)
+def sharing() -> str | None:
+    """The sharing of a test that does not sweep it: None, which leaves the container's default in place."""
+    return None
 
 
 @pytest.fixture
@@ -110,10 +146,10 @@ def container(container_class: type, key_type: str, value_mode: str, isolation, 
 
 
 @pytest.fixture
-def populated(container, keygen, valuegen, size: int):
-    """`(container, model)` already holding `size` elements."""
-    keys = keygen(size)
-    values = valuegen(size)
+def populated(container, keygen, valuegen, count: int):
+    """`(container, model)` already holding `count` elements."""
+    keys = keygen(count)
+    values = valuegen(count)
     model = populate(container, keys, values)
     return container, model
 

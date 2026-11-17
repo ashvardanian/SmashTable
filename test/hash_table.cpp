@@ -96,90 +96,90 @@ using capped_map_t = hash_map<std::size_t, std::size_t, default_hash_t, equal_to
 #pragma region Basic Operations Tests
 
 /** Tests that reads and teardown tolerate an empty container */
-static void unordered_ops_empty_container_operations() {
-    test_unordered_empty_container_operations<trivial_set_t>();
-    test_unordered_empty_container_operations<strong_set_t>();
-    test_unordered_empty_container_operations<trivial_map_t>();
-    test_unordered_empty_container_operations<guarded_map_t>();
-    test_unordered_empty_container_operations<string_set_t>();
-    test_unordered_empty_container_operations<string_map_t>();
+static void test_empty_container_operations() {
+    check_unordered_empty_container_operations<trivial_set_t>();
+    check_unordered_empty_container_operations<strong_set_t>();
+    check_unordered_empty_container_operations<trivial_map_t>();
+    check_unordered_empty_container_operations<guarded_map_t>();
+    check_unordered_empty_container_operations<string_set_t>();
+    check_unordered_empty_container_operations<string_map_t>();
 }
 
 /** Tests the insert, lookup, overwrite and erase cycle on a single element */
-static void unordered_ops_single_element_operations() {
-    test_unordered_single_element_operations<trivial_set_t>();
-    test_unordered_single_element_operations<strong_set_t>();
-    test_unordered_single_element_operations<trivial_map_t>();
-    test_unordered_single_element_operations<guarded_map_t>();
-    test_unordered_single_element_operations<string_set_t>();
-    test_unordered_single_element_operations<string_map_t>();
+static void test_single_element_operations() {
+    check_unordered_single_element_operations<trivial_set_t>();
+    check_unordered_single_element_operations<strong_set_t>();
+    check_unordered_single_element_operations<trivial_map_t>();
+    check_unordered_single_element_operations<guarded_map_t>();
+    check_unordered_single_element_operations<string_set_t>();
+    check_unordered_single_element_operations<string_map_t>();
 }
 
 /** Tests that growth from an unallocated table preserves every element across many rehashes */
-static void unordered_ops_growth_through_rehashes() {
-    test_unordered_growth_through_rehashes<trivial_set_t>();
-    test_unordered_growth_through_rehashes<strong_set_t>();
-    test_unordered_growth_through_rehashes<trivial_map_t>();
-    test_unordered_growth_through_rehashes<guarded_map_t>();
+static void test_growth_through_rehashes() {
+    check_unordered_growth_through_rehashes<trivial_set_t>();
+    check_unordered_growth_through_rehashes<strong_set_t>();
+    check_unordered_growth_through_rehashes<trivial_map_t>();
+    check_unordered_growth_through_rehashes<guarded_map_t>();
     // ! The string configurations rehash whole heap-allocated keys, so they run a smaller sweep
-    test_unordered_growth_through_rehashes<string_set_t>(1500);
-    test_unordered_growth_through_rehashes<string_map_t>(1500);
+    check_unordered_growth_through_rehashes<string_set_t>(1500);
+    check_unordered_growth_through_rehashes<string_map_t>(1500);
 }
 
 /** Tests that a tombstoned table still finds its survivors, then refills the tombstones */
-static void unordered_ops_tombstone_reuse() {
-    test_unordered_tombstone_reuse<trivial_set_t>();
-    test_unordered_tombstone_reuse<strong_set_t>();
-    test_unordered_tombstone_reuse<trivial_map_t>();
-    test_unordered_tombstone_reuse<guarded_map_t>();
-    test_unordered_tombstone_reuse<string_set_t>(800);
-    test_unordered_tombstone_reuse<string_map_t>(800);
+static void test_tombstone_reuse() {
+    check_unordered_tombstone_reuse<trivial_set_t>();
+    check_unordered_tombstone_reuse<strong_set_t>();
+    check_unordered_tombstone_reuse<trivial_map_t>();
+    check_unordered_tombstone_reuse<guarded_map_t>();
+    check_unordered_tombstone_reuse<string_set_t>(800);
+    check_unordered_tombstone_reuse<string_map_t>(800);
 }
 
 /** Tests that iteration and for_each each visit every live element exactly once */
-static void unordered_ops_full_iteration() {
-    test_unordered_full_iteration<trivial_set_t>();
-    test_unordered_full_iteration<strong_set_t>();
-    test_unordered_full_iteration<trivial_map_t>();
-    test_unordered_full_iteration<guarded_map_t>();
-    test_unordered_full_iteration<string_set_t>(800);
-    test_unordered_full_iteration<string_map_t>(800);
+static void test_full_iteration() {
+    check_unordered_full_iteration<trivial_set_t>();
+    check_unordered_full_iteration<strong_set_t>();
+    check_unordered_full_iteration<trivial_map_t>();
+    check_unordered_full_iteration<guarded_map_t>();
+    check_unordered_full_iteration<string_set_t>(800);
+    check_unordered_full_iteration<string_map_t>(800);
 }
 
 /** Tests move construction, move assignment and swap */
-static void unordered_ops_moves_and_swaps() {
-    test_unordered_moves_and_swaps<trivial_set_t>();
-    test_unordered_moves_and_swaps<strong_set_t>();
-    test_unordered_moves_and_swaps<trivial_map_t>();
-    test_unordered_moves_and_swaps<guarded_map_t>();
-    test_unordered_moves_and_swaps<string_set_t>();
-    test_unordered_moves_and_swaps<string_map_t>();
+static void test_moves_and_swaps() {
+    check_unordered_moves_and_swaps<trivial_set_t>();
+    check_unordered_moves_and_swaps<strong_set_t>();
+    check_unordered_moves_and_swaps<trivial_map_t>();
+    check_unordered_moves_and_swaps<guarded_map_t>();
+    check_unordered_moves_and_swaps<string_set_t>();
+    check_unordered_moves_and_swaps<string_map_t>();
 }
 
 /** Tests reserve idempotence, explicit rehash, clear and shrink_to_fit */
-static void unordered_ops_capacity_management() {
-    test_unordered_capacity_management<trivial_set_t>();
-    test_unordered_capacity_management<strong_set_t>();
-    test_unordered_capacity_management<trivial_map_t>();
-    test_unordered_capacity_management<guarded_map_t>();
-    test_unordered_capacity_management<string_set_t>();
-    test_unordered_capacity_management<string_map_t>();
+static void test_capacity_management() {
+    check_unordered_capacity_management<trivial_set_t>();
+    check_unordered_capacity_management<strong_set_t>();
+    check_unordered_capacity_management<trivial_map_t>();
+    check_unordered_capacity_management<guarded_map_t>();
+    check_unordered_capacity_management<string_set_t>();
+    check_unordered_capacity_management<string_map_t>();
 }
 
 /** Tests that the load factor stays under the documented cap and the counters stay honest */
-static void unordered_ops_load_factor_consistency() {
-    test_unordered_load_factor_consistency<trivial_set_t>();
-    test_unordered_load_factor_consistency<strong_set_t>();
-    test_unordered_load_factor_consistency<trivial_map_t>();
-    test_unordered_load_factor_consistency<guarded_map_t>();
-    test_unordered_load_factor_consistency<string_set_t>(1000);
-    test_unordered_load_factor_consistency<string_map_t>(1000);
+static void test_load_factor_consistency() {
+    check_unordered_load_factor_consistency<trivial_set_t>();
+    check_unordered_load_factor_consistency<strong_set_t>();
+    check_unordered_load_factor_consistency<trivial_map_t>();
+    check_unordered_load_factor_consistency<guarded_map_t>();
+    check_unordered_load_factor_consistency<string_set_t>(1000);
+    check_unordered_load_factor_consistency<string_map_t>(1000);
 }
 
 /** Tests lookup by string_view, which only the string-keyed configurations support */
-static void unordered_ops_heterogeneous_lookups() {
-    test_unordered_heterogeneous_string_view_lookup<string_set_t>();
-    test_unordered_heterogeneous_string_view_lookup<string_map_t>();
+static void test_heterogeneous_lookups() {
+    check_unordered_heterogeneous_string_view_lookup<string_set_t>();
+    check_unordered_heterogeneous_string_view_lookup<string_map_t>();
 }
 
 #pragma endregion Basic Operations Tests
@@ -187,89 +187,89 @@ static void unordered_ops_heterogeneous_lookups() {
 #pragma region Saturation and Refusal Tests
 
 /** Tests that a table whose allocator stops supplying memory stops storing instead of spinning */
-static void unordered_ops_exhausted_allocator_insertions() {
-    test_unordered_exhausted_allocator_insertions<capped_set_t>();
-    test_unordered_exhausted_allocator_insertions<capped_map_t>();
+static void test_exhausted_allocator_insertions() {
+    check_unordered_exhausted_allocator_insertions<capped_set_t>();
+    check_unordered_exhausted_allocator_insertions<capped_map_t>();
 }
 
 /** Tests that a reporting insertion separates a fresh key from one already present */
-static void unordered_ops_insert_reports_outcome() {
-    test_unordered_insert_reports_outcome<trivial_set_t>();
-    test_unordered_insert_reports_outcome<strong_set_t>();
-    test_unordered_insert_reports_outcome<trivial_map_t>();
-    test_unordered_insert_reports_outcome<guarded_map_t>();
-    test_unordered_insert_reports_outcome<string_set_t>();
-    test_unordered_insert_reports_outcome<string_map_t>();
+static void test_insert_reports_outcome() {
+    check_unordered_insert_reports_outcome<trivial_set_t>();
+    check_unordered_insert_reports_outcome<strong_set_t>();
+    check_unordered_insert_reports_outcome<trivial_map_t>();
+    check_unordered_insert_reports_outcome<guarded_map_t>();
+    check_unordered_insert_reports_outcome<string_set_t>();
+    check_unordered_insert_reports_outcome<string_map_t>();
 }
 
 /** Tests that an insertion with nowhere to go is distinguishable from one that met a duplicate */
-static void unordered_ops_insert_reports_refusal() {
-    test_unordered_insert_reports_refusal<capped_set_t>();
-    test_unordered_insert_reports_refusal<capped_map_t>();
+static void test_insert_reports_refusal() {
+    check_unordered_insert_reports_refusal<capped_set_t>();
+    check_unordered_insert_reports_refusal<capped_map_t>();
 }
 
 /** Tests that overwriting a key the table already holds never consults the allocator */
-static void unordered_ops_present_key_needs_no_room() {
-    test_unordered_present_key_needs_no_room<capped_set_t>();
-    test_unordered_present_key_needs_no_room<capped_map_t>();
+static void test_present_key_needs_no_room() {
+    check_unordered_present_key_needs_no_room<capped_set_t>();
+    check_unordered_present_key_needs_no_room<capped_map_t>();
 }
 
 /** Tests that a pinned table of tombstones blames the probe rather than the heap */
-static void unordered_ops_pinned_tombstone_saturation() {
-    test_unordered_pinned_tombstone_saturation<trivial_map_t>();
-    test_unordered_pinned_tombstone_saturation<guarded_map_t>();
-    test_unordered_pinned_tombstone_saturation<string_map_t>();
+static void test_pinned_tombstone_saturation() {
+    check_unordered_pinned_tombstone_saturation<trivial_map_t>();
+    check_unordered_pinned_tombstone_saturation<guarded_map_t>();
+    check_unordered_pinned_tombstone_saturation<string_map_t>();
 }
 
 /** Tests that the pinned table reports a missing key as a status and through a callback */
-static void unordered_ops_pinned_reports_status() {
-    test_unordered_pinned_reports_status<trivial_map_t>();
-    test_unordered_pinned_reports_status<guarded_map_t>();
-    test_unordered_pinned_reports_status<string_map_t>();
+static void test_pinned_reports_status() {
+    check_unordered_pinned_reports_status<trivial_map_t>();
+    check_unordered_pinned_reports_status<guarded_map_t>();
+    check_unordered_pinned_reports_status<string_map_t>();
 }
 
 /** Tests that a table with every slot taken refuses further keys without inflating its size */
-static void unordered_ops_full_table_refusals() {
-    test_unordered_full_table_refusals<trivial_set_t>();
-    test_unordered_full_table_refusals<strong_set_t>();
-    test_unordered_full_table_refusals<trivial_map_t>();
-    test_unordered_full_table_refusals<guarded_map_t>();
-    test_unordered_full_table_refusals<string_set_t>();
-    test_unordered_full_table_refusals<string_map_t>();
+static void test_full_table_refusals() {
+    check_unordered_full_table_refusals<trivial_set_t>();
+    check_unordered_full_table_refusals<strong_set_t>();
+    check_unordered_full_table_refusals<trivial_map_t>();
+    check_unordered_full_table_refusals<guarded_map_t>();
+    check_unordered_full_table_refusals<string_set_t>();
+    check_unordered_full_table_refusals<string_map_t>();
 }
 
 /** Tests that a pinned table with no free slot reports the refusal instead of probing forever */
-static void unordered_ops_pinned_saturation() {
-    test_unordered_pinned_saturation<trivial_map_t>();
-    test_unordered_pinned_saturation<guarded_map_t>();
-    test_unordered_pinned_saturation<string_map_t>();
+static void test_pinned_saturation() {
+    check_unordered_pinned_saturation<trivial_map_t>();
+    check_unordered_pinned_saturation<guarded_map_t>();
+    check_unordered_pinned_saturation<string_map_t>();
 }
 
 /** Tests that a rehash asking for nothing compacts rather than dropping every slot */
-static void unordered_ops_rehash_to_nothing() {
-    test_unordered_rehash_to_nothing<trivial_set_t>();
-    test_unordered_rehash_to_nothing<strong_set_t>();
-    test_unordered_rehash_to_nothing<trivial_map_t>();
-    test_unordered_rehash_to_nothing<guarded_map_t>();
-    test_unordered_rehash_to_nothing<string_set_t>();
-    test_unordered_rehash_to_nothing<string_map_t>();
+static void test_rehash_to_nothing() {
+    check_unordered_rehash_to_nothing<trivial_set_t>();
+    check_unordered_rehash_to_nothing<strong_set_t>();
+    check_unordered_rehash_to_nothing<trivial_map_t>();
+    check_unordered_rehash_to_nothing<guarded_map_t>();
+    check_unordered_rehash_to_nothing<string_set_t>();
+    check_unordered_rehash_to_nothing<string_map_t>();
 }
 
 /** Tests that an element count no power of two can cover fails instead of yielding one bucket */
-static void unordered_ops_unrepresentable_capacity() {
-    test_unordered_unrepresentable_capacity<trivial_set_t>();
-    test_unordered_unrepresentable_capacity<trivial_map_t>();
-    test_unordered_unrepresentable_capacity<string_map_t>();
+static void test_unrepresentable_capacity() {
+    check_unordered_unrepresentable_capacity<trivial_set_t>();
+    check_unordered_unrepresentable_capacity<trivial_map_t>();
+    check_unordered_unrepresentable_capacity<string_map_t>();
 }
 
 /** Tests that a move into fewer slots than elements refuses up front and leaves the source whole */
-static void unordered_ops_move_into_too_few_slots() {
+static void test_move_into_too_few_slots() {
     trivial_set_t set;
-    for (std::size_t key = 0; key != 100; ++key) st_verify_(set.upsert(std::size_t {key}));
+    for (std::size_t key = 0; key != 100; ++key) expect_equal(set.upsert(std::size_t {key}), success_k);
     trivial_set_t const moved = set.move_to_new(hash_slots_count_t::from_slots(32));
-    st_verify_eq_(moved.bucket_count(), 0u);
-    st_verify_eq_(set.size(), 100u);
-    for (std::size_t key = 0; key != 100; ++key) st_verify_eq_(set.contains(key), true);
+    expect_equal(moved.bucket_count(), 0u);
+    expect_equal(set.size(), 100u);
+    for (std::size_t key = 0; key != 100; ++key) expect_equal(set.contains(key), true);
 }
 
 #pragma endregion Saturation and Refusal Tests
@@ -295,119 +295,120 @@ std::vector<key_type_> extreme_keys() {
 /** Keys at both ends of the range survive a find, an erase, an upsert into the tombstone it left,
  *  and a @c clear that leaves their bytes behind in the key region. */
 template <typename map_type_>
-void verify_extreme_keys() {
+void check_extreme_keys() {
     using key_t = typename map_type_::key_type;
     using owned_t = typename map_type_::owned_value_type;
     std::vector<key_t> const keys = extreme_keys<key_t>();
-    auto const verify_values = [&](map_type_ const &map, std::size_t offset, std::size_t erased_parity) {
+    auto const check_values = [&](map_type_ const &map, std::size_t offset, std::size_t erased_parity) {
         for (std::size_t index = 0; index != keys.size(); ++index) {
             bool const erased = index % 2 == erased_parity;
-            st_verify_eq_(map.contains(keys[index]), !erased);
-            if (!erased) st_verify_eq_(map.at(keys[index]), index + offset);
+            expect_equal(map.contains(keys[index]), !erased);
+            if (!erased) expect_equal(map.at(keys[index]), index + offset);
         }
     };
 
     map_type_ map;
     // Reserved up front, so no rehash sweeps the tombstones away before the upserts can reuse them.
-    st_verify_(map.reserve(keys.size() * 2) != map_type_::reserve_result_t::failed_k);
-    for (std::size_t index = 0; index != keys.size(); ++index) st_verify_(map.upsert(owned_t {keys[index], index}));
-    verify_values(map, 0, 2);
+    expect_true(map.reserve(keys.size() * 2) != map_type_::reserve_result_t::failed_k);
+    for (std::size_t index = 0; index != keys.size(); ++index)
+        expect_equal(map.upsert(owned_t {keys[index], index}), success_k);
+    check_values(map, 0, 2);
 
-    for (std::size_t index = 0; index < keys.size(); index += 2) st_verify_(map.erase(keys[index]));
-    st_verify_eq_(map.deleted_count(), (keys.size() + 1) / 2);
-    verify_values(map, 0, 0);
+    for (std::size_t index = 0; index < keys.size(); index += 2) expect_true(map.erase(keys[index]));
+    expect_equal(map.deleted_count(), (keys.size() + 1) / 2);
+    check_values(map, 0, 0);
 
     for (std::size_t index = 0; index != keys.size(); ++index)
-        st_verify_(map.upsert(owned_t {keys[index], index + keys.size()}));
-    st_verify_eq_(map.deleted_count(), 0u, "every re-inserted key must land in a tombstone of its run");
-    st_verify_eq_(map.size(), keys.size());
-    verify_values(map, keys.size(), 2);
+        expect_equal(map.upsert(owned_t {keys[index], index + keys.size()}), success_k);
+    expect_equal(map.deleted_count(), 0u, "every re-inserted key must land in a tombstone of its run");
+    expect_equal(map.size(), keys.size());
+    check_values(map, keys.size(), 2);
 
     map.clear();
-    st_verify_eq_(map.size(), 0u);
-    for (key_t const &key : keys) st_verify_eq_(map.contains(key), false, "a cleared slot must not match its old key");
-    for (std::size_t index = 1; index < keys.size(); index += 2) st_verify_(map.upsert(owned_t {keys[index], index}));
-    verify_values(map, 0, 0);
+    expect_equal(map.size(), 0u);
+    for (key_t const &key : keys) expect_equal(map.contains(key), false, "a cleared slot must not match its old key");
+    for (std::size_t index = 1; index < keys.size(); index += 2)
+        expect_equal(map.upsert(owned_t {keys[index], index}), success_k);
+    check_values(map, 0, 0);
 }
 
 /** Window lookups over 4-, 8- and 16-byte keys through growth, tombstones and full tables. */
 template <typename kit_type_>
-void verify_kit(kit_type_) {
+void check_kit(kit_type_) {
     using narrow_set_t = basic_hash_table<std::uint32_t, default_hash_t, equal_to_t, default_allocator_t, kit_type_>;
     using wide_set_t = basic_hash_table<std::uint64_t, default_hash_t, equal_to_t, default_allocator_t, kit_type_>;
     using key128_set_t = basic_hash_table<key128_t, default_hash_t, equal_to_t, default_allocator_t, kit_type_>;
-    test_unordered_growth_through_rehashes<narrow_set_t>();
-    test_unordered_growth_through_rehashes<wide_set_t>();
-    test_unordered_growth_through_rehashes<key128_set_t>();
-    test_unordered_tombstone_reuse<narrow_set_t>();
-    test_unordered_tombstone_reuse<wide_set_t>();
-    test_unordered_tombstone_reuse<key128_set_t>();
-    test_unordered_full_table_refusals<narrow_set_t>();
-    test_unordered_full_table_refusals<wide_set_t>();
-    test_unordered_full_table_refusals<key128_set_t>();
-    test_unordered_capacity_management<key128_set_t>();
+    check_unordered_growth_through_rehashes<narrow_set_t>();
+    check_unordered_growth_through_rehashes<wide_set_t>();
+    check_unordered_growth_through_rehashes<key128_set_t>();
+    check_unordered_tombstone_reuse<narrow_set_t>();
+    check_unordered_tombstone_reuse<wide_set_t>();
+    check_unordered_tombstone_reuse<key128_set_t>();
+    check_unordered_full_table_refusals<narrow_set_t>();
+    check_unordered_full_table_refusals<wide_set_t>();
+    check_unordered_full_table_refusals<key128_set_t>();
+    check_unordered_capacity_management<key128_set_t>();
 
-    verify_extreme_keys<basic_hash_table<mapping<std::uint32_t, std::size_t>, default_hash_t, equal_to_t,
-                                         default_allocator_t, kit_type_>>();
-    verify_extreme_keys<basic_hash_table<mapping<std::uint64_t, std::size_t>, default_hash_t, equal_to_t,
-                                         default_allocator_t, kit_type_>>();
-    verify_extreme_keys<
+    check_extreme_keys<basic_hash_table<mapping<std::uint32_t, std::size_t>, default_hash_t, equal_to_t,
+                                        default_allocator_t, kit_type_>>();
+    check_extreme_keys<basic_hash_table<mapping<std::uint64_t, std::size_t>, default_hash_t, equal_to_t,
+                                        default_allocator_t, kit_type_>>();
+    check_extreme_keys<
         basic_hash_table<mapping<key128_t, std::size_t>, default_hash_t, equal_to_t, default_allocator_t, kit_type_>>();
 }
 
-void verify_through(row_kit_t kit) {
-    if (row_kit_supported(kit))
-        visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { verify_kit(kit_instance); });
+void check_through(row_kit_t kit) {
+    if (row_kit_supported(kit)) visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { check_kit(kit_instance); });
 }
 
-static void hash_table_serial_kit() { verify_through(row_kit_t::serial_k); }
-static void hash_table_haswell_kit() { verify_through(row_kit_t::haswell_k); }
-static void hash_table_skylake_kit() { verify_through(row_kit_t::skylake_k); }
-static void hash_table_icelake_kit() { verify_through(row_kit_t::icelake_k); }
-static void hash_table_neon_kit() { verify_through(row_kit_t::neon_k); }
-static void hash_table_sve_kit() { verify_through(row_kit_t::sve_k); }
-static void hash_table_rvv_kit() { verify_through(row_kit_t::rvv_k); }
-static void hash_table_powervsx_kit() { verify_through(row_kit_t::powervsx_k); }
-static void hash_table_v128_kit() { verify_through(row_kit_t::v128_k); }
+static void test_serial_kit() { check_through(row_kit_t::serial_k); }
+static void test_haswell_kit() { check_through(row_kit_t::haswell_k); }
+static void test_skylake_kit() { check_through(row_kit_t::skylake_k); }
+static void test_icelake_kit() { check_through(row_kit_t::icelake_k); }
+static void test_neon_kit() { check_through(row_kit_t::neon_k); }
+static void test_sve_kit() { check_through(row_kit_t::sve_k); }
+static void test_rvv_kit() { check_through(row_kit_t::rvv_k); }
+static void test_powervsx_kit() { check_through(row_kit_t::powervsx_k); }
+static void test_v128_kit() { check_through(row_kit_t::v128_k); }
 
 #pragma endregion Kit Window Tests
 
 #pragma region Multi Match Probe Walk Tests
 
 /** Tests that the walk reaches every version of one key in a shared run, and no foreign key */
-static void unordered_visit_every_match() { test_unordered_visit_every_match(); }
+static void test_unordered_visit_every_match() { check_unordered_visit_every_match(); }
 
 /** Tests that a halting callback stops the walk immediately */
-static void unordered_visit_early_exit() { test_unordered_visit_early_exit(); }
+static void test_unordered_visit_early_exit() { check_unordered_visit_early_exit(); }
 
 /** Tests that tombstones between matches don't truncate the walk */
-static void unordered_visit_across_tombstones() { test_unordered_visit_across_tombstones(); }
+static void test_unordered_visit_across_tombstones() { check_unordered_visit_across_tombstones(); }
 
 /** Tests that an empty table and an absent key cost zero visits */
-static void unordered_visit_empty_table() { test_unordered_visit_empty_table(); }
+static void test_unordered_visit_empty_table() { check_unordered_visit_empty_table(); }
 
 /** Tests that a run homed in the last slot wraps to the front */
-static void unordered_visit_wraparound() { test_unordered_visit_wraparound(); }
+static void test_unordered_visit_wraparound() { check_unordered_visit_wraparound(); }
 
 /** Tests that a table with no free slot terminates the walk instead of circling forever */
-static void unordered_visit_full_table() { test_unordered_visit_full_table(); }
+static void test_unordered_visit_full_table() { check_unordered_visit_full_table(); }
 
 #pragma endregion Multi Match Probe Walk Tests
 
 #pragma region Concurrency Tests
 
 /** Tests concurrent emplace on a pinned table, then concurrent find and contains */
-static void unordered_concurrency_emplace_and_find() {
-    test_unordered_concurrent_emplace_and_find<trivial_map_t>();
-    test_unordered_concurrent_emplace_and_find<guarded_map_t>();
-    test_unordered_concurrent_emplace_and_find<string_map_t>(500);
+static void test_unordered_concurrency_emplace_and_find() {
+    check_unordered_concurrent_emplace_and_find<trivial_map_t>();
+    check_unordered_concurrent_emplace_and_find<guarded_map_t>();
+    check_unordered_concurrent_emplace_and_find<string_map_t>(500);
 }
 
 /** Tests concurrent update over existing keys, then concurrent erase */
-static void unordered_concurrency_update_and_erase() {
-    test_unordered_concurrent_update_and_erase<trivial_map_t>();
-    test_unordered_concurrent_update_and_erase<guarded_map_t>();
-    test_unordered_concurrent_update_and_erase<string_map_t>(500);
+static void test_unordered_concurrency_update_and_erase() {
+    check_unordered_concurrent_update_and_erase<trivial_map_t>();
+    check_unordered_concurrent_update_and_erase<guarded_map_t>();
+    check_unordered_concurrent_update_and_erase<string_map_t>(500);
 }
 
 #pragma endregion Concurrency Tests
@@ -416,88 +417,87 @@ static void unordered_concurrency_update_and_erase() {
 
 /** Every range modifier refused at every point it asks for memory or copies an element leaves the
  *  table as it was. */
-void hash_table_batch_is_all_or_nothing() {
+void test_batch_is_all_or_nothing() {
     using ledger_set_t = hash_set<trivial_key_t, default_hash_t, equal_to_t, stateful_allocator_t>;
-    test_every_offered_surface<ledger_set_t>([](allocation_ledger_t &ledger) noexcept {
+    check_every_offered_surface<ledger_set_t>([](allocation_ledger_t &ledger) noexcept {
         return ledger_set_t(default_hash_t {}, equal_to_t {}, stateful_allocator_t(1, ledger));
     });
-    test_batch_refuses_copies_whole<hash_set<budgeted_key_t>>();
+    check_batch_refuses_copies_whole<hash_set<budgeted_key_t>>();
 }
 
 #pragma endregion Batch Atomicity Tests
 
 using counting_set_t = hash_set<trivial_key_t, counting_hash_t, counting_equals_t>;
 
-static void fixture_coverage_hash_lookup_cost_is_bounded() { test_hash_lookup_cost_is_bounded<counting_set_t>(); }
+static void test_hash_lookup_cost_is_bounded() { check_hash_lookup_cost_is_bounded<counting_set_t>(); }
 
 } // namespace ashvardanian::smashtable::test
 
 using namespace ashvardanian::smashtable::test;
 
-int main(int, char **arguments) {
-    settings_t const settings = read_settings(arguments[0]);
-    install_test_signal_handlers();
-    print(probe_machine());
-    print(settings);
+int main(int argc, char **argv) {
+    start_test_run(argc, argv);
     // ctest hides passing output, so this one program reports the kits every test program shares
 #if defined(_MSC_VER)
 #pragma warning(push)
-#pragma warning(disable : 4996) // `std::fopen` runs before any thread exists, so `fopen_s` buys nothing
+#pragma warning(disable \
+                : 4996) // `std::getenv` and `std::fopen` run before any thread exists, so the `_s` forms buy nothing
 #endif
-    if (std::optional<std::string_view> const summary_path = env_text("GITHUB_STEP_SUMMARY"))
-        if (std::FILE *summary = std::fopen(summary_path->data(), "a"))
-            std::fputc('\n', summary), print(probe_machine(), summary), std::fclose(summary);
+    if (char const *summary_path = std::getenv("GITHUB_STEP_SUMMARY"))
+        if (std::FILE *summary = std::fopen(summary_path, "a")) {
+            std::fputc('\n', summary);
+            print(probe_machine(), summary);
+            std::fprintf(summary, "- Seed: %llu\n", static_cast<unsigned long long>(test_run.settings.seed));
+            std::fclose(summary);
+        }
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
-    test_tally_t tally;
 
-    tally += run_test(settings, "unordered_ops.empty_container_operations", unordered_ops_empty_container_operations);
-    tally += run_test(settings, "unordered_ops.single_element_operations", unordered_ops_single_element_operations);
-    tally += run_test(settings, "unordered_ops.growth_through_rehashes", unordered_ops_growth_through_rehashes);
-    tally += run_test(settings, "unordered_ops.tombstone_reuse", unordered_ops_tombstone_reuse);
-    tally += run_test(settings, "unordered_ops.full_iteration", unordered_ops_full_iteration);
-    tally += run_test(settings, "unordered_ops.moves_and_swaps", unordered_ops_moves_and_swaps);
-    tally += run_test(settings, "unordered_ops.capacity_management", unordered_ops_capacity_management);
-    tally += run_test(settings, "unordered_ops.load_factor_consistency", unordered_ops_load_factor_consistency);
-    tally += run_test(settings, "unordered_ops.heterogeneous_lookups", unordered_ops_heterogeneous_lookups);
+    run_test_case("test_empty_container_operations", test_empty_container_operations);
+    run_test_case("test_single_element_operations", test_single_element_operations);
+    run_test_case("test_growth_through_rehashes", test_growth_through_rehashes);
+    run_test_case("test_tombstone_reuse", test_tombstone_reuse);
+    run_test_case("test_full_iteration", test_full_iteration);
+    run_test_case("test_moves_and_swaps", test_moves_and_swaps);
+    run_test_case("test_capacity_management", test_capacity_management);
+    run_test_case("test_load_factor_consistency", test_load_factor_consistency);
+    run_test_case("test_heterogeneous_lookups", test_heterogeneous_lookups);
 
-    tally += run_test(settings, "unordered_ops.exhausted_allocator_insertions",
-                      unordered_ops_exhausted_allocator_insertions);
-    tally += run_test(settings, "unordered_ops.insert_reports_outcome", unordered_ops_insert_reports_outcome);
-    tally += run_test(settings, "unordered_ops.insert_reports_refusal", unordered_ops_insert_reports_refusal);
-    tally += run_test(settings, "unordered_ops.full_table_refusals", unordered_ops_full_table_refusals);
-    tally += run_test(settings, "unordered_ops.present_key_needs_no_room", unordered_ops_present_key_needs_no_room);
-    tally += run_test(settings, "unordered_ops.pinned_saturation", unordered_ops_pinned_saturation);
-    tally += run_test(settings, "unordered_ops.pinned_tombstone_saturation", unordered_ops_pinned_tombstone_saturation);
-    tally += run_test(settings, "unordered_ops.pinned_reports_status", unordered_ops_pinned_reports_status);
-    tally += run_test(settings, "unordered_ops.rehash_to_nothing", unordered_ops_rehash_to_nothing);
-    tally += run_test(settings, "unordered_ops.unrepresentable_capacity", unordered_ops_unrepresentable_capacity);
-    tally += run_test(settings, "unordered_ops.move_into_too_few_slots", unordered_ops_move_into_too_few_slots);
-    tally += run_test(settings, "hash_table.serial_kit", hash_table_serial_kit);
-    tally += run_test(settings, "hash_table.haswell_kit", hash_table_haswell_kit);
-    tally += run_test(settings, "hash_table.skylake_kit", hash_table_skylake_kit);
-    tally += run_test(settings, "hash_table.icelake_kit", hash_table_icelake_kit);
-    tally += run_test(settings, "hash_table.neon_kit", hash_table_neon_kit);
-    tally += run_test(settings, "hash_table.sve_kit", hash_table_sve_kit);
-    tally += run_test(settings, "hash_table.rvv_kit", hash_table_rvv_kit);
-    tally += run_test(settings, "hash_table.powervsx_kit", hash_table_powervsx_kit);
-    tally += run_test(settings, "hash_table.v128_kit", hash_table_v128_kit);
+    run_test_case("test_exhausted_allocator_insertions", test_exhausted_allocator_insertions);
+    run_test_case("test_insert_reports_outcome", test_insert_reports_outcome);
+    run_test_case("test_insert_reports_refusal", test_insert_reports_refusal);
+    run_test_case("test_full_table_refusals", test_full_table_refusals);
+    run_test_case("test_present_key_needs_no_room", test_present_key_needs_no_room);
+    run_test_case("test_pinned_saturation", test_pinned_saturation);
+    run_test_case("test_pinned_tombstone_saturation", test_pinned_tombstone_saturation);
+    run_test_case("test_pinned_reports_status", test_pinned_reports_status);
+    run_test_case("test_rehash_to_nothing", test_rehash_to_nothing);
+    run_test_case("test_unrepresentable_capacity", test_unrepresentable_capacity);
+    run_test_case("test_move_into_too_few_slots", test_move_into_too_few_slots);
+    run_test_case("test_serial_kit", test_serial_kit);
+    run_test_case("test_haswell_kit", test_haswell_kit);
+    run_test_case("test_skylake_kit", test_skylake_kit);
+    run_test_case("test_icelake_kit", test_icelake_kit);
+    run_test_case("test_neon_kit", test_neon_kit);
+    run_test_case("test_sve_kit", test_sve_kit);
+    run_test_case("test_rvv_kit", test_rvv_kit);
+    run_test_case("test_powervsx_kit", test_powervsx_kit);
+    run_test_case("test_v128_kit", test_v128_kit);
 
-    tally += run_test(settings, "unordered_visit.every_match", unordered_visit_every_match);
-    tally += run_test(settings, "unordered_visit.early_exit", unordered_visit_early_exit);
-    tally += run_test(settings, "unordered_visit.across_tombstones", unordered_visit_across_tombstones);
-    tally += run_test(settings, "unordered_visit.empty_table", unordered_visit_empty_table);
-    tally += run_test(settings, "unordered_visit.wraparound", unordered_visit_wraparound);
-    tally += run_test(settings, "unordered_visit.full_table", unordered_visit_full_table);
+    run_test_case("test_unordered_visit_every_match", test_unordered_visit_every_match);
+    run_test_case("test_unordered_visit_early_exit", test_unordered_visit_early_exit);
+    run_test_case("test_unordered_visit_across_tombstones", test_unordered_visit_across_tombstones);
+    run_test_case("test_unordered_visit_empty_table", test_unordered_visit_empty_table);
+    run_test_case("test_unordered_visit_wraparound", test_unordered_visit_wraparound);
+    run_test_case("test_unordered_visit_full_table", test_unordered_visit_full_table);
 
-    tally += run_test(settings, "unordered_concurrency.emplace_and_find", unordered_concurrency_emplace_and_find);
-    tally += run_test(settings, "unordered_concurrency.update_and_erase", unordered_concurrency_update_and_erase);
+    run_test_case("test_unordered_concurrency_emplace_and_find", test_unordered_concurrency_emplace_and_find);
+    run_test_case("test_unordered_concurrency_update_and_erase", test_unordered_concurrency_update_and_erase);
 
-    tally += run_test(settings, "fixture_coverage.hash_lookup_cost_is_bounded",
-                      fixture_coverage_hash_lookup_cost_is_bounded);
+    run_test_case("test_hash_lookup_cost_is_bounded", test_hash_lookup_cost_is_bounded);
 
-    tally += run_test(settings, "hash_table.batch_is_all_or_nothing", hash_table_batch_is_all_or_nothing);
+    run_test_case("test_batch_is_all_or_nothing", test_batch_is_all_or_nothing);
 
-    return report_test_failures(settings, tally);
+    return finish_test_run();
 }

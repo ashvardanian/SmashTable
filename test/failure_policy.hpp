@@ -324,23 +324,23 @@ struct observed_causes_t {
     void note(failure_cause_t cause, status_t observed) noexcept {
         std::size_t const index = static_cast<std::size_t>(cause);
         auto const expected_statuses = statuses_of_causes(std::make_index_sequence<failure_causes_k> {});
-        st_verify_eq_(observed, expected_statuses[index], "a cause must be reported as the status it owns");
+        expect_equal(observed, expected_statuses[index], "a cause must be reported as the status it owns");
         observations[index] = observed_cause_t {observed, failure_cause_driven_t::driven_k};
     }
 
-    /** Aborts unless the causes actually driven reported statuses no two of them shared. */
-    void verify_distinct() const noexcept {
+    /** Fails a check unless the causes actually driven reported statuses no two of them shared. */
+    void check_distinct() const noexcept {
         std::size_t driven_count = 0;
         for (std::size_t first = 0; first != failure_causes_k; ++first) {
             if (observations[first].drive == failure_cause_driven_t::skipped_k) continue;
             ++driven_count;
             for (std::size_t second = first + 1; second != failure_causes_k; ++second) {
                 if (observations[second].drive == failure_cause_driven_t::skipped_k) continue;
-                st_verify_ne_(observations[first].status, observations[second].status,
-                              "two distinct causes reported the same status against this store");
+                expect_true(observations[first].status != observations[second].status,
+                            "two distinct causes reported the same status against this store");
             }
         }
-        st_verify_ge_(driven_count, 2, "a store must expose at least two causes for distinctness to mean anything");
+        expect_true(driven_count >= 2, "a store must expose at least two causes for distinctness to mean anything");
     }
 };
 
@@ -377,9 +377,10 @@ template <typename store_type_>
     store_footprint_t seen;
     seen.size = store.size();
     if constexpr (requires(no_op_t callback) { store.for_each(callback); })
-        st_verify_(store.for_each([&](typename store_type_::value_t const &member) noexcept {
+        expect_equal(store.for_each([&](typename store_type_::value_t const &member) noexcept {
             seen.checksum += checksum_of_member(member);
-        }));
+        }),
+                     success_k);
     return seen;
 }
 
@@ -401,7 +402,7 @@ void drive_present_key_cause(store_type_ &store, observed_causes_t &observed, st
         status_t const refused = store.insert(std::move(duplicate));
         store_footprint_t const after = footprint_of(store);
         observed.note(failure_cause_t::key_present_k, refused);
-        st_verify_eq_(before, after, "a refused strict insert must leave the occupied key untouched");
+        expect_equal(before, after, "a refused strict insert must leave the occupied key untouched");
     }
 }
 
@@ -416,7 +417,7 @@ void drive_absent_key_cause(store_type_ &store, observed_causes_t &observed, std
         status_t const refused = store.update(std::move(missing));
         store_footprint_t const after = footprint_of(store);
         observed.note(failure_cause_t::key_absent_k, refused);
-        st_verify_eq_(before, after, "a refused strict update must not create the key it could not find");
+        expect_equal(before, after, "a refused strict update must not create the key it could not find");
     }
 }
 
@@ -433,12 +434,12 @@ void drive_watch_conflict_cause(store_type_ &store, observed_causes_t &observed,
     using member_t = typename store_type_::value_type;
     if constexpr (store_type_::is_transactional::value) {
         auto contested = store.transaction();
-        st_verify_((contested.has_value()) && "a store must be able to open a transaction");
-        st_verify_(contested->watch(trivial_id_to_key<member_t>(1)));
-        st_verify_(contested->upsert(trivial_id_to_member<member_t>(size * 5, size * 5)));
+        if (!expect_true(contested.has_value(), "a store must be able to open a transaction")) return;
+        expect_equal(contested->watch(trivial_id_to_key<member_t>(1)), success_k);
+        expect_equal(contested->upsert(trivial_id_to_member<member_t>(size * 5, size * 5)), success_k);
 
         // An outside writer moves the watched key, which is what the validation has to catch.
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(1, size * 9)));
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(1, size * 9)), success_k);
 
         store_footprint_t const before = footprint_of(store);
         status_t refused = contested->stage();
@@ -446,7 +447,7 @@ void drive_watch_conflict_cause(store_type_ &store, observed_causes_t &observed,
         store_footprint_t const after = footprint_of(store);
 
         observed.note(failure_cause_t::watch_conflicted_k, refused);
-        st_verify_eq_(before, after, "a refused commit must publish none of what it staged");
+        expect_equal(before, after, "a refused commit must publish none of what it staged");
         [[maybe_unused]] status_t const unwound = contested->rollback();
     }
 }
@@ -470,7 +471,7 @@ void drive_heap_refusal_cause(store_type_ &store, allocation_ledger_t &ledger, o
     store_footprint_t const after = footprint_of(store);
 
     observed.note(failure_cause_t::heap_refused_k, refused);
-    st_verify_eq_(before, after, "a store that could not allocate must not have stored anything");
+    expect_equal(before, after, "a store that could not allocate must not have stored anything");
 }
 
 /**
@@ -480,22 +481,22 @@ void drive_heap_refusal_cause(store_type_ &store, allocation_ledger_t &ledger, o
  *  @param[in] size How many members to seed, which also spaces the keys the causes are driven with.
  */
 template <typename store_type_>
-void test_store_maps_causes_to_distinct_statuses(std::size_t size = 32) {
+void check_store_maps_causes_to_distinct_statuses(std::size_t size = 32) {
 
     using store_t = store_type_;
     using member_t = typename store_t::value_type;
 
     auto built = store_t::make();
-    st_verify_((built.has_value()) && "the store under test must build");
+    if (!expect_true(built.has_value(), "the store under test must build")) return;
     store_t &store = *built;
     for (std::size_t identifier = 0; identifier != size; ++identifier)
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
     observed_causes_t observed;
     drive_present_key_cause(store, observed, size);
     drive_absent_key_cause(store, observed, size);
     drive_watch_conflict_cause(store, observed, size);
-    observed.verify_distinct();
+    observed.check_distinct();
 }
 
 /**
@@ -503,7 +504,7 @@ void test_store_maps_causes_to_distinct_statuses(std::size_t size = 32) {
  *  @param[in] size How many members to seed before the allocator is closed.
  */
 template <typename store_type_>
-void test_budgeted_store_maps_causes_to_distinct_statuses(std::size_t size = 32) {
+void check_budgeted_store_maps_causes_to_distinct_statuses(std::size_t size = 32) {
 
     using store_t = store_type_;
     using member_t = typename store_t::value_type;
@@ -512,21 +513,21 @@ void test_budgeted_store_maps_causes_to_distinct_statuses(std::size_t size = 32)
     allocation_ledger_t ledger;
     {
         auto built = store_t::make(allocator_t {ledger});
-        st_verify_((built.has_value()) && "the budgeted store under test must build");
+        if (!expect_true(built.has_value(), "the budgeted store under test must build")) return;
         store_t &store = *built;
         for (std::size_t identifier = 0; identifier != size; ++identifier)
-            st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
+            expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
         observed_causes_t observed;
         drive_heap_refusal_cause(store, ledger, observed, size);
         drive_present_key_cause(store, observed, size);
         drive_absent_key_cause(store, observed, size);
         drive_watch_conflict_cause(store, observed, size);
-        observed.verify_distinct();
+        observed.check_distinct();
 
         clear_container(store);
     }
-    ledger.verify_balanced();
+    ledger.check_balanced();
 }
 
 /**
@@ -547,24 +548,24 @@ void drive_relayed_causes(store_type_ &store, std::size_t size, std::index_seque
         status_t const reported = store.upsert(trivial_id_to_member<member_t>(size * 3 + offset, offset));
         store_footprint_t const after = footprint_of(store);
         refusal_plan_t::reset();
-        st_verify_eq_(reported, named, "a wrapper must relay the cause its part named, not one of its own");
-        st_verify_eq_(before, after, "a relayed refusal must leave the store as the caller found it");
+        expect_equal(reported, named, "a wrapper must relay the cause its part named, not one of its own");
+        expect_equal(before, after, "a relayed refusal must leave the store as the caller found it");
     };
     (drive_one(indices_, status_of_cause<static_cast<failure_cause_t>(indices_)>::status_k), ...);
 }
 
 /** Runs every cause through @p store_type_, whose parts must be @c refusing_store. */
 template <typename store_type_>
-void test_wrapper_relays_every_cause(std::size_t size = 64) {
+void check_wrapper_relays_every_cause(std::size_t size = 64) {
 
     using member_t = typename store_type_::value_type;
 
     refusal_plan_t::reset();
     auto built = store_type_::make();
-    st_verify_((built.has_value()) && "the wrapper under test must build");
+    if (!expect_true(built.has_value(), "the wrapper under test must build")) return;
     store_type_ &store = *built;
     for (std::size_t identifier = 0; identifier != size; ++identifier)
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
     drive_relayed_causes(store, size, std::make_index_sequence<failure_causes_k> {});
 }
@@ -726,7 +727,7 @@ template <typename store_type_, bulk_method_t method_>
  *  carry both under one return type unnoticed.
  */
 template <typename store_type_, bulk_method_t method_>
-void test_one_bulk_method_matches_policy(std::size_t size, std::size_t refusing_partition) {
+void check_one_bulk_method_matches_policy(std::size_t size, std::size_t refusing_partition) {
 
     using traits_t = bulk_method_traits<method_>;
     using member_t = typename store_type_::value_type;
@@ -745,10 +746,10 @@ void test_one_bulk_method_matches_policy(std::size_t size, std::size_t refusing_
 
         refusal_plan_t::reset();
         auto built = store_type_::make();
-        st_verify_((built.has_value()) && "the partitioned store under test must build");
+        if (!expect_true(built.has_value(), "the partitioned store under test must build")) return;
         store_type_ &store = *built;
         for (std::size_t identifier = 0; identifier != size; ++identifier)
-            st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
+            expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
         refusal_plan_t::reset();
         refusal_plan_t::refuse(refusable_k, refusing_partition, status_t::out_of_memory_heap_k);
@@ -756,20 +757,20 @@ void test_one_bulk_method_matches_policy(std::size_t size, std::size_t refusing_
         std::size_t const attempted = refusal_plan_t::calls_count(refusable_k);
         refusal_plan_t::reset();
 
-        st_verify_eq_(reported, status_t::out_of_memory_heap_k, "a bulk walk must report the refusal it met");
+        expect_equal(reported, status_t::out_of_memory_heap_k, "a bulk walk must report the refusal it met");
         if constexpr (declared_k == bulk_failure_policy_t::stop_at_first_k)
-            st_verify_eq_(attempted, refusing_partition + 1,
-                          "a stop-at-first walk must leave the partitions behind the refusal untouched");
+            expect_equal(attempted, refusing_partition + 1,
+                         "a stop-at-first walk must leave the partitions behind the refusal untouched");
         else
-            st_verify_eq_(attempted, store_type_::partitions_k,
-                          "an attempt-every walk must reach every partition despite the refusal");
+            expect_equal(attempted, store_type_::partitions_k,
+                         "an attempt-every walk must reach every partition despite the refusal");
     }
 }
 
 /** Sweeps every enumerator, which is where a method with no declared policy fails to compile. */
 template <typename store_type_, std::size_t... indices_>
 void sweep_bulk_methods(std::size_t size, std::size_t refusing_partition, std::index_sequence<indices_...>) {
-    (test_one_bulk_method_matches_policy<store_type_, static_cast<bulk_method_t>(indices_)>(size, refusing_partition),
+    (check_one_bulk_method_matches_policy<store_type_, static_cast<bulk_method_t>(indices_)>(size, refusing_partition),
      ...);
 }
 
@@ -782,9 +783,9 @@ void sweep_bulk_methods(std::size_t size, std::size_t refusing_partition, std::i
  *      walk that stopped and one that carried on leave measurably different tallies.
  */
 template <typename store_type_>
-void test_bulk_methods_match_declared_policy(std::size_t size = 256, std::size_t refusing_partition = 4) {
-    st_verify_lt_(refusing_partition + 1, store_type_::partitions_k,
-                  "the refusal has to land where partitions remain behind it, or the policies read alike");
+void check_bulk_methods_match_declared_policy(std::size_t size = 256, std::size_t refusing_partition = 4) {
+    expect_true(refusing_partition + 1 < store_type_::partitions_k,
+                "the refusal has to land where partitions remain behind it, or the policies read alike");
     sweep_bulk_methods<store_type_>(size, refusing_partition, std::make_index_sequence<bulk_methods_k> {});
 }
 

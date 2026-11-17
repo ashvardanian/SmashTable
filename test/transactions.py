@@ -13,7 +13,7 @@ Date: October 30, 2025
 """
 
 import pytest
-from base import group_sizes, key_types, make, map_class_names, sharing_modes, transaction_styles
+from base import GROUP_SIZES, KEY_TYPES, MAP_CLASSES, SHARING_MODES, TRANSACTION_STYLES, make
 
 import smashtable as st
 
@@ -25,12 +25,12 @@ class _Abort(Exception):
 # region Single container
 
 
-@pytest.mark.iterations(1)
 @pytest.mark.thread_unsafe(
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.iterations(1)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_changes_are_invisible_until_the_block_ends(container, keygen):
     """A write inside a transaction is not visible outside it until commit."""
     key = keygen(1)[0]
@@ -44,8 +44,8 @@ def test_changes_are_invisible_until_the_block_ends(container, keygen):
     assert container[key] == "staged"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_view_reads_its_own_writes(container, keygen):
     """Inside the block, a write is immediately readable through the same view."""
     key = keygen(1)[0]
@@ -55,20 +55,22 @@ def test_a_view_reads_its_own_writes(container, keygen):
         assert key in view
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_raise_discards_everything(container, keygen):
     """A block that raises applies nothing, and the exception propagates unchanged."""
     keys = keygen(20)
-    with pytest.raises(_Abort), st.transaction(container) as (view,):
-        for key in keys:
-            view[key] = "doomed"
+    group = st.transaction(container)
+    (view,) = group.begin()
+    for key in keys:
+        view[key] = "doomed"
+    with pytest.raises(_Abort), group:
         raise _Abort
     assert len(container) == 0
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_batch_lands_whole(container, keygen):
     """Every write of a committed block is visible together."""
     keys = keygen(20)
@@ -81,8 +83,8 @@ def test_a_batch_lands_whole(container, keygen):
 @pytest.mark.thread_unsafe(
     reason="its premise is a single writer - a parallel copy of the test sharing the container would erase the key this one expects to find"
 )
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_erase_reports_presence(container, keygen):
     """A view's erase says whether the key was there, so a caller need not look first."""
     keys = keygen(2)
@@ -92,8 +94,8 @@ def test_erase_reports_presence(container, keygen):
         assert view.discard(keys[1]) is False
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_transaction_sees_prior_state(container, keygen):
     """A block reads what was committed before it opened."""
     key = keygen(1)[0]
@@ -102,8 +104,8 @@ def test_a_transaction_sees_prior_state(container, keygen):
         assert view[key] == "before"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_an_empty_transaction_commits(container):
     """A block that writes nothing still completes cleanly."""
     with st.transaction(container) as (_,):
@@ -116,8 +118,8 @@ def test_an_empty_transaction_commits(container):
 # region Explicit phases
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_stage_then_rollback_applies_nothing_but_keeps_the_writes(container_class, key_type, keygen):
     """Rolling a staged transaction back pulls the changes out of the store and back into it.
 
@@ -137,8 +139,8 @@ def test_stage_then_rollback_applies_nothing_but_keeps_the_writes(container_clas
     assert container[key] == "staged", "a rollback dropped the writes rather than pulling them back"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_commit_without_stage_is_a_state_error(container, keygen):
     """The two phases are ordered, and skipping the first is refused."""
     group = st.transaction(container)
@@ -148,8 +150,8 @@ def test_commit_without_stage_is_a_state_error(container, keygen):
         group.commit()
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_rollback_without_stage_is_a_state_error(container):
     """Rolling back something never staged is refused rather than silently ignored."""
     group = st.transaction(container)
@@ -158,8 +160,8 @@ def test_rollback_without_stage_is_a_state_error(container):
         group.rollback()
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_reset_discards_pending_changes(container, keygen):
     """reset throws away the block's work and leaves the store untouched."""
     key = keygen(1)[0]
@@ -170,8 +172,8 @@ def test_reset_discards_pending_changes(container, keygen):
     assert key not in container
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_closed_block_refuses_more_work(container, keygen):
     """A view that escapes its `with` block writes nowhere, whatever the group did inside it."""
     key = keygen(1)[0]
@@ -181,8 +183,8 @@ def test_a_closed_block_refuses_more_work(container, keygen):
         view[key] = "again"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_committed_group_is_open_again(container, keygen):
     """A commit returns the group to where it started, so the handle takes a second round.
 
@@ -199,10 +201,11 @@ def test_a_committed_group_is_open_again(container, keygen):
     view[keys[1]] = "second"
     group.stage()
     group.commit()
-    assert container[keys[0]] == "first" and container[keys[1]] == "second", f"{container!r}"
+    assert container[keys[0]] == "first", f"{container!r}"
+    assert container[keys[1]] == "second", f"{container!r}"
 
 
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_closed_handle_cannot_be_reset(key_type, keygen):
     """A `with` block that has closed hands its handle back to nobody, `reset` included."""
     container = make(st.SortedMap, key_type)
@@ -220,7 +223,7 @@ def test_a_closed_handle_cannot_be_reset(key_type, keygen):
     assert dict(container) == {keys[0]: "first"}, f"a closed handle wrote again: {dict(container)}"
 
 
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_committed_group_resets_and_runs_again(key_type, keygen):
     """`reset` after a commit is accepted here as it is in C++, and the next round lands.
 
@@ -244,7 +247,7 @@ def test_a_committed_group_resets_and_runs_again(key_type, keygen):
     assert dict(container) == {keys[0]: "first", keys[1]: "second"}, f"{dict(container)}"
 
 
-@pytest.mark.parametrize("sharing", sharing_modes)
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_reset_after_staging_leaves_the_participant_writable(sharing):
     """Reset returns a staged transaction to open, so the writes it refuses while staged land again.
 
@@ -265,7 +268,7 @@ def test_reset_after_staging_leaves_the_participant_writable(sharing):
     assert dict(container) == {2: "kept"}, f"{dict(container)}"
 
 
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_reset_is_allowed_before_the_transaction_finishes(key_type, keygen):
     """The state gate must not break what reset is for: retrying after a conflict."""
     container = make(st.SortedMap, key_type)
@@ -289,9 +292,9 @@ def test_reset_is_allowed_before_the_transaction_finishes(key_type, keygen):
 # region Cross container
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
-@pytest.mark.parametrize("style", transaction_styles)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
+@pytest.mark.parametrize("style", TRANSACTION_STYLES)
 def test_two_indexes_flip_together(container_class, key_type, style, keygen):
     """Both containers show the batch or neither does, through either spelling."""
     first = make(container_class, key_type)
@@ -312,23 +315,26 @@ def test_two_indexes_flip_together(container_class, key_type, style, keygen):
     assert second[key] == "b"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_raise_leaves_neither_container_touched(container_class, key_type, keygen):
     """An aborted group is invisible in every participant, not just the first."""
     first = make(container_class, key_type)
     second = make(container_class, key_type)
     key = keygen(1)[0]
-    with pytest.raises(_Abort), st.transaction(first, second) as (left, right):
-        left[key] = "a"
-        right[key] = "b"
+    group = st.transaction(first, second)
+    left, right = group.begin()
+    left[key] = "a"
+    right[key] = "b"
+    with pytest.raises(_Abort), group:
         raise _Abort
-    assert len(first) == 0 and len(second) == 0
+    assert len(first) == 0
+    assert len(second) == 0
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
-@pytest.mark.parametrize("group_size", group_sizes)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
+@pytest.mark.parametrize("group_size", GROUP_SIZES)
 def test_a_group_may_span_many_containers(container_class, key_type, group_size, keygen):
     """A group is not limited to two, and every participant lands together."""
     containers = [make(container_class, key_type) for _ in range(group_size)]
@@ -340,8 +346,8 @@ def test_a_group_may_span_many_containers(container_class, key_type, group_size,
     assert all(one[key] == "shared" for one in containers)
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_views_arrive_in_argument_order(container_class, key_type, keygen):
     """Whatever order participants stage in, the views come back as the caller wrote them."""
     first = make(container_class, key_type)
@@ -354,11 +360,11 @@ def test_views_arrive_in_argument_order(container_class, key_type, keygen):
     assert first[key] == "into-first"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_the_same_container_twice_is_rejected(container):
     """Two participants over one store would each believe they owned its staged state."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="same container twice"):
         st.transaction(container, container)
 
 
@@ -368,15 +374,15 @@ def test_atomic_needs_a_container():
         st.transaction()
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_atomic_rejects_a_foreign_object(container):
     """Only containers may participate."""
     with pytest.raises(TypeError):
         st.transaction(container, {})
 
 
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_group_may_mix_maps_and_sets(key_type, keygen):
     """A map and a set commit together, which the single-class binding could not express."""
     mapping = make(st.SortedMap, key_type)
@@ -389,7 +395,7 @@ def test_a_group_may_mix_maps_and_sets(key_type, keygen):
     assert key in members
 
 
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_set_participant_refuses_a_value(key_type, keygen):
     """Assigning a value to a set participant is a TypeError pointing at add()."""
     members = make(st.SortedSet, key_type)
@@ -398,8 +404,8 @@ def test_a_set_participant_refuses_a_value(key_type, keygen):
         view[key] = "value"
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_map_participant_refuses_add(container, keygen):
     """Calling add on a map participant is a TypeError pointing at assignment."""
     key = keygen(1)[0]
@@ -407,7 +413,7 @@ def test_a_map_participant_refuses_add(container, keygen):
         view.add(key)
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
 def test_containers_may_use_different_key_types(container_class):
     """A group does not require its participants to agree on a key layout."""
     by_number = make(container_class, "int")
@@ -419,8 +425,8 @@ def test_containers_may_use_different_key_types(container_class):
     assert by_name["carol"] == 42
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_single_container_transaction_shorthand(container, keygen):
     """A container opens a one-participant group over itself."""
     key = keygen(1)[0]
@@ -429,7 +435,7 @@ def test_single_container_transaction_shorthand(container, keygen):
     assert container[key] == "solo"
 
 
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 @pytest.mark.parametrize(
     "object_first", [pytest.param(False, id="scalar-first"), pytest.param(True, id="object-first")]
 )

@@ -17,13 +17,13 @@
  *
  *  @section fuzz_seed Reproducing a Failure
  *
- *  Every sequence is drawn from the seed in the @c test_context_t that @c run_test hands a suite,
- *  which is @c SMASHTABLE_SEED or otherwise 42. A failing run is reproduced by exporting the seed
- *  it printed, and a sweep loops over the variable instead of editing source.
+ *  Every sequence is drawn from @c case_stream_key, which mixes the run's seed with the case's
+ *  label, so @c SMASHTABLE_SEED or otherwise 42 picks it. A failing run is reproduced by the rerun
+ *  line it printed, a sweep loops over the variable instead of editing source, and
+ *  @c SMASHTABLE_SCALE stretches every suite's rounds.
  */
 #pragma once
 #include <compare> // `std::compare_three_way`
-#include <random>  // `std::mt19937`
 
 #include <smashtable/reference_store.hpp>
 
@@ -79,7 +79,8 @@ fuzz_snapshot_t fuzz_snapshot_of(store_type_ &store) noexcept {
  *  leaves the state agreeing for the wrong reason.
  */
 template <typename store_type_>
-void test_random_writes_match_the_oracle(test_context_t const &context, std::size_t rounds = 400) {
+void test_random_writes_match_the_oracle() {
+    std::size_t const rounds = scaled_iterations(400);
 
     using store_t = store_type_;
     using member_t = typename store_t::value_type;
@@ -87,7 +88,7 @@ void test_random_writes_match_the_oracle(test_context_t const &context, std::siz
     static_assert(store_t::is_associative::value, "Container must be key-value");
     static_assert(store_t::is_transactional::value, "Container must be transactional");
 
-    std::mt19937 generator(mix_seed(context.seed, __func__));
+    split_mix_generator_t generator {case_stream_key()};
     store_t engine;
     fuzz_oracle_t oracle;
 
@@ -96,9 +97,9 @@ void test_random_writes_match_the_oracle(test_context_t const &context, std::siz
         int const value = int(generator() % 1000);
 
         auto engine_transaction = engine.transaction();
-        st_verify_(engine_transaction.has_value());
+        if (!expect_true(engine_transaction.has_value())) return;
         auto oracle_transaction = oracle.transaction();
-        st_verify_(oracle_transaction.has_value());
+        if (!expect_true(oracle_transaction.has_value())) return;
 
         // A tombstone staged before the write is what separates the merged view from the store, so
         // roughly a third of the rounds erase first and then ask a strict writer about the same key.
@@ -128,22 +129,22 @@ void test_random_writes_match_the_oracle(test_context_t const &context, std::siz
             from_oracle = oracle_transaction->update(trivial_id_to_member<member_t>(identifier, value));
             break;
         }
-        st_verify_eq_(from_engine, from_oracle, "an engine and the oracle answered a strict write differently");
+        expect_equal(from_engine, from_oracle, "an engine and the oracle answered a strict write differently");
 
         expected<bool> const engine_sees = engine_transaction->contains(trivial_key_t {identifier});
         expected<bool> const oracle_sees = oracle_transaction->contains(trivial_key_t {identifier});
-        st_verify_(engine_sees.has_value());
-        st_verify_(oracle_sees.has_value());
-        st_verify_eq_((*engine_sees), (*oracle_sees), "a transaction disagreed with the oracle about its own view");
+        if (!expect_true(engine_sees.has_value())) return;
+        if (!expect_true(oracle_sees.has_value())) return;
+        expect_equal((*engine_sees), (*oracle_sees), "a transaction disagreed with the oracle about its own view");
 
-        st_verify_(engine_transaction->stage());
-        st_verify_(oracle_transaction->stage());
-        st_verify_(engine_transaction->commit());
-        st_verify_(oracle_transaction->commit());
+        expect_equal(engine_transaction->stage(), success_k);
+        expect_equal(oracle_transaction->stage(), success_k);
+        expect_equal(engine_transaction->commit(), success_k);
+        expect_equal(oracle_transaction->commit(), success_k);
 
-        st_verify_eq_(engine.size(), oracle.size(), "a committed round left the two holding different counts");
-        st_verify_eq_(fuzz_snapshot_of(engine), fuzz_snapshot_of(oracle),
-                      "a committed round left the two holding different contents");
+        expect_equal(engine.size(), oracle.size(), "a committed round left the two holding different counts");
+        expect_equal(fuzz_snapshot_of(engine), fuzz_snapshot_of(oracle),
+                     "a committed round left the two holding different contents");
     }
 }
 
@@ -155,26 +156,27 @@ void test_random_writes_match_the_oracle(test_context_t const &context, std::siz
  *  walks past. The oracle has no partitions and so cannot lose them.
  */
 template <typename store_type_>
-void test_random_windows_match_the_oracle(test_context_t const &context, std::size_t rounds = 120) {
+void test_random_windows_match_the_oracle() {
+    std::size_t const rounds = scaled_iterations(120);
 
     using store_t = store_type_;
     using member_t = typename store_t::value_type;
 
-    std::mt19937 generator(mix_seed(context.seed, __func__));
+    split_mix_generator_t generator {case_stream_key()};
     store_t engine;
     fuzz_oracle_t oracle;
 
     for (std::size_t round = 0; round != rounds; ++round) {
         auto engine_transaction = engine.transaction();
-        st_verify_(engine_transaction.has_value());
+        if (!expect_true(engine_transaction.has_value())) return;
         auto oracle_transaction = oracle.transaction();
-        st_verify_(oracle_transaction.has_value());
+        if (!expect_true(oracle_transaction.has_value())) return;
 
         for (std::size_t written = 0; written != 4; ++written) {
             trivial_id_t const identifier = trivial_id_t(generator() % fuzz_keyspace_k);
             int const value = int(generator() % 1000);
-            st_verify_(engine_transaction->upsert(trivial_id_to_member<member_t>(identifier, value)));
-            st_verify_(oracle_transaction->upsert(trivial_id_to_member<member_t>(identifier, value)));
+            expect_equal(engine_transaction->upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
+            expect_equal(oracle_transaction->upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
         }
 
         // A window drawn from the same keyspace, so it usually holds something rather than testing
@@ -184,18 +186,18 @@ void test_random_windows_match_the_oracle(test_context_t const &context, std::si
             trivial_id_t const second = trivial_id_t(generator() % fuzz_keyspace_k);
             trivial_key_t const lower {first < second ? first : second};
             trivial_key_t const upper {first < second ? second : first};
-            st_verify_(engine_transaction->erase_range(lower, upper, no_op_t {}));
-            st_verify_(oracle_transaction->erase_range(lower, upper, no_op_t {}));
+            expect_equal(engine_transaction->erase_range(lower, upper, no_op_t {}), success_k);
+            expect_equal(oracle_transaction->erase_range(lower, upper, no_op_t {}), success_k);
         }
 
-        st_verify_(engine_transaction->stage());
-        st_verify_(oracle_transaction->stage());
-        st_verify_(engine_transaction->commit());
-        st_verify_(oracle_transaction->commit());
+        expect_equal(engine_transaction->stage(), success_k);
+        expect_equal(oracle_transaction->stage(), success_k);
+        expect_equal(engine_transaction->commit(), success_k);
+        expect_equal(oracle_transaction->commit(), success_k);
 
-        st_verify_eq_(engine.size(), oracle.size(), "a window mutator left the two holding different counts");
-        st_verify_eq_(fuzz_snapshot_of(engine), fuzz_snapshot_of(oracle),
-                      "a window mutator left the two holding different contents");
+        expect_equal(engine.size(), oracle.size(), "a window mutator left the two holding different counts");
+        expect_equal(fuzz_snapshot_of(engine), fuzz_snapshot_of(oracle),
+                     "a window mutator left the two holding different contents");
     }
 }
 
@@ -212,14 +214,15 @@ void test_random_windows_match_the_oracle(test_context_t const &context, std::si
  *  both participants are compared against the snapshot taken before the commit was attempted.
  */
 template <typename first_store_type_, typename second_store_type_>
-void test_a_refused_group_publishes_nothing(test_context_t const &context, std::size_t rounds = 60) {
+void test_a_refused_group_publishes_nothing() {
+    std::size_t const rounds = scaled_iterations(60);
 
     using first_t = first_store_type_;
     using second_t = second_store_type_;
     using first_member_t = typename first_t::value_type;
     using second_member_t = typename second_t::value_type;
 
-    std::mt19937 generator(mix_seed(context.seed, __func__));
+    split_mix_generator_t generator {case_stream_key()};
     // One commit across two stores means one order both were built into; two stores that each made
     // their own are two visibility domains, and `make_transaction_group` refuses them by design.
     using order_t = typename first_t::order_t;
@@ -228,8 +231,8 @@ void test_a_refused_group_publishes_nothing(test_context_t const &context, std::
     second_t beta {order};
 
     for (trivial_id_t identifier = 0; identifier != fuzz_keyspace_k; ++identifier) {
-        st_verify_(alpha.upsert(trivial_id_to_member<first_member_t>(identifier, 0)));
-        st_verify_(beta.upsert(trivial_id_to_member<second_member_t>(identifier, 0)));
+        expect_equal(alpha.upsert(trivial_id_to_member<first_member_t>(identifier, 0)), success_k);
+        expect_equal(beta.upsert(trivial_id_to_member<second_member_t>(identifier, 0)), success_k);
     }
 
     // A group visits its participants in ascending store address, so the refusal has to land on the
@@ -244,37 +247,37 @@ void test_a_refused_group_publishes_nothing(test_context_t const &context, std::
         trivial_id_t const written = trivial_id_t(generator() % fuzz_keyspace_k);
 
         auto group = make_transaction_group(alpha, beta);
-        st_verify_(group.has_value());
+        if (!expect_true(group.has_value())) return;
         auto &into_alpha = group->template participant<0>();
         auto &into_beta = group->template participant<1>();
 
         // The participant carrying the watch writes the watched key too, so the refusal is always the
         // write set catching it rather than the read set - one code to assert instead of two.
         if (beta_is_last) {
-            st_verify_(into_alpha.upsert(trivial_id_to_member<first_member_t>(written, int(round) + 1)));
-            st_verify_(into_beta.upsert(trivial_id_to_member<second_member_t>(watched, int(round) + 1)));
-            st_verify_(into_beta.watch(trivial_key_t {watched}));
+            expect_equal(into_alpha.upsert(trivial_id_to_member<first_member_t>(written, int(round) + 1)), success_k);
+            expect_equal(into_beta.upsert(trivial_id_to_member<second_member_t>(watched, int(round) + 1)), success_k);
+            expect_equal(into_beta.watch(trivial_key_t {watched}), success_k);
         }
         else {
-            st_verify_(into_alpha.upsert(trivial_id_to_member<first_member_t>(watched, int(round) + 1)));
-            st_verify_(into_beta.upsert(trivial_id_to_member<second_member_t>(written, int(round) + 1)));
-            st_verify_(into_alpha.watch(trivial_key_t {watched}));
+            expect_equal(into_alpha.upsert(trivial_id_to_member<first_member_t>(watched, int(round) + 1)), success_k);
+            expect_equal(into_beta.upsert(trivial_id_to_member<second_member_t>(written, int(round) + 1)), success_k);
+            expect_equal(into_alpha.watch(trivial_key_t {watched}), success_k);
         }
-        st_verify_(group->stage());
+        expect_equal(group->stage(), success_k);
 
         // Published over while the group is staged, which is the one thing a validated commit still
         // has to catch and the only refusal a staged group can meet.
-        if (beta_is_last) st_verify_(beta.upsert(trivial_id_to_member<second_member_t>(watched, 9999)));
-        else st_verify_(alpha.upsert(trivial_id_to_member<first_member_t>(watched, 9999)));
+        if (beta_is_last) expect_equal(beta.upsert(trivial_id_to_member<second_member_t>(watched, 9999)), success_k);
+        else expect_equal(alpha.upsert(trivial_id_to_member<first_member_t>(watched, 9999)), success_k);
 
         fuzz_snapshot_t const alpha_before = fuzz_snapshot_of(alpha);
         fuzz_snapshot_t const beta_before = fuzz_snapshot_of(beta);
         status_t const refused = group->commit();
-        st_verify_eq_(refused, status_t::write_conflict_k, "a commit over a published watch must be refused");
-        st_verify_eq_(fuzz_snapshot_of(alpha), alpha_before, "a refused group published its first participant");
-        st_verify_eq_(fuzz_snapshot_of(beta), beta_before, "a refused group published its second participant");
-        st_verify_eq_(group->staging(), staging_t::staged_k, "a refused group must stay staged to be unwindable");
-        st_verify_(group->rollback());
+        expect_equal(refused, status_t::write_conflict_k, "a commit over a published watch must be refused");
+        expect_equal(fuzz_snapshot_of(alpha), alpha_before, "a refused group published its first participant");
+        expect_equal(fuzz_snapshot_of(beta), beta_before, "a refused group published its second participant");
+        expect_equal(group->staging(), staging_t::staged_k, "a refused group must stay staged to be unwindable");
+        expect_equal(group->rollback(), success_k);
     }
 }
 
@@ -285,7 +288,8 @@ void test_a_refused_group_publishes_nothing(test_context_t const &context, std::
  *  is compared against a model advanced only when the commit answered success.
  */
 template <typename first_store_type_, typename second_store_type_>
-void test_an_accepted_group_publishes_everything(test_context_t const &context, std::size_t rounds = 120) {
+void test_an_accepted_group_publishes_everything() {
+    std::size_t const rounds = scaled_iterations(120);
 
     using first_t = first_store_type_;
     using second_t = second_store_type_;
@@ -293,7 +297,7 @@ void test_an_accepted_group_publishes_everything(test_context_t const &context, 
     using second_member_t = typename second_t::value_type;
     using model_member_t = typename fuzz_oracle_t::value_type;
 
-    std::mt19937 generator(mix_seed(context.seed, __func__));
+    split_mix_generator_t generator {case_stream_key()};
     // One commit across two stores means one order both were built into; two stores that each made
     // their own are two visibility domains, and `make_transaction_group` refuses them by design.
     using order_t = typename first_t::order_t;
@@ -309,26 +313,28 @@ void test_an_accepted_group_publishes_everything(test_context_t const &context, 
         bool const unwinding = (generator() % 4) == 0;
 
         auto group = make_transaction_group(alpha, beta);
-        st_verify_(group.has_value());
-        st_verify_(group->template participant<0>().upsert(trivial_id_to_member<first_member_t>(identifier, value)));
-        st_verify_(group->template participant<1>().upsert(trivial_id_to_member<second_member_t>(identifier, value)));
-        st_verify_(group->stage());
+        if (!expect_true(group.has_value())) return;
+        expect_equal(group->template participant<0>().upsert(trivial_id_to_member<first_member_t>(identifier, value)),
+                     success_k);
+        expect_equal(group->template participant<1>().upsert(trivial_id_to_member<second_member_t>(identifier, value)),
+                     success_k);
+        expect_equal(group->stage(), success_k);
 
-        if (unwinding) { st_verify_(group->rollback()); }
+        if (unwinding) { expect_equal(group->rollback(), success_k); }
         else {
-            st_verify_(group->commit());
-            st_verify_(model.upsert(trivial_id_to_member<model_member_t>(identifier, value)));
+            expect_equal(group->commit(), success_k);
+            expect_equal(model.upsert(trivial_id_to_member<model_member_t>(identifier, value)), success_k);
             ++published_rounds;
         }
 
         // Each participant answers to the model rather than to the other, so a round that published
         // nothing anywhere cannot pass by leaving the two equally empty.
         fuzz_snapshot_t const intended = fuzz_snapshot_of(model);
-        st_verify_eq_(fuzz_snapshot_of(alpha), intended, "the first participant lost what its round published");
-        st_verify_eq_(fuzz_snapshot_of(beta), intended, "the second participant lost what its round published");
+        expect_equal(fuzz_snapshot_of(alpha), intended, "the first participant lost what its round published");
+        expect_equal(fuzz_snapshot_of(beta), intended, "the second participant lost what its round published");
     }
 
-    st_verify_ne_(published_rounds, 0, "no round published, so this proves nothing");
+    expect_true(published_rounds != 0, "no round published, so this proves nothing");
 }
 
 #pragma endregion Groups Against Tearing

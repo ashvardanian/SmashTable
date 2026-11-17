@@ -14,7 +14,6 @@
 #include <algorithm> // `std::lower_bound`, `std::sort`
 #include <concepts>  // `std::same_as`
 #include <limits>    // `std::numeric_limits`
-#include <random>    // `std::mt19937_64`
 #include <span>      // `std::span`
 
 #include <smashtable/basic_vector.hpp>
@@ -62,7 +61,7 @@ template <typename key_type_>
 
 /** Fills @p keys from @p shape: a tie sits in a 16-byte key's high word, repeats in an integer. */
 template <typename key_type_>
-void fill_keys(std::span<key_type_> keys, key_shape_t shape, std::mt19937_64 &generator) {
+void fill_keys(std::span<key_type_> keys, key_shape_t shape, split_mix_generator_t &generator) {
     std::uint64_t const all_ones = (std::numeric_limits<std::uint64_t>::max)();
     std::uint64_t const tied_word = generator();
     std::uint64_t const boundary = sizeof(key_type_) == 4 ? std::uint64_t {1} << 31 : std::uint64_t {1} << 63;
@@ -87,7 +86,8 @@ void fill_keys(std::span<key_type_> keys, key_shape_t shape, std::mt19937_64 &ge
 
 /** Collects the keys worth asking about: extremes, the boundary, and the row's own neighbours. */
 template <typename key_type_>
-void collect_wanted(std::span<key_type_ const> keys, std::mt19937_64 &generator, basic_vector<key_type_> &wanted) {
+void collect_wanted(std::span<key_type_ const> keys, split_mix_generator_t &generator,
+                    basic_vector<key_type_> &wanted) {
     std::uint64_t const all_ones = (std::numeric_limits<std::uint64_t>::max)();
     std::uint64_t const boundary = std::uint64_t {1} << 63;
     wanted.clear();
@@ -96,15 +96,15 @@ void collect_wanted(std::span<key_type_ const> keys, std::mt19937_64 &generator,
           key_from_words<key_type_>(0, all_ones), key_from_words<key_type_>(all_ones, 0),
           key_from_words<key_type_>(boundary, boundary), key_from_words<key_type_>(0, 1u << 31),
           (std::numeric_limits<key_type_>::min)(), (std::numeric_limits<key_type_>::max)()})
-        st_verify_(wanted.push_back(key_type_ {extreme}));
+        expect_equal(wanted.push_back(key_type_ {extreme}), success_k);
     std::size_t const stride = keys.size() / 24 + 1;
     for (std::size_t index = 0; index < keys.size(); index += stride) {
-        st_verify_(wanted.push_back(key_type_ {keys[index]}));
-        st_verify_(wanted.push_back(successor_or_self(keys[index])));
-        st_verify_(wanted.push_back(predecessor_or_self(keys[index])));
+        expect_equal(wanted.push_back(key_type_ {keys[index]}), success_k);
+        expect_equal(wanted.push_back(successor_or_self(keys[index])), success_k);
+        expect_equal(wanted.push_back(predecessor_or_self(keys[index])), success_k);
     }
     for (std::size_t draw = 0; draw < 8; ++draw)
-        st_verify_(wanted.push_back(key_from_words<key_type_>(generator(), generator())));
+        expect_equal(wanted.push_back(key_from_words<key_type_>(generator(), generator())), success_k);
 }
 
 #pragma endregion Key Generation
@@ -114,8 +114,8 @@ void collect_wanted(std::span<key_type_ const> keys, std::mt19937_64 &generator,
 /** Splits a 16-byte row into its two columns, the way a split node stores it. */
 void split_columns(std::span<key128_t const> keys, basic_vector<std::uint64_t> &high_words,
                    basic_vector<std::uint64_t> &low_words) {
-    st_verify_(high_words.resize(keys.size()));
-    st_verify_(low_words.resize(keys.size()));
+    expect_equal(high_words.resize(keys.size()), success_k);
+    expect_equal(low_words.resize(keys.size()), success_k);
     for (std::size_t index = 0; index < keys.size(); ++index) {
         high_words[index] = keys[index].high;
         low_words[index] = keys[index].low;
@@ -123,26 +123,26 @@ void split_columns(std::span<key128_t const> keys, basic_vector<std::uint64_t> &
 }
 
 template <typename kit_type_, typename key_type_, std::size_t extent_>
-void verify_row(std::span<key_type_ const, extent_> row, std::span<key_type_ const> wanted, bool is_sorted) {
+void check_row(std::span<key_type_ const, extent_> row, std::span<key_type_ const> wanted, bool is_sorted) {
     basic_vector<std::uint64_t> high_words;
     basic_vector<std::uint64_t> low_words;
     if constexpr (std::same_as<key_type_, key128_t>) split_columns(row, high_words, low_words);
     for (key_type_ const key : wanted) {
         std::size_t const expected_below = serial_row_kit_t::count_below(row, key);
-        st_verify_eq_(kit_type_::count_below(row, key), expected_below);
-        st_verify_eq_(count_not_above<kit_type_>(row, key), count_not_above<serial_row_kit_t>(row, key));
+        expect_equal(kit_type_::count_below(row, key), expected_below);
+        expect_equal(count_not_above<kit_type_>(row, key), count_not_above<serial_row_kit_t>(row, key));
         if constexpr (std::same_as<key_type_, key128_t>) {
             std::span<std::uint64_t const, extent_> const highs(high_words.data(), row.size());
             std::span<std::uint64_t const, extent_> const lows(low_words.data(), row.size());
-            st_verify_eq_(serial_row_kit_t::count_below(highs, lows, key), expected_below);
-            st_verify_eq_(kit_type_::count_below(highs, lows, key), expected_below);
-            st_verify_eq_(count_not_above<kit_type_>(highs, lows, key), count_not_above<serial_row_kit_t>(row, key));
+            expect_equal(serial_row_kit_t::count_below(highs, lows, key), expected_below);
+            expect_equal(kit_type_::count_below(highs, lows, key), expected_below);
+            expect_equal(count_not_above<kit_type_>(highs, lows, key), count_not_above<serial_row_kit_t>(row, key));
         }
         if (is_sorted) {
             std::span<key_type_ const> const sorted(row.data(), row.size());
-            st_verify_eq_(count_below_sorted<kit_type_>(sorted, key), lower_bound_of(sorted, key));
+            expect_equal(count_below_sorted<kit_type_>(sorted, key), lower_bound_of(sorted, key));
             if constexpr (std::same_as<key_type_, key128_t>)
-                st_verify_eq_(
+                expect_equal(
                     count_below_sorted<kit_type_>(std::span<std::uint64_t const>(high_words.data(), row.size()),
                                                   std::span<std::uint64_t const>(low_words.data(), row.size()), key),
                     lower_bound_of(sorted, key));
@@ -151,39 +151,39 @@ void verify_row(std::span<key_type_ const, extent_> row, std::span<key_type_ con
 }
 
 template <typename kit_type_, typename key_type_>
-void verify_rows_of(std::mt19937_64 &generator) {
+void check_rows_of(split_mix_generator_t &generator) {
     constexpr std::size_t long_lengths[] = {127, 128, 129, 255, 256, 257, 511, 512, 513, 1023, 1024, 1025, 4099};
     basic_vector<key_type_> keys;
     basic_vector<key_type_> wanted;
     for (key_shape_t const shape : key_shapes_k) {
         for (std::size_t length = 0; length < 70 + std::size(long_lengths); ++length) {
             std::size_t const row_length = length < 70 ? length : long_lengths[length - 70];
-            st_verify_(keys.resize(row_length));
+            expect_equal(keys.resize(row_length), success_k);
             fill_keys(std::span<key_type_>(keys.data(), row_length), shape, generator);
             std::span<key_type_ const> const row(keys.data(), row_length);
             collect_wanted(row, generator, wanted);
             std::span<key_type_ const> const asked(wanted.data(), wanted.size());
-            verify_row<kit_type_>(row, asked, false);
+            check_row<kit_type_>(row, asked, false);
             std::sort(keys.begin(), keys.end());
-            verify_row<kit_type_>(row, asked, true);
+            check_row<kit_type_>(row, asked, true);
         }
         // A static extent is the width a medium fixes, and the kit may unroll its loop for it.
         for (std::size_t const extent : {4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u, 1024u}) {
-            st_verify_(keys.resize(extent));
+            expect_equal(keys.resize(extent), success_k);
             fill_keys(std::span<key_type_>(keys.data(), extent), shape, generator);
             std::sort(keys.begin(), keys.end());
             collect_wanted(std::span<key_type_ const>(keys.data(), extent), generator, wanted);
             std::span<key_type_ const> const asked(wanted.data(), wanted.size());
             switch (extent) {
-            case 4: verify_row<kit_type_>(std::span<key_type_ const, 4>(keys.data(), 4), asked, true); break;
-            case 8: verify_row<kit_type_>(std::span<key_type_ const, 8>(keys.data(), 8), asked, true); break;
-            case 16: verify_row<kit_type_>(std::span<key_type_ const, 16>(keys.data(), 16), asked, true); break;
-            case 32: verify_row<kit_type_>(std::span<key_type_ const, 32>(keys.data(), 32), asked, true); break;
-            case 64: verify_row<kit_type_>(std::span<key_type_ const, 64>(keys.data(), 64), asked, true); break;
-            case 128: verify_row<kit_type_>(std::span<key_type_ const, 128>(keys.data(), 128), asked, true); break;
-            case 256: verify_row<kit_type_>(std::span<key_type_ const, 256>(keys.data(), 256), asked, true); break;
-            case 512: verify_row<kit_type_>(std::span<key_type_ const, 512>(keys.data(), 512), asked, true); break;
-            default: verify_row<kit_type_>(std::span<key_type_ const, 1024>(keys.data(), 1024), asked, true); break;
+            case 4: check_row<kit_type_>(std::span<key_type_ const, 4>(keys.data(), 4), asked, true); break;
+            case 8: check_row<kit_type_>(std::span<key_type_ const, 8>(keys.data(), 8), asked, true); break;
+            case 16: check_row<kit_type_>(std::span<key_type_ const, 16>(keys.data(), 16), asked, true); break;
+            case 32: check_row<kit_type_>(std::span<key_type_ const, 32>(keys.data(), 32), asked, true); break;
+            case 64: check_row<kit_type_>(std::span<key_type_ const, 64>(keys.data(), 64), asked, true); break;
+            case 128: check_row<kit_type_>(std::span<key_type_ const, 128>(keys.data(), 128), asked, true); break;
+            case 256: check_row<kit_type_>(std::span<key_type_ const, 256>(keys.data(), 256), asked, true); break;
+            case 512: check_row<kit_type_>(std::span<key_type_ const, 512>(keys.data(), 512), asked, true); break;
+            default: check_row<kit_type_>(std::span<key_type_ const, 1024>(keys.data(), 1024), asked, true); break;
             }
         }
     }
@@ -191,7 +191,7 @@ void verify_rows_of(std::mt19937_64 &generator) {
 
 /** Masks of equal keys against a plain loop, the wanted key at every position and at none. */
 template <typename kit_type_, typename word_type_>
-void verify_masks_of(std::mt19937_64 &generator) {
+void check_masks_of(split_mix_generator_t &generator) {
     constexpr std::size_t mask_equal_width_k = kit_type_::mask_equal_width_k;
     word_type_ keys[mask_equal_width_k];
     for (std::size_t round = 0; round != 256; ++round) {
@@ -210,22 +210,22 @@ void verify_masks_of(std::mt19937_64 &generator) {
             std::uint32_t expected = 0;
             for (std::size_t index = 0; index != mask_equal_width_k; ++index)
                 expected |= static_cast<std::uint32_t>(keys[index] == wanted) << index;
-            st_verify_eq_(kit_type_::mask_equal(row, wanted), expected);
+            expect_equal(kit_type_::mask_equal(row, wanted), expected);
         }
     }
 }
 
 template <typename kit_type_>
-void verify_kit_rows(test_context_t const &context, kit_type_) {
-    std::mt19937_64 generator(mix_seed(context.seed, name_of(kit_type_::kit_k)));
-    verify_rows_of<kit_type_, std::uint32_t>(generator);
-    verify_rows_of<kit_type_, std::int32_t>(generator);
-    verify_rows_of<kit_type_, std::uint64_t>(generator);
-    verify_rows_of<kit_type_, std::int64_t>(generator);
-    verify_rows_of<kit_type_, key128_t>(generator);
-    verify_masks_of<kit_type_, std::uint32_t>(generator);
-    verify_masks_of<kit_type_, std::uint64_t>(generator);
-    verify_masks_of<kit_type_, key128_t>(generator);
+void check_kit_rows(kit_type_) {
+    split_mix_generator_t generator {case_stream_key()};
+    check_rows_of<kit_type_, std::uint32_t>(generator);
+    check_rows_of<kit_type_, std::int32_t>(generator);
+    check_rows_of<kit_type_, std::uint64_t>(generator);
+    check_rows_of<kit_type_, std::int64_t>(generator);
+    check_rows_of<kit_type_, key128_t>(generator);
+    check_masks_of<kit_type_, std::uint32_t>(generator);
+    check_masks_of<kit_type_, std::uint64_t>(generator);
+    check_masks_of<kit_type_, key128_t>(generator);
 }
 
 #pragma endregion Kit Equivalence
@@ -236,20 +236,20 @@ void verify_kit_rows(test_context_t const &context, kit_type_) {
  *  answers the view built over those bytes. */
 template <typename tree_type_>
 expected<typename tree_type_::view_t> save_and_view(tree_type_ const &tree, basic_vector<std::uint64_t> &words) {
-    st_verify_(words.resize(tree.saved_bytes() / sizeof(std::uint64_t) + 1));
+    expect_equal(words.resize(tree.saved_bytes() / sizeof(std::uint64_t) + 1), success_k);
     std::span<std::byte> const bytes(reinterpret_cast<std::byte *>(words.data()), tree.saved_bytes());
-    st_verify_eq_(tree.save(bytes), success_k);
+    expect_equal(tree.save(bytes), success_k);
     expected<typename tree_type_::view_t> view = tree_type_::view_t::make(std::span<std::byte const>(bytes));
-    if (view) st_verify_eq_(view->saved_bytes(), tree.saved_bytes());
+    if (view) expect_equal(view->saved_bytes(), tree.saved_bytes());
     return view;
 }
 
 template <typename kit_type_, typename key_type_, std::size_t keys_per_row_>
-void verify_layouts_of(std::mt19937_64 &generator) {
+void check_layouts_of(split_mix_generator_t &generator) {
     using btree_t = immutable_b_tree<key_type_, keys_per_row_, kit_type_>;
     using splus_t = immutable_splus_tree<key_type_, keys_per_row_, kit_type_>;
-    test_ordered_readonly_tags<btree_t>();
-    test_ordered_readonly_tags<splus_t>();
+    check_ordered_readonly_tags<btree_t>();
+    check_ordered_readonly_tags<splus_t>();
     std::size_t const row = keys_per_row_;
     std::size_t const fanout = row + 1;
     std::size_t const sizes[] = {
@@ -271,7 +271,7 @@ void verify_layouts_of(std::mt19937_64 &generator) {
     for (key_shape_t const shape : key_shapes_k)
         for (std::size_t const size : sizes) {
             if (size > (std::size_t {1} << 20)) continue;
-            st_verify_(keys.resize(size));
+            expect_equal(keys.resize(size), success_k);
             fill_keys(std::span<key_type_>(keys.data(), size), shape, generator);
             std::sort(keys.begin(), keys.end());
             std::span<key_type_ const> const sorted(keys.data(), size);
@@ -279,57 +279,47 @@ void verify_layouts_of(std::mt19937_64 &generator) {
             std::span<key_type_ const> const asked(wanted.data(), wanted.size());
 
             expected<btree_t> btree = btree_t::make(sorted);
-            st_verify_(btree);
-            verify_ordered_readonly(*btree, sorted, asked);
+            if (!expect_equal(btree.status(), success_k)) return;
+            check_ordered_readonly(*btree, sorted, asked);
             expected<splus_t> splus = splus_t::make(sorted);
-            st_verify_(splus);
-            verify_ordered_readonly(*splus, sorted, asked);
+            if (!expect_equal(splus.status(), success_k)) return;
+            check_ordered_readonly(*splus, sorted, asked);
             expected<typename splus_t::view_t> view = save_and_view(*splus, saved);
-            st_verify_(view);
-            verify_ordered_readonly(*view, sorted, asked);
+            if (!expect_equal(view.status(), success_k)) return;
+            check_ordered_readonly(*view, sorted, asked);
         }
 
     // Out-of-order input is refused rather than built into a tree that answers wrongly.
     key_type_ const reversed[] = {key_from_words<key_type_>(0, 2), key_from_words<key_type_>(0, 1)};
-    st_verify_eq_(btree_t::make(std::span<key_type_ const>(reversed, 2)).status(), status_t::invalid_argument_k);
-    st_verify_eq_(splus_t::make(std::span<key_type_ const>(reversed, 2)).status(), status_t::invalid_argument_k);
+    expect_equal(btree_t::make(std::span<key_type_ const>(reversed, 2)).status(), status_t::invalid_argument_k);
+    expect_equal(splus_t::make(std::span<key_type_ const>(reversed, 2)).status(), status_t::invalid_argument_k);
 }
 
 template <typename kit_type_>
-void verify_kit_layouts(test_context_t const &context, kit_type_) {
-    std::mt19937_64 generator(mix_seed(context.seed, name_of(kit_type_::kit_k)));
+void check_kit_layouts(kit_type_) {
+    split_mix_generator_t generator {case_stream_key()};
     // Widths from each medium - a cache line, a 512-byte and a 4096-byte block - and a few odd ones for the arithmetic.
-    verify_layouts_of<kit_type_, key128_t, 2>(generator);
-    verify_layouts_of<kit_type_, key128_t, 3>(generator);
-    verify_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(64u)>(generator);
-    verify_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(512u)>(generator);
-    verify_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(4096u)>(generator);
-    verify_layouts_of<kit_type_, std::uint64_t, 5>(generator);
-    verify_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(64u)>(generator);
-    verify_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(512u)>(generator);
-    verify_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(4096u)>(generator);
-    verify_layouts_of<kit_type_, std::int64_t, keys_per_row<std::int64_t>(64u)>(generator);
-    verify_layouts_of<kit_type_, std::int32_t, keys_per_row<std::int32_t>(512u)>(generator);
-    verify_layouts_of<kit_type_, std::uint32_t, keys_per_row<std::uint32_t>(512u)>(generator);
+    check_layouts_of<kit_type_, key128_t, 2>(generator);
+    check_layouts_of<kit_type_, key128_t, 3>(generator);
+    check_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(64u)>(generator);
+    check_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(512u)>(generator);
+    check_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(4096u)>(generator);
+    check_layouts_of<kit_type_, std::uint64_t, 5>(generator);
+    check_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(64u)>(generator);
+    check_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(512u)>(generator);
+    check_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(4096u)>(generator);
+    check_layouts_of<kit_type_, std::int64_t, keys_per_row<std::int64_t>(64u)>(generator);
+    check_layouts_of<kit_type_, std::int32_t, keys_per_row<std::int32_t>(512u)>(generator);
+    check_layouts_of<kit_type_, std::uint32_t, keys_per_row<std::uint32_t>(512u)>(generator);
 }
 
 #pragma endregion Layout Equivalence
 
 #pragma region Tests
 
-void verify_rows_through(test_context_t const &context, row_kit_t kit) {
-    if (row_kit_supported(kit))
-        visit_row_kit(kit, [&](row_kit auto kit_instance) noexcept { verify_kit_rows(context, kit_instance); });
-}
-
-void verify_layouts_through(test_context_t const &context, row_kit_t kit) {
-    if (row_kit_supported(kit))
-        visit_row_kit(kit, [&](row_kit auto kit_instance) noexcept { verify_kit_layouts(context, kit_instance); });
-}
-
 /** The serial kit is the reference, answering the definitions: byte order, bounds and widths. */
-void row_search_serial_matches_definitions(test_context_t const &context) {
-    std::mt19937_64 generator(mix_seed(context.seed, __func__));
+void test_serial_matches_definitions() {
+    split_mix_generator_t generator {case_stream_key()};
     for (std::size_t draw = 0; draw < 4096; ++draw) {
         std::byte first_bytes[16];
         std::byte second_bytes[16];
@@ -341,142 +331,134 @@ void row_search_serial_matches_definitions(test_context_t const &context) {
         key128_t const first = key128_t::from_bytes(first_bytes);
         key128_t const second = key128_t::from_bytes(second_bytes);
         int const byte_order = std::memcmp(first_bytes, second_bytes, 16);
-        st_verify_eq_(first < second, byte_order < 0);
-        st_verify_eq_(first == second, byte_order == 0);
+        expect_equal(first < second, byte_order < 0);
+        expect_equal(first == second, byte_order == 0);
         std::byte round_trip[16];
         first.to_bytes(round_trip);
-        st_verify_eq_(std::memcmp(round_trip, first_bytes, 16), 0);
+        expect_equal(std::memcmp(round_trip, first_bytes, 16), 0);
     }
 
     std::uint64_t const words[] = {0, 1, 5, 5, 9, (std::numeric_limits<std::uint64_t>::max)()};
     std::span<std::uint64_t const> const row(words, 6);
-    st_verify_eq_(serial_row_kit_t::count_below(row, std::uint64_t {5}), 2u);
-    st_verify_eq_(count_not_above<serial_row_kit_t>(row, std::uint64_t {5}), 4u);
-    st_verify_eq_(count_not_above<serial_row_kit_t>(row, (std::numeric_limits<std::uint64_t>::max)()), 6u);
+    expect_equal(serial_row_kit_t::count_below(row, std::uint64_t {5}), 2u);
+    expect_equal(count_not_above<serial_row_kit_t>(row, std::uint64_t {5}), 4u);
+    expect_equal(count_not_above<serial_row_kit_t>(row, (std::numeric_limits<std::uint64_t>::max)()), 6u);
 
     // An integer identity parks in the low word and orders as its value.
-    st_verify_((key128_t {0, 42} < key128_t {0, 43}));
-    st_verify_((key128_t {0, (std::numeric_limits<std::uint64_t>::max)()} < key128_t {1, 0}));
+    expect_true((key128_t {0, 42} < key128_t {0, 43}));
+    expect_true((key128_t {0, (std::numeric_limits<std::uint64_t>::max)()} < key128_t {1, 0}));
 
-    st_verify_eq_(keys_per_row<key128_t>(512u), 32u);
-    st_verify_eq_(keys_per_row<key128_t>(4096u), 256u);
-    st_verify_eq_(keys_per_row<key128_t>(64u), 4u);
-    st_verify_eq_(keys_per_row<std::uint64_t>(512u), 64u);
-    st_verify_eq_(keys_per_row<std::uint32_t>(4096u), 1024u);
+    expect_equal(keys_per_row<key128_t>(512u), 32u);
+    expect_equal(keys_per_row<key128_t>(4096u), 256u);
+    expect_equal(keys_per_row<key128_t>(64u), 4u);
+    expect_equal(keys_per_row<std::uint64_t>(512u), 64u);
+    expect_equal(keys_per_row<std::uint32_t>(4096u), 1024u);
     using block_format_t = row_format<key128_t, 32>;
     using page_format_t = row_format<std::uint64_t, 512>;
-    st_verify_eq_(block_format_t::bytes_per_row_k, 512u);
-    st_verify_eq_(page_format_t::bytes_per_row_k, 4096u);
-    st_verify_eq_(immutable_b_tree<key128_t>::keys_per_row_k, 32u);
+    expect_equal(block_format_t::bytes_per_row_k, 512u);
+    expect_equal(page_format_t::bytes_per_row_k, 4096u);
+    expect_equal(immutable_b_tree<key128_t>::keys_per_row_k, 32u);
 
     row_kit_t const detected = detect_row_kit();
-    st_verify_(row_kit_compiled(detected));
-    st_verify_(row_kit_supported(detected));
+    expect_true(row_kit_compiled(detected));
+    expect_true(row_kit_supported(detected));
 }
 
-void row_search_serial_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::serial_k); }
-void row_search_haswell_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::haswell_k); }
-void row_search_skylake_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::skylake_k); }
-void row_search_icelake_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::icelake_k); }
-void row_search_neon_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::neon_k); }
-void row_search_sve_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::sve_k); }
-void row_search_rvv_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::rvv_k); }
-void row_search_powervsx_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::powervsx_k); }
-void row_search_v128_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::v128_k); }
+/** @c check_kit_rows through @p kit , skipped where this machine cannot run it. */
+case_result_t test_kit_rows(row_kit_t kit) {
+    if (!row_kit_supported(kit)) return case_result_t::skipped(needs_kit_reason(kit));
+    visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { check_kit_rows(kit_instance); });
+    return {};
+}
 
-void layouts_serial_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::serial_k); }
-void layouts_haswell_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::haswell_k); }
-void layouts_skylake_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::skylake_k); }
-void layouts_icelake_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::icelake_k); }
-void layouts_neon_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::neon_k); }
-void layouts_sve_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::sve_k); }
-void layouts_rvv_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::rvv_k); }
-void layouts_powervsx_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::powervsx_k); }
-void layouts_v128_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::v128_k); }
+/** @c check_kit_layouts through @p kit , skipped where this machine cannot run it. */
+case_result_t test_kit_layouts(row_kit_t kit) {
+    if (!row_kit_supported(kit)) return case_result_t::skipped(needs_kit_reason(kit));
+    visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { check_kit_layouts(kit_instance); });
+    return {};
+}
 
 /** A map form answers its set twin's keys and returns the value each key arrived with. */
-void layouts_mapped_values() {
-    test_ordered_readonly_mapping<immutable_b_map<std::uint64_t, std::uint64_t>, immutable_b_set<std::uint64_t>>();
-    test_ordered_readonly_mapping<immutable_splus_map<std::uint64_t, std::uint64_t>,
-                                  immutable_splus_set<std::uint64_t>>();
-    test_ordered_readonly_mapping<immutable_b_map<std::uint32_t, std::uint32_t>, immutable_b_set<std::uint32_t>>();
-    test_ordered_readonly_mapping<immutable_splus_map<std::int64_t, std::uint64_t>,
-                                  immutable_splus_set<std::int64_t>>();
+void test_mapped_values() {
+    check_ordered_readonly_mapping<immutable_b_map<std::uint64_t, std::uint64_t>, immutable_b_set<std::uint64_t>>();
+    check_ordered_readonly_mapping<immutable_splus_map<std::uint64_t, std::uint64_t>,
+                                   immutable_splus_set<std::uint64_t>>();
+    check_ordered_readonly_mapping<immutable_b_map<std::uint32_t, std::uint32_t>, immutable_b_set<std::uint32_t>>();
+    check_ordered_readonly_mapping<immutable_splus_map<std::int64_t, std::uint64_t>,
+                                   immutable_splus_set<std::int64_t>>();
 }
 
 /** A saved map reads back every value beside its key in place, and a view refuses bytes that are
  *  misaligned, truncated, or saved by a tree of another row width or element. */
-void layouts_saved_views() {
+void test_saved_views() {
     using map_t = immutable_splus_map<std::uint64_t, std::uint64_t>;
     using pair_t = map_t::value_t;
     basic_vector<pair_t> pairs;
-    for (std::uint64_t index = 0; index != 1000; ++index) st_verify_(pairs.push_back(pair_t {index * 3, index * 7}));
+    for (std::uint64_t index = 0; index != 1000; ++index)
+        expect_equal(pairs.push_back(pair_t {index * 3, index * 7}), success_k);
     expected<map_t> map = map_t::make({pairs.data(), pairs.size()});
-    st_verify_(map);
+    if (!expect_equal(map.status(), success_k)) return;
     basic_vector<std::uint64_t> words;
     expected<map_t::view_t> view = save_and_view(*map, words);
-    st_verify_(view);
+    if (!expect_equal(view.status(), success_k)) return;
     for (std::size_t rank = 0; rank != pairs.size(); ++rank) {
-        st_verify_eq_(view->select(rank), pairs[rank].key);
-        st_verify_eq_(view->mapped_at(rank), pairs[rank].mapped);
+        expect_equal(view->select(rank), pairs[rank].key);
+        expect_equal(view->mapped_at(rank), pairs[rank].mapped);
     }
-    st_verify_eq_(view->find(pairs[500].key), 500u);
-    st_verify_eq_(view->find(1).status(), status_t::key_not_found_k);
+    expect_equal(view->find(pairs[500].key), 500u);
+    expect_equal(view->find(1).status(), status_t::key_not_found_k);
 
     std::span<std::byte const> const bytes(reinterpret_cast<std::byte const *>(words.data()), map->saved_bytes());
-    st_verify_eq_(map_t::view_t::make(bytes.first(bytes.size() - 1)).status(), status_t::invalid_argument_k);
-    st_verify_eq_(map_t::view_t::make(bytes.first(sizeof(splus_tree_header_t) - 1)).status(),
-                  status_t::invalid_argument_k);
-    st_verify_eq_(map_t::view_t::make(bytes.subspan(1)).status(), status_t::invalid_argument_k, "a misaligned start");
-    st_verify_eq_(immutable_splus_set<std::uint64_t>::view_t::make(bytes).status(), status_t::invalid_argument_k,
-                  "a set over a map's bytes");
-    st_verify_eq_((immutable_splus_tree_view<pair_t, 8>::make(bytes).status()), status_t::invalid_argument_k,
-                  "another row width");
+    expect_equal(map_t::view_t::make(bytes.first(bytes.size() - 1)).status(), status_t::invalid_argument_k);
+    expect_equal(map_t::view_t::make(bytes.first(sizeof(splus_tree_header_t) - 1)).status(),
+                 status_t::invalid_argument_k);
+    expect_equal(map_t::view_t::make(bytes.subspan(1)).status(), status_t::invalid_argument_k, "a misaligned start");
+    expect_equal(immutable_splus_set<std::uint64_t>::view_t::make(bytes).status(), status_t::invalid_argument_k,
+                 "a set over a map's bytes");
+    expect_equal((immutable_splus_tree_view<pair_t, 8>::make(bytes).status()), status_t::invalid_argument_k,
+                 "another row width");
     std::span<std::byte> const short_bytes(reinterpret_cast<std::byte *>(words.data()), map->saved_bytes() - 1);
-    st_verify_eq_(map->save(short_bytes), status_t::invalid_argument_k);
+    expect_equal(map->save(short_bytes), status_t::invalid_argument_k);
 
     expected<immutable_splus_set<std::uint32_t>> empty = immutable_splus_set<std::uint32_t>::make({});
-    st_verify_(empty);
+    if (!expect_equal(empty.status(), success_k)) return;
     expected<immutable_splus_set<std::uint32_t>::view_t> empty_view = save_and_view(*empty, words);
-    st_verify_(empty_view);
-    st_verify_(empty_view->empty());
-    st_verify_eq_(empty_view->rank(7u), 0u);
+    if (!expect_equal(empty_view.status(), success_k)) return;
+    expect_true(empty_view->empty());
+    expect_equal(empty_view->rank(7u), 0u);
 }
 
 #pragma endregion Tests
 
 } // namespace ashvardanian::smashtable::test
 
+using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::test;
 
-int main(int, char **arguments) {
-    settings_t const settings = read_settings(arguments[0]);
-    install_test_signal_handlers();
-    print(probe_machine());
-    print(settings);
-    test_tally_t tally;
+int main(int argc, char **argv) {
+    start_test_run(argc, argv);
 
-    tally += run_test(settings, "row_search.serial_matches_definitions", row_search_serial_matches_definitions);
-    tally += run_test(settings, "row_search.serial_kit", row_search_serial_kit);
-    tally += run_test(settings, "row_search.haswell_kit", row_search_haswell_kit);
-    tally += run_test(settings, "row_search.skylake_kit", row_search_skylake_kit);
-    tally += run_test(settings, "row_search.icelake_kit", row_search_icelake_kit);
-    tally += run_test(settings, "row_search.neon_kit", row_search_neon_kit);
-    tally += run_test(settings, "row_search.sve_kit", row_search_sve_kit);
-    tally += run_test(settings, "row_search.rvv_kit", row_search_rvv_kit);
-    tally += run_test(settings, "row_search.powervsx_kit", row_search_powervsx_kit);
-    tally += run_test(settings, "row_search.v128_kit", row_search_v128_kit);
-    tally += run_test(settings, "layouts.serial_kit", layouts_serial_kit);
-    tally += run_test(settings, "layouts.haswell_kit", layouts_haswell_kit);
-    tally += run_test(settings, "layouts.skylake_kit", layouts_skylake_kit);
-    tally += run_test(settings, "layouts.icelake_kit", layouts_icelake_kit);
-    tally += run_test(settings, "layouts.neon_kit", layouts_neon_kit);
-    tally += run_test(settings, "layouts.sve_kit", layouts_sve_kit);
-    tally += run_test(settings, "layouts.rvv_kit", layouts_rvv_kit);
-    tally += run_test(settings, "layouts.powervsx_kit", layouts_powervsx_kit);
-    tally += run_test(settings, "layouts.v128_kit", layouts_v128_kit);
-    tally += run_test(settings, "layouts.mapped_values", layouts_mapped_values);
-    tally += run_test(settings, "layouts.saved_views", layouts_saved_views);
+    run_test_case("test_serial_matches_definitions", test_serial_matches_definitions);
+    run_test_case("test_kit_rows(row_kit_t::serial_k)", test_kit_rows, row_kit_t::serial_k);
+    run_test_case("test_kit_rows(row_kit_t::haswell_k)", test_kit_rows, row_kit_t::haswell_k);
+    run_test_case("test_kit_rows(row_kit_t::skylake_k)", test_kit_rows, row_kit_t::skylake_k);
+    run_test_case("test_kit_rows(row_kit_t::icelake_k)", test_kit_rows, row_kit_t::icelake_k);
+    run_test_case("test_kit_rows(row_kit_t::neon_k)", test_kit_rows, row_kit_t::neon_k);
+    run_test_case("test_kit_rows(row_kit_t::sve_k)", test_kit_rows, row_kit_t::sve_k);
+    run_test_case("test_kit_rows(row_kit_t::rvv_k)", test_kit_rows, row_kit_t::rvv_k);
+    run_test_case("test_kit_rows(row_kit_t::powervsx_k)", test_kit_rows, row_kit_t::powervsx_k);
+    run_test_case("test_kit_rows(row_kit_t::v128_k)", test_kit_rows, row_kit_t::v128_k);
+    run_test_case("test_kit_layouts(row_kit_t::serial_k)", test_kit_layouts, row_kit_t::serial_k);
+    run_test_case("test_kit_layouts(row_kit_t::haswell_k)", test_kit_layouts, row_kit_t::haswell_k);
+    run_test_case("test_kit_layouts(row_kit_t::skylake_k)", test_kit_layouts, row_kit_t::skylake_k);
+    run_test_case("test_kit_layouts(row_kit_t::icelake_k)", test_kit_layouts, row_kit_t::icelake_k);
+    run_test_case("test_kit_layouts(row_kit_t::neon_k)", test_kit_layouts, row_kit_t::neon_k);
+    run_test_case("test_kit_layouts(row_kit_t::sve_k)", test_kit_layouts, row_kit_t::sve_k);
+    run_test_case("test_kit_layouts(row_kit_t::rvv_k)", test_kit_layouts, row_kit_t::rvv_k);
+    run_test_case("test_kit_layouts(row_kit_t::powervsx_k)", test_kit_layouts, row_kit_t::powervsx_k);
+    run_test_case("test_kit_layouts(row_kit_t::v128_k)", test_kit_layouts, row_kit_t::v128_k);
+    run_test_case("test_mapped_values", test_mapped_values);
+    run_test_case("test_saved_views", test_saved_views);
 
-    return report_test_failures(settings, tally);
+    return finish_test_run();
 }

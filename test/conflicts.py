@@ -15,13 +15,13 @@ Date: October 30, 2025
 import threading
 
 import pytest
-from base import key_types, make, map_class_names, sharing_modes
+from base import KEY_TYPES, MAP_CLASSES, SHARING_MODES, make
 
 import smashtable as st
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_an_external_write_to_a_watched_key_conflicts(container, keygen):
     """A watch turns a lost update into a refusal at stage time."""
     key = keygen(1)[0]
@@ -38,8 +38,8 @@ def test_an_external_write_to_a_watched_key_conflicts(container, keygen):
 @pytest.mark.thread_unsafe(
     reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
 )
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_conflicted_stage_applies_nothing(container, keygen):
     """A refused stage leaves the store exactly as the other writer left it."""
     key = keygen(1)[0]
@@ -57,8 +57,8 @@ def test_a_conflicted_stage_applies_nothing(container, keygen):
 @pytest.mark.thread_unsafe(
     reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
 )
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_an_undisturbed_watch_commits(container, keygen):
     """A watch that nobody trips is invisible."""
     key = keygen(1)[0]
@@ -72,8 +72,8 @@ def test_an_undisturbed_watch_commits(container, keygen):
 @pytest.mark.thread_unsafe(
     reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
 )
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_an_unwatched_key_does_not_conflict(container, keygen):
     """Only watched keys arm the check, so an unrelated write is not a conflict."""
     keys = keygen(2)
@@ -88,8 +88,8 @@ def test_an_unwatched_key_does_not_conflict(container, keygen):
     assert container[keys[0]] == 2
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_watching_an_absent_key_conflicts_when_it_appears(container, keygen):
     """A watch covers absence too, so an insert by someone else is a conflict."""
     key = keygen(1)[0]
@@ -105,8 +105,8 @@ def test_watching_an_absent_key_conflicts_when_it_appears(container, keygen):
 @pytest.mark.thread_unsafe(
     reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
 )
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_watching_the_same_key_twice_is_idempotent(container, keygen):
     """Watching twice is not an error and does not double-arm anything."""
     key = keygen(1)[0]
@@ -118,8 +118,8 @@ def test_watching_the_same_key_twice_is_idempotent(container, keygen):
     assert container[key] == 2
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_watch_rejects_a_foreign_key_type(container):
     """A watch on a key this container cannot hold is refused like any other key use."""
     with st.transaction(container) as (view,):
@@ -127,8 +127,8 @@ def test_watch_rejects_a_foreign_key_type(container):
             view.watch(1.5)
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_conflict_in_one_container_aborts_the_whole_group(container_class, key_type, keygen):
     """A group is all-or-nothing, so one participant's conflict discards the others' work."""
     first = make(container_class, key_type)
@@ -149,8 +149,8 @@ def test_a_conflict_in_one_container_aborts_the_whole_group(container_class, key
 @pytest.mark.thread_unsafe(
     reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
 )
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_the_retry_loop_converges(container, keygen):
     """The documented retry pattern terminates and lands the intended value."""
     key = keygen(1)[0]
@@ -174,8 +174,8 @@ def test_the_retry_loop_converges(container, keygen):
     assert attempts == 2
 
 
-@pytest.mark.parametrize("sharing", sharing_modes)
 @pytest.mark.parametrize("isolation", ["monotonic_atomic_view", "snapshot"])
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_a_refused_stage_applied_nothing(isolation, sharing):
     """`ConflictError` must mean nothing landed, which is what makes a retry safe.
 
@@ -201,7 +201,7 @@ def test_a_refused_stage_applied_nothing(isolation, sharing):
     assert all(container[key] == -1 for key in keys[1:]), "a refused transaction published its writes"
 
 
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_refused_stage_keeps_the_pending_writes(key_type, keygen):
     """A refused stage unwinds what it staged, not what the caller wrote.
 
@@ -239,7 +239,7 @@ def test_a_refused_stage_keeps_the_pending_writes(key_type, keygen):
 
 @pytest.mark.thread_unsafe(reason="it runs its own threads and asserts on their interleaving")
 @pytest.mark.slow
-@pytest.mark.parametrize("sharing", sharing_modes)
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_a_refused_commit_applied_nothing(sharing, drive_threads):
     """No refused writer publishes anything, under writers that all rewrite every shared key.
 
@@ -282,7 +282,7 @@ def test_a_refused_commit_applied_nothing(sharing, drive_threads):
     assert not ghosts, f"{len(ghosts)} refused transactions published their writes: {ghosts[:5]}"
 
 
-@pytest.mark.parametrize("sharing", sharing_modes)
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_a_commit_refused_after_staging_applied_nothing(sharing):
     """A write landing between `stage` and `commit` refuses the commit and leaves it unpublished.
 

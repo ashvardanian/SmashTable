@@ -13,12 +13,12 @@ Date: August 17, 2026
 
 import pytest
 from base import (
-    hash_map_names,
-    key_types,
+    HASH_MAP_CLASSES,
+    KEY_TYPES,
+    SORTED_CLASSES,
+    SORTED_MAP_CLASSES,
+    SORTED_SET_CLASSES,
     populate,
-    sorted_class_names,
-    sorted_map_names,
-    sorted_set_names,
 )
 
 import smashtable as st
@@ -26,17 +26,17 @@ import smashtable as st
 # region Iteration order
 
 
-@pytest.mark.parametrize("class_name", sorted_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", SORTED_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
-@pytest.mark.parametrize("size", [pytest.param(32, id="n32")])
+@pytest.mark.parametrize("count", [pytest.param(32, id="n32")])
 def test_iteration_matches_sorted(populated):
     """A sorted container walks its keys in exactly Python's own order."""
     container, model = populated
     assert list(container) == sorted(model)
 
 
-@pytest.mark.parametrize("class_name", sorted_map_names)
+@pytest.mark.parametrize("container_class", SORTED_MAP_CLASSES)
 @pytest.mark.parametrize(
     ("key_type", "keys"),
     [
@@ -58,8 +58,7 @@ def test_awkward_keys_order_like_python(container, keys):
 # region Scan
 
 
-@pytest.mark.parametrize("class_name", sorted_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", SORTED_MAP_CLASSES)
 def test_scan_returns_sorted_pairs(container, keygen):
     """An unbounded scan is every pair, in order."""
     keys = keygen(8)
@@ -72,7 +71,7 @@ scan_window_keys = list(range(8))
 the cases live in one table rather than in two that drift apart. Every bound and every expected
 key is spelled in the `int` layout both tests pin.
 """
-scan_windows = [
+SCAN_WINDOWS = [
     pytest.param(2, 5, [2, 3, 4], id="half-open"),
     pytest.param(0, 0, [], id="empty-window"),
     pytest.param(5, 2, [], id="inverted"),
@@ -83,9 +82,8 @@ scan_windows = [
 ]
 
 
-@pytest.mark.parametrize("class_name", sorted_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-@pytest.mark.parametrize(("start", "stop", "wanted"), scan_windows)
+@pytest.mark.parametrize("container_class", SORTED_MAP_CLASSES)
+@pytest.mark.parametrize(("start", "stop", "wanted"), SCAN_WINDOWS)
 def test_scan_window_is_half_open(container, start, stop, wanted):
     """start is inclusive and stop exclusive, and bounds need not be present keys."""
     populate(container, scan_window_keys, ["v"] * len(scan_window_keys))
@@ -93,16 +91,14 @@ def test_scan_window_is_half_open(container, start, stop, wanted):
     assert got == wanted, f"scan({start}, {stop}) yielded {got}"
 
 
-@pytest.mark.parametrize("class_name", sorted_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", SORTED_MAP_CLASSES)
 def test_scan_of_an_empty_container(container):
     """Scanning nothing yields nothing rather than raising."""
     assert container.scan() == []
     assert container.scan(0, 10) == []
 
 
-@pytest.mark.parametrize("class_name", sorted_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", SORTED_MAP_CLASSES)
 def test_scan_rejects_a_foreign_bound(container):
     """A bound of the wrong layout is refused, like a key of the wrong layout."""
     with pytest.raises(TypeError):
@@ -114,7 +110,7 @@ def test_scan_rejects_a_foreign_bound(container):
 
 # region Range erase
 
-slice_windows = [
+SLICE_WINDOWS = [
     pytest.param(slice(2, 5), [0, 1, 5, 6, 7], id="both-bounds"),
     pytest.param(slice(None, 3), [3, 4, 5, 6, 7], id="open-lower"),
     pytest.param(slice(5, None), [0, 1, 2, 3, 4], id="open-upper"),
@@ -125,7 +121,7 @@ one table rather than in two that drift apart. Bounds are indices into the eight
 since what a key looks like is the layout's business.
 """
 
-slice_refusals = [
+SLICE_REFUSALS = [
     pytest.param(slice(0, 10, 2), ValueError, id="step"),
     pytest.param(slice("nope", "neither"), TypeError, id="foreign-bound"),
 ]
@@ -143,9 +139,9 @@ def key_bounds(keys, window: slice) -> slice:
 @pytest.mark.thread_unsafe(
     reason="the window is the test - a parallel copy sharing the container would erase what this one asserts is still there"
 )
-@pytest.mark.parametrize("class_name", sorted_map_names)
-@pytest.mark.parametrize("key_type", key_types)
-@pytest.mark.parametrize(("window", "kept"), slice_windows)
+@pytest.mark.parametrize("container_class", SORTED_MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
+@pytest.mark.parametrize(("window", "kept"), SLICE_WINDOWS)
 def test_deleting_a_slice_erases_the_window(container, keygen, window, kept):
     """`del m[a:b]` removes the half-open window, with either end left out."""
     keys = keygen(8)
@@ -158,8 +154,8 @@ def test_deleting_a_slice_erases_the_window(container, keygen, window, kept):
 @pytest.mark.thread_unsafe(
     reason="the window is the test - a parallel copy sharing the container would erase what this one scanned"
 )
-@pytest.mark.parametrize("class_name", sorted_map_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", SORTED_MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_slice_window_matches_scan(container, keygen):
     """What a slice erases is exactly what the same window would have scanned."""
     keys = keygen(10)
@@ -171,9 +167,8 @@ def test_a_slice_window_matches_scan(container, keygen):
     assert len(container) == 10 - len(doomed)
 
 
-@pytest.mark.parametrize("class_name", sorted_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-@pytest.mark.parametrize(("bounds", "failure"), slice_refusals)
+@pytest.mark.parametrize("container_class", SORTED_CLASSES)
+@pytest.mark.parametrize(("bounds", "failure"), SLICE_REFUSALS)
 def test_a_slice_is_held_to_the_layout(container, bounds, failure):
     """A step names no window over keys, and a bound is a key, held to the layout a key is."""
     with pytest.raises(failure):
@@ -183,8 +178,8 @@ def test_a_slice_is_held_to_the_layout(container, bounds, failure):
 @pytest.mark.thread_unsafe(
     reason="the window is the test - a parallel copy sharing the container would erase what this one asserts is still there"
 )
-@pytest.mark.parametrize("class_name", sorted_set_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", SORTED_SET_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_set_erases_a_slice_too(container, keygen):
     """A set names a window the same way, its only use for a subscript."""
     keys = keygen(6)
@@ -200,9 +195,8 @@ def test_a_set_erases_a_slice_too(container, keygen):
 # region Inside a transaction
 
 
-@pytest.mark.parametrize("class_name", sorted_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-@pytest.mark.parametrize(("start", "stop", "wanted"), scan_windows)
+@pytest.mark.parametrize("container_class", SORTED_MAP_CLASSES)
+@pytest.mark.parametrize(("start", "stop", "wanted"), SCAN_WINDOWS)
 def test_a_view_scans_the_same_window(container, start, stop, wanted):
     """A participant's window is the store's window, on the same half-open terms."""
     populate(container, scan_window_keys, ["v"] * len(scan_window_keys))
@@ -214,8 +208,7 @@ def test_a_view_scans_the_same_window(container, start, stop, wanted):
 @pytest.mark.thread_unsafe(
     reason="its premise is a single writer - a parallel copy sharing the container would commit the very write this asserts is invisible"
 )
-@pytest.mark.parametrize("class_name", sorted_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", SORTED_MAP_CLASSES)
 def test_a_view_scan_sees_its_own_writes(container, keygen):
     """A staged write is in the window before it is anywhere else, which point reads promise too."""
     keys = keygen(4)
@@ -226,8 +219,7 @@ def test_a_view_scan_sees_its_own_writes(container, keygen):
         assert container[2] == "v", "nothing is visible outside until the commit"
 
 
-@pytest.mark.parametrize("class_name", sorted_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", SORTED_MAP_CLASSES)
 def test_a_view_scan_stops_at_its_limit(container, keygen):
     """`limit` caps the list, and a negative one is refused rather than read as uncounted."""
     keys = keygen(8)
@@ -235,12 +227,12 @@ def test_a_view_scan_stops_at_its_limit(container, keygen):
     with st.transaction(container) as (view,):
         assert [key for key, _ in view.scan(limit=3)] == [0, 1, 2]
         assert [key for key, _ in view.scan(2, 7, limit=2)] == [2, 3]
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="limit cannot be negative"):
             view.scan(limit=-1)
 
 
-@pytest.mark.parametrize("class_name", sorted_set_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", SORTED_SET_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_a_set_view_scans_members(container, keygen):
     """A set participant yields bare members, exactly as the set's own scan does."""
     keys = keygen(6)
@@ -253,9 +245,9 @@ def test_a_set_view_scans_members(container, keygen):
 @pytest.mark.thread_unsafe(
     reason="the window is the test - a parallel copy sharing the container would commit its own delete between the stage and the assertion"
 )
-@pytest.mark.parametrize("class_name", sorted_map_names)
-@pytest.mark.parametrize("key_type", key_types)
-@pytest.mark.parametrize(("window", "kept"), slice_windows)
+@pytest.mark.parametrize("container_class", SORTED_MAP_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
+@pytest.mark.parametrize(("window", "kept"), SLICE_WINDOWS)
 def test_a_view_deletes_a_slice(container, keygen, window, kept):
     """`del view[a:b]` stages a tombstone per member, and the store sees none of it until commit."""
     keys = keygen(8)
@@ -271,9 +263,8 @@ def test_a_view_deletes_a_slice(container, keygen, window, kept):
     assert list(container) == [keys[index] for index in kept]
 
 
-@pytest.mark.parametrize("class_name", sorted_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-@pytest.mark.parametrize(("bounds", "failure"), slice_refusals)
+@pytest.mark.parametrize("container_class", SORTED_CLASSES)
+@pytest.mark.parametrize(("bounds", "failure"), SLICE_REFUSALS)
 def test_a_view_slice_is_held_to_the_layout(container, bounds, failure):
     """A staged window is held to the same rules the store's own slice is."""
     with st.transaction(container) as (view,):
@@ -281,8 +272,7 @@ def test_a_view_slice_is_held_to_the_layout(container, bounds, failure):
             del view[bounds]
 
 
-@pytest.mark.parametrize("class_name", hash_map_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", HASH_MAP_CLASSES)
 def test_an_unordered_view_has_no_window(container):
     """One view type speaks for every core, so an unordered participant refuses at the call."""
     with st.transaction(container) as (view,):

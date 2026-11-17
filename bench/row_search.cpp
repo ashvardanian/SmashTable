@@ -6,8 +6,8 @@
  *      and a binary search.
  *
  *  Prints the machine and the settings, then one row per benchmark in two phases: the kits over
- *  single rows of each medium width, and both layouts over the same sorted keys. The environment
- *  variables it reads are listed in `bench/harness.hpp`.
+ *  single rows of each medium width, and both layouts over the same sorted keys. The settings it
+ *  reads are listed in CONTRIBUTING.md.
  */
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
@@ -17,7 +17,6 @@
 #include <chrono>    // `std::chrono::steady_clock`
 #include <concepts>  // `std::same_as`
 #include <format>    // `std::format`
-#include <random>    // `std::mt19937_64`
 #include <span>      // `std::span`
 #include <string>    // `std::string`
 
@@ -40,7 +39,7 @@ enum class key_draw_t : std::uint8_t {
 };
 
 template <typename key_type_>
-[[nodiscard]] key_type_ draw_key(std::mt19937_64 &generator, key_draw_t draw) noexcept {
+[[nodiscard]] key_type_ draw_key(split_mix_generator_t &generator, key_draw_t draw) noexcept {
     if constexpr (std::same_as<key_type_, key128_t>)
         return draw == key_draw_t::uniform_k ? key128_t {generator(), generator()} : key128_t {0, generator() >> 8};
     else return static_cast<key_type_>(generator());
@@ -81,9 +80,10 @@ void time_rows(loop_t &loop, std::span<key_type_ const> rows, std::span<std::uin
 
 template <typename key_type_, std::size_t keys_per_row_>
 void bench_rows_of(environment_t const &env, char const *label, key_draw_t draw, char const *row_layout) {
-    settings_t const &settings = env.settings;
-    std::string const prefix = std::format("rows/{}B/{}/{}/", sizeof(key_type_) * keys_per_row_, label, row_layout);
-    std::mt19937_64 generator(stream_key(settings.seed, prefix));
+    bench_settings_t const &settings = env.settings;
+    std::string const prefix =
+        std::format("row_search.rows.{}b.{}.{}.", sizeof(key_type_) * keys_per_row_, label, row_layout);
+    split_mix_generator_t generator {stream_key(settings.seed, prefix)};
     std::size_t const keys_count = settings.rows * keys_per_row_;
     basic_vector<key_type_> rows;
     basic_vector<key_type_> queries;
@@ -139,25 +139,25 @@ void bench_row_kits(environment_t const &env) {
             bench_rows_of<std::uint32_t, 16>(env, "u32", key_draw_t::uniform_k, "column");
             bench_rows_of<std::uint64_t, 8>(env, "u64", key_draw_t::uniform_k, "column");
             bench_rows_of<std::int64_t, 8>(env, "i64", key_draw_t::uniform_k, "column");
-            bench_rows_of<key128_t, 4>(env, "key128/uniform", key_draw_t::uniform_k, "split");
-            bench_rows_of<key128_t, 4>(env, "key128/identities", key_draw_t::integer_identities_k, "split");
-            bench_rows_of<key128_t, 4>(env, "key128/uniform", key_draw_t::uniform_k, "interleaved");
+            bench_rows_of<key128_t, 4>(env, "key128.uniform", key_draw_t::uniform_k, "split");
+            bench_rows_of<key128_t, 4>(env, "key128.identities", key_draw_t::integer_identities_k, "split");
+            bench_rows_of<key128_t, 4>(env, "key128.uniform", key_draw_t::uniform_k, "interleaved");
             break;
         case 512u:
             bench_rows_of<std::uint32_t, 128>(env, "u32", key_draw_t::uniform_k, "column");
             bench_rows_of<std::uint64_t, 64>(env, "u64", key_draw_t::uniform_k, "column");
             bench_rows_of<std::int64_t, 64>(env, "i64", key_draw_t::uniform_k, "column");
-            bench_rows_of<key128_t, 32>(env, "key128/uniform", key_draw_t::uniform_k, "split");
-            bench_rows_of<key128_t, 32>(env, "key128/identities", key_draw_t::integer_identities_k, "split");
-            bench_rows_of<key128_t, 32>(env, "key128/uniform", key_draw_t::uniform_k, "interleaved");
+            bench_rows_of<key128_t, 32>(env, "key128.uniform", key_draw_t::uniform_k, "split");
+            bench_rows_of<key128_t, 32>(env, "key128.identities", key_draw_t::integer_identities_k, "split");
+            bench_rows_of<key128_t, 32>(env, "key128.uniform", key_draw_t::uniform_k, "interleaved");
             break;
         case 4096u:
             bench_rows_of<std::uint32_t, 1024>(env, "u32", key_draw_t::uniform_k, "column");
             bench_rows_of<std::uint64_t, 512>(env, "u64", key_draw_t::uniform_k, "column");
             bench_rows_of<std::int64_t, 512>(env, "i64", key_draw_t::uniform_k, "column");
-            bench_rows_of<key128_t, 256>(env, "key128/uniform", key_draw_t::uniform_k, "split");
-            bench_rows_of<key128_t, 256>(env, "key128/identities", key_draw_t::integer_identities_k, "split");
-            bench_rows_of<key128_t, 256>(env, "key128/uniform", key_draw_t::uniform_k, "interleaved");
+            bench_rows_of<key128_t, 256>(env, "key128.uniform", key_draw_t::uniform_k, "split");
+            bench_rows_of<key128_t, 256>(env, "key128.identities", key_draw_t::integer_identities_k, "split");
+            bench_rows_of<key128_t, 256>(env, "key128.uniform", key_draw_t::uniform_k, "interleaved");
             break;
         default: break;
         }
@@ -173,9 +173,9 @@ void bench_layout(environment_t const &env, std::string const &prefix, char cons
                   std::span<typename layout_type_::key_t const> sorted,
                   std::span<typename layout_type_::key_t const> queries, double binary) {
     std::string const name =
-        std::format("{}{}B/{}/{}", prefix, layout_type_::keys_per_row_k * sizeof(typename layout_type_::key_t),
+        std::format("{}{}b.{}.{}", prefix, layout_type_::keys_per_row_k * sizeof(typename layout_type_::key_t),
                     layout_name, name_of(layout_type_::kit_t::kit_k));
-    if (!env.settings.selects(name)) return;
+    if (!env.settings.filter.selects(name)) return;
     auto const built_at = steady_clock_t::now();
     auto layout = layout_type_::make(sorted);
     double const build_seconds = std::chrono::duration<double>(steady_clock_t::now() - built_at).count();
@@ -197,14 +197,14 @@ void bench_layouts_with(environment_t const &env, std::string const &prefix, std
 
 template <typename key_type_>
 void bench_layouts_of(environment_t const &env, char const *label, key_draw_t draw) {
-    settings_t const &settings = env.settings;
-    std::string const prefix = std::format("layouts/{}/", label);
+    bench_settings_t const &settings = env.settings;
+    std::string const prefix = std::format("row_search.layouts.{}.", label);
     // Two copies of the keys plus the largest tree, which stays under a tenth of the keys again.
-    std::mt19937_64 generator(stream_key(settings.seed, prefix));
+    split_mix_generator_t generator {stream_key(settings.seed, prefix)};
     basic_vector<key_type_> sorted;
     basic_vector<key_type_> queries;
     if (failed(sorted.resize(settings.keys)) || failed(queries.resize(settings.queries))) {
-        print_line(stdout, "{:<56} skipped: not enough memory for {} keys", prefix, settings.keys);
+        print_line(stdout, "{:<64} skipped: needs memory for {} keys", prefix + "binary", settings.keys);
         return;
     }
     for (key_type_ &key : sorted) key = draw_key<key_type_>(generator, draw);
@@ -246,8 +246,8 @@ void bench_layouts(environment_t const &env) {
     print_line(stdout, "\nLayouts over {} sorted keys, queries drawn from the keys, the speed-up against binary last",
                env.settings.keys);
     bench_layouts_of<std::uint64_t>(env, "u64", key_draw_t::uniform_k);
-    bench_layouts_of<key128_t>(env, "key128/uniform", key_draw_t::uniform_k);
-    bench_layouts_of<key128_t>(env, "key128/identities", key_draw_t::integer_identities_k);
+    bench_layouts_of<key128_t>(env, "key128.uniform", key_draw_t::uniform_k);
+    bench_layouts_of<key128_t>(env, "key128.identities", key_draw_t::integer_identities_k);
 }
 
 #pragma endregion Layouts Phase
@@ -256,8 +256,8 @@ void bench_layouts(environment_t const &env) {
 
 using namespace ashvardanian::smashtable::bench;
 
-int main() {
-    environment_t const env {read_settings(), probe_machine()};
+int main(int argc, char **argv) {
+    environment_t const env {read_bench_settings(argc, argv), probe_machine()};
     print(env.machine);
     print(env.settings);
     bench_row_kits(env);

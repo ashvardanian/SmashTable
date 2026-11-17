@@ -19,7 +19,6 @@
 #include <map>       // `std::map`
 #include <numeric>   // `std::iota`
 #include <optional>  // `std::optional`
-#include <random>    // `std::mt19937`
 #include <thread>    // `std::thread`
 #include <vector>    // `std::vector`
 
@@ -169,8 +168,10 @@ static_assert(partitioned_store<monotonic_avl_map_t, hash<trivial_key_t>, spin_s
 template <typename readable_type_>
 static expected<int> mapped_or_absent(readable_type_ const &readable, trivial_id_t identifier) noexcept {
     expected<int> observed {status_t::key_not_found_k};
-    st_verify_(readable.find(
-        trivial_key_t {identifier}, [&](auto const &member) noexcept { observed = member.mapped; }, []() noexcept {}));
+    expect_equal(readable.find(
+                     trivial_key_t {identifier}, [&](auto const &member) noexcept { observed = member.mapped; },
+                     []() noexcept {}),
+                 success_k);
     return observed;
 }
 
@@ -178,8 +179,9 @@ static expected<int> mapped_or_absent(readable_type_ const &readable, trivial_id
 template <typename readable_type_>
 static expected<trivial_id_t> selected_or_absent(readable_type_ const &readable, std::size_t ordinal) noexcept {
     expected<trivial_id_t> drawn {status_t::key_not_found_k};
-    st_verify_(
-        readable.select(ordinal, [&](auto const &member) noexcept { drawn = member.key.unique_id; }, []() noexcept {}));
+    expect_equal(readable.select(
+                     ordinal, [&](auto const &member) noexcept { drawn = member.key.unique_id; }, []() noexcept {}),
+                 success_k);
     return drawn;
 }
 
@@ -187,8 +189,10 @@ static expected<trivial_id_t> selected_or_absent(readable_type_ const &readable,
 template <typename readable_type_>
 static expected<std::size_t> ranked_or_absent(readable_type_ const &readable, trivial_id_t identifier) noexcept {
     expected<std::size_t> position {status_t::key_not_found_k};
-    st_verify_(readable.rank(
-        trivial_key_t {identifier}, [&](std::size_t ordinal) noexcept { position = ordinal; }, []() noexcept {}));
+    expect_equal(
+        readable.rank(
+            trivial_key_t {identifier}, [&](std::size_t ordinal) noexcept { position = ordinal; }, []() noexcept {}),
+        success_k);
     return position;
 }
 
@@ -196,7 +200,7 @@ static expected<std::size_t> ranked_or_absent(readable_type_ const &readable, tr
 template <typename store_type_, typename... bounds_types_>
 [[nodiscard]] static std::size_t vacuumed(store_type_ &store, bounds_types_ &&...bounds) {
     expected<std::size_t> const reclaimed = store.vacuum(std::forward<bounds_types_>(bounds)...);
-    st_verify_(reclaimed.has_value());
+    if (!expect_true(reclaimed.has_value())) return 0;
     return *reclaimed;
 }
 
@@ -205,20 +209,20 @@ template <typename store_type_>
 static void commit_write(store_type_ &store, trivial_id_t identifier, int value) {
     using member_t = typename store_type_::value_type;
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
-    st_verify_(writer->upsert(trivial_id_to_member<member_t>(identifier, value)));
-    st_verify_(writer->stage());
-    st_verify_(writer->commit());
+    if (!expect_true(writer.has_value())) return;
+    expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
+    expect_equal(writer->stage(), success_k);
+    expect_equal(writer->commit(), success_k);
 }
 
 /** Erases @p identifier through a committed transaction. */
 template <typename store_type_>
 static void commit_erase(store_type_ &store, trivial_id_t identifier) {
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
-    st_verify_(writer->erase(trivial_key_t {identifier}));
-    st_verify_(writer->stage());
-    st_verify_(writer->commit());
+    if (!expect_true(writer.has_value())) return;
+    expect_equal(writer->erase(trivial_key_t {identifier}), success_k);
+    expect_equal(writer->stage(), success_k);
+    expect_equal(writer->commit(), success_k);
 }
 
 #pragma endregion Helpers
@@ -237,8 +241,8 @@ static void test_isolation_traits() {
     static_assert(store_type_::is_transactional::value);
 
     store_type_ store;
-    st_verify_(store.empty());
-    st_verify_eq_(store.versions_count(), 0);
+    expect_true(store.empty());
+    expect_equal(store.versions_count(), 0);
 }
 
 /** Tests that a read repeated inside one transaction survives an external commit */
@@ -250,18 +254,18 @@ static void test_repeated_read_is_stable() {
     commit_write(store, 2, 200);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
-    st_verify_eq_(mapped_or_absent(*reader, 1), 100);
+    if (!expect_true(reader.has_value())) return;
+    expect_equal(mapped_or_absent(*reader, 1), 100);
 
     commit_write(store, 1, 111);
     commit_erase(store, 2);
-    st_verify_eq_(mapped_or_absent(store, 1), 111);
-    st_verify_eq_(mapped_or_absent(store, 2), status_t::key_not_found_k);
+    expect_equal(mapped_or_absent(store, 1), 111);
+    expect_equal(mapped_or_absent(store, 2), status_t::key_not_found_k);
 
     // The snapshot was fixed when the reader opened, so neither commit reaches it.
-    st_verify_eq_(mapped_or_absent(*reader, 1), 100);
-    st_verify_eq_(mapped_or_absent(*reader, 2), 200);
-    st_verify_eq_(reader->contains(trivial_key_t {2}), true);
+    expect_equal(mapped_or_absent(*reader, 1), 100);
+    expect_equal(mapped_or_absent(*reader, 2), 200);
+    expect_equal(reader->contains(trivial_key_t {2}), true);
 }
 
 /** Tests that a transaction reads its own writes before and after they are published */
@@ -272,15 +276,15 @@ static void test_reads_own_writes() {
     commit_write(store, 1, 100);
 
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
-    st_verify_(writer->upsert(trivial_id_to_member<member_t>(1, 101)));
-    st_verify_eq_(mapped_or_absent(*writer, 1), 101);
-    st_verify_eq_(mapped_or_absent(store, 1), 100);
+    if (!expect_true(writer.has_value())) return;
+    expect_equal(writer->upsert(trivial_id_to_member<member_t>(1, 101)), success_k);
+    expect_equal(mapped_or_absent(*writer, 1), 101);
+    expect_equal(mapped_or_absent(store, 1), 100);
 
-    st_verify_(writer->stage());
-    st_verify_(writer->commit());
-    st_verify_eq_(mapped_or_absent(store, 1), 101);
-    st_verify_eq_(mapped_or_absent(*writer, 1), 101);
+    expect_equal(writer->stage(), success_k);
+    expect_equal(writer->commit(), success_k);
+    expect_equal(mapped_or_absent(store, 1), 101);
+    expect_equal(mapped_or_absent(*writer, 1), 101);
 }
 
 /** Tests that a range walked twice inside one transaction admits no phantom */
@@ -290,17 +294,18 @@ static void test_range_admits_no_phantoms() {
     for (trivial_id_t identifier = 0; identifier != 10; identifier += 2) commit_write(store, identifier, 10);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
 
     auto collect = [&]() {
         std::vector<trivial_id_t> seen;
-        st_verify_(reader->range(trivial_key_t {0}, trivial_key_t {10},
-                                 [&](auto const &member) noexcept { seen.push_back(member.key.unique_id); }));
+        expect_equal(reader->range(trivial_key_t {0}, trivial_key_t {10},
+                                   [&](auto const &member) noexcept { seen.push_back(member.key.unique_id); }),
+                     success_k);
         return seen;
     };
 
     std::vector<trivial_id_t> const first = collect();
-    st_verify_eq_(first.size(), 5);
+    expect_equal(first.size(), 5);
 
     // Every shape of external change at once: an insertion inside the window, an overwrite, an erase.
     commit_write(store, 3, 33);
@@ -308,13 +313,14 @@ static void test_range_admits_no_phantoms() {
     commit_erase(store, 6);
 
     std::vector<trivial_id_t> const second = collect();
-    st_verify_(first == second);
-    st_verify_eq_(mapped_or_absent(*reader, 4), 10);
+    expect_true(first == second);
+    expect_equal(mapped_or_absent(*reader, 4), 10);
 
     std::vector<trivial_id_t> outside;
-    st_verify_(store.range(trivial_key_t {0}, trivial_key_t {10},
-                           [&](auto const &member) noexcept { outside.push_back(member.key.unique_id); }));
-    st_verify_eq_(outside.size(), 5);
+    expect_equal(store.range(trivial_key_t {0}, trivial_key_t {10},
+                             [&](auto const &member) noexcept { outside.push_back(member.key.unique_id); }),
+                 success_k);
+    expect_equal(outside.size(), 5);
 }
 
 /** Tests that the bounds a transaction reports also come from its own snapshot */
@@ -325,26 +331,29 @@ static void test_bounds_follow_the_snapshot() {
     commit_write(store, 6, 60);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
     commit_write(store, 4, 40);
 
     trivial_id_t after_two = 0;
-    st_verify_(reader->upper_bound(
-        trivial_key_t {2}, [&](auto const &member) noexcept { after_two = member.key.unique_id; },
-        []() noexcept { st_verify_(false && "the reader's snapshot still holds key 6"); }));
-    st_verify_eq_(after_two, 6);
+    expect_equal(reader->upper_bound(
+                     trivial_key_t {2}, [&](auto const &member) noexcept { after_two = member.key.unique_id; },
+                     []() noexcept { expect_true(false, "the reader's snapshot still holds key 6"); }),
+                 success_k);
+    expect_equal(after_two, 6);
 
     trivial_id_t from_three = 0;
-    st_verify_(reader->lower_bound(
-        trivial_key_t {3}, [&](auto const &member) noexcept { from_three = member.key.unique_id; },
-        []() noexcept { st_verify_(false && "the reader's snapshot still holds key 6"); }));
-    st_verify_eq_(from_three, 6);
+    expect_equal(reader->lower_bound(
+                     trivial_key_t {3}, [&](auto const &member) noexcept { from_three = member.key.unique_id; },
+                     []() noexcept { expect_true(false, "the reader's snapshot still holds key 6"); }),
+                 success_k);
+    expect_equal(from_three, 6);
 
     trivial_id_t published = 0;
-    st_verify_(store.lower_bound(
-        trivial_key_t {3}, [&](auto const &member) noexcept { published = member.key.unique_id; },
-        []() noexcept { st_verify_(false && "key 4 is published"); }));
-    st_verify_eq_(published, 4);
+    expect_equal(store.lower_bound(
+                     trivial_key_t {3}, [&](auto const &member) noexcept { published = member.key.unique_id; },
+                     []() noexcept { expect_true(false, "key 4 is published"); }),
+                 success_k);
+    expect_equal(published, 4);
 }
 
 #pragma endregion Isolation Tests
@@ -360,17 +369,17 @@ static void test_first_committer_wins() {
 
     auto early = store.transaction();
     auto late = store.transaction();
-    st_verify_(early.has_value() && late.has_value());
+    if (!expect_true(early.has_value() && late.has_value())) return;
 
-    st_verify_(early->upsert(trivial_id_to_member<member_t>(1, 111)));
-    st_verify_(late->upsert(trivial_id_to_member<member_t>(1, 222)));
+    expect_equal(early->upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
+    expect_equal(late->upsert(trivial_id_to_member<member_t>(1, 222)), success_k);
 
-    st_verify_(early->stage());
-    st_verify_(early->commit());
+    expect_equal(early->stage(), success_k);
+    expect_equal(early->commit(), success_k);
 
     // The loser is turned away rather than overwriting a version it never read.
-    st_verify_eq_(late->stage(), status_t::write_conflict_k);
-    st_verify_eq_(mapped_or_absent(store, 1), 111);
+    expect_equal(late->stage(), status_t::write_conflict_k);
+    expect_equal(mapped_or_absent(store, 1), 111);
 }
 
 /** A conflict is caught at commit when both transactions staged before either published. */
@@ -382,19 +391,19 @@ static void test_conflict_caught_after_staging() {
 
     auto early = store.transaction();
     auto late = store.transaction();
-    st_verify_(early.has_value() && late.has_value());
+    if (!expect_true(early.has_value() && late.has_value())) return;
 
-    st_verify_(early->upsert(trivial_id_to_member<member_t>(1, 111)));
-    st_verify_(late->upsert(trivial_id_to_member<member_t>(1, 222)));
+    expect_equal(early->upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
+    expect_equal(late->upsert(trivial_id_to_member<member_t>(1, 222)), success_k);
 
     // Staged versions carry no stamp, so neither transaction sees the other yet.
-    st_verify_(early->stage());
-    st_verify_(late->stage());
-    st_verify_(early->commit());
+    expect_equal(early->stage(), success_k);
+    expect_equal(late->stage(), success_k);
+    expect_equal(early->commit(), success_k);
 
-    st_verify_eq_(late->commit(), status_t::write_conflict_k);
-    st_verify_eq_(mapped_or_absent(store, 1), 111);
-    st_verify_(late->rollback());
+    expect_equal(late->commit(), status_t::write_conflict_k);
+    expect_equal(mapped_or_absent(store, 1), 111);
+    expect_equal(late->rollback(), success_k);
 }
 
 /** Tests that a watch on a key someone else published over refuses the commit */
@@ -406,16 +415,18 @@ static void test_watch_refuses_lost_update() {
     commit_write(store, 2, 200);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
     int observed = -1;
-    st_verify_(reader->find_and_watch(
-        trivial_key_t {1}, [&](auto const &member) noexcept { observed = member.mapped; }, []() noexcept {}));
-    st_verify_eq_(observed, 100);
-    st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 222)));
+    expect_equal(
+        reader->find_and_watch(
+            trivial_key_t {1}, [&](auto const &member) noexcept { observed = member.mapped; }, []() noexcept {}),
+        success_k);
+    expect_equal(observed, 100);
+    expect_equal(reader->upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
 
     commit_write(store, 1, 111);
-    st_verify_eq_(reader->stage(), status_t::read_conflict_k);
-    st_verify_eq_(mapped_or_absent(store, 2), 200);
+    expect_equal(reader->stage(), status_t::read_conflict_k);
+    expect_equal(mapped_or_absent(store, 2), 200);
 }
 
 /** Tests that a watch on an absent key refuses a commit that raced an insert */
@@ -425,15 +436,16 @@ static void test_watch_records_absence() {
     store_type_ store;
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
     bool missed = false;
-    st_verify_(
-        reader->find_and_watch(trivial_key_t {1}, [](auto const &) noexcept {}, [&]() noexcept { missed = true; }));
-    st_verify_(missed);
-    st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 222)));
+    expect_equal(reader->find_and_watch(
+                     trivial_key_t {1}, [](auto const &) noexcept {}, [&]() noexcept { missed = true; }),
+                 success_k);
+    expect_true(missed);
+    expect_equal(reader->upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
 
     commit_write(store, 1, 111);
-    st_verify_eq_(reader->stage(), status_t::read_conflict_k);
+    expect_equal(reader->stage(), status_t::read_conflict_k);
 }
 
 /** Tests that a watch on an absent key refuses a commit that inserted and erased it since */
@@ -443,19 +455,20 @@ static void test_watch_spans_insert_then_erase() {
     store_type_ store;
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
     bool missed = false;
-    st_verify_(
-        reader->find_and_watch(trivial_key_t {1}, [](auto const &) noexcept {}, [&]() noexcept { missed = true; }));
-    st_verify_(missed);
-    st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 222)));
+    expect_equal(reader->find_and_watch(
+                     trivial_key_t {1}, [](auto const &) noexcept {}, [&]() noexcept { missed = true; }),
+                 success_k);
+    expect_true(missed);
+    expect_equal(reader->upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
 
     // The key is back to missing, and two commits the reader never saw sit between the two absences,
     // so resolving to the same shape is not the key having stood still.
     commit_write(store, 1, 111);
     commit_erase(store, 1);
-    st_verify_eq_(mapped_or_absent(store, 1), status_t::key_not_found_k);
-    st_verify_eq_(reader->stage(), status_t::read_conflict_k);
+    expect_equal(mapped_or_absent(store, 1), status_t::key_not_found_k);
+    expect_equal(reader->stage(), status_t::read_conflict_k);
 }
 
 /** Tests that rollback hands staged writes back and lets a retry commit them */
@@ -465,21 +478,21 @@ static void test_rollback_returns_writes() {
     store_type_ store;
 
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
-    st_verify_(writer->upsert(trivial_id_to_member<member_t>(1, 100)));
-    st_verify_(writer->upsert(trivial_id_to_member<member_t>(2, 200)));
-    st_verify_(writer->stage());
-    st_verify_eq_(writer->changes_count(), 0);
+    if (!expect_true(writer.has_value())) return;
+    expect_equal(writer->upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
+    expect_equal(writer->upsert(trivial_id_to_member<member_t>(2, 200)), success_k);
+    expect_equal(writer->stage(), success_k);
+    expect_equal(writer->changes_count(), 0);
 
-    st_verify_(writer->rollback());
-    st_verify_eq_(writer->changes_count(), 2);
-    st_verify_eq_(store.versions_count(), 0);
-    st_verify_(store.empty());
+    expect_equal(writer->rollback(), success_k);
+    expect_equal(writer->changes_count(), 2);
+    expect_equal(store.versions_count(), 0);
+    expect_true(store.empty());
 
-    st_verify_(writer->stage());
-    st_verify_(writer->commit());
-    st_verify_eq_(store.size(), 2);
-    st_verify_eq_(mapped_or_absent(store, 2), 200);
+    expect_equal(writer->stage(), success_k);
+    expect_equal(writer->commit(), success_k);
+    expect_equal(store.size(), 2);
+    expect_equal(mapped_or_absent(store, 2), 200);
 }
 
 /** Tests that an abandoned transaction leaves nothing behind and unpins the mark */
@@ -491,16 +504,16 @@ static void test_abandoned_transaction_leaves_nothing() {
 
     {
         auto abandoned = store.transaction();
-        st_verify_(abandoned.has_value());
-        st_verify_(abandoned->upsert(trivial_id_to_member<member_t>(1, 111)));
-        st_verify_(abandoned->stage());
-        st_verify_eq_(store.versions_count(trivial_key_t {1}), 2);
-        st_verify_eq_(store.open_snapshots(), 1);
+        if (!expect_true(abandoned.has_value())) return;
+        expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
+        expect_equal(abandoned->stage(), success_k);
+        expect_equal(store.versions_count(trivial_key_t {1}), 2);
+        expect_equal(store.open_snapshots(), 1);
     }
 
-    st_verify_eq_(store.open_snapshots(), 0);
-    st_verify_eq_(store.versions_count(trivial_key_t {1}), 1);
-    st_verify_eq_(mapped_or_absent(store, 1), 100);
+    expect_equal(store.open_snapshots(), 0);
+    expect_equal(store.versions_count(trivial_key_t {1}), 1);
+    expect_equal(mapped_or_absent(store, 1), 100);
 }
 
 #pragma endregion Conflict Tests
@@ -513,12 +526,12 @@ static void test_version_tail_collapses() {
     store_type_ store;
     for (int value = 0; value != 8; ++value) {
         commit_write(store, 1, value);
-        st_verify_eq_(store.open_snapshots(), 0);
-        st_verify_eq_(store.versions_count(trivial_key_t {1}), 1);
-        st_verify_eq_(store.versions_count(), 1);
+        expect_equal(store.open_snapshots(), 0);
+        expect_equal(store.versions_count(trivial_key_t {1}), 1);
+        expect_equal(store.versions_count(), 1);
     }
-    st_verify_eq_(mapped_or_absent(store, 1), 7);
-    st_verify_eq_(vacuumed(store), 0);
+    expect_equal(mapped_or_absent(store, 1), 7);
+    expect_equal(vacuumed(store), 0);
 }
 
 /** Tests that an open transaction pins the versions its snapshot still reaches */
@@ -529,21 +542,21 @@ static void test_open_transaction_pins_versions() {
 
     {
         auto reader = store.transaction();
-        st_verify_(reader.has_value());
+        if (!expect_true(reader.has_value())) return;
         commit_write(store, 1, 111);
         commit_write(store, 1, 222);
 
         // The mark cannot pass the reader, so the version it opened on stays reachable.
-        st_verify_eq_(store.versions_count(trivial_key_t {1}), 3);
-        st_verify_eq_(vacuumed(store), 0);
-        st_verify_eq_(store.versions_count(trivial_key_t {1}), 3);
-        st_verify_eq_(mapped_or_absent(*reader, 1), 100);
+        expect_equal(store.versions_count(trivial_key_t {1}), 3);
+        expect_equal(vacuumed(store), 0);
+        expect_equal(store.versions_count(trivial_key_t {1}), 3);
+        expect_equal(mapped_or_absent(*reader, 1), 100);
     }
 
-    st_verify_eq_(store.open_snapshots(), 0);
-    st_verify_eq_(vacuumed(store), 2);
-    st_verify_eq_(store.versions_count(trivial_key_t {1}), 1);
-    st_verify_eq_(mapped_or_absent(store, 1), 222);
+    expect_equal(store.open_snapshots(), 0);
+    expect_equal(vacuumed(store), 2);
+    expect_equal(store.versions_count(trivial_key_t {1}), 1);
+    expect_equal(mapped_or_absent(store, 1), 222);
 }
 
 /** Tests that a committed tombstone is reclaimed once the mark passes the erasure */
@@ -555,22 +568,22 @@ static void test_tombstones_are_reclaimed() {
 
     {
         auto reader = store.transaction();
-        st_verify_(reader.has_value());
+        if (!expect_true(reader.has_value())) return;
         commit_erase(store, 1);
 
         // The erasure hides the key from every reader that can see it, and pins it for the one that cannot.
-        st_verify_eq_(mapped_or_absent(store, 1), status_t::key_not_found_k);
-        st_verify_eq_(mapped_or_absent(*reader, 1), 100);
-        st_verify_eq_(store.size(), 1);
-        st_verify_eq_(store.versions_count(trivial_key_t {1}), 2);
-        st_verify_eq_(vacuumed(store), 0);
+        expect_equal(mapped_or_absent(store, 1), status_t::key_not_found_k);
+        expect_equal(mapped_or_absent(*reader, 1), 100);
+        expect_equal(store.size(), 1);
+        expect_equal(store.versions_count(trivial_key_t {1}), 2);
+        expect_equal(vacuumed(store), 0);
     }
 
-    st_verify_eq_(vacuumed(store), 2);
-    st_verify_eq_(store.versions_count(trivial_key_t {1}), 0);
-    st_verify_eq_(store.versions_count(), 1);
-    st_verify_eq_(store.size(), 1);
-    st_verify_eq_(mapped_or_absent(store, 2), 200);
+    expect_equal(vacuumed(store), 2);
+    expect_equal(store.versions_count(trivial_key_t {1}), 0);
+    expect_equal(store.versions_count(), 1);
+    expect_equal(store.size(), 1);
+    expect_equal(mapped_or_absent(store, 2), 200);
 }
 
 /** Tests that an erase committed with nothing open costs the store no entry at all */
@@ -580,10 +593,10 @@ static void test_erase_with_nothing_open_costs_nothing() {
     commit_write(store, 1, 100);
     commit_erase(store, 1);
 
-    st_verify_eq_(store.versions_count(trivial_key_t {1}), 0);
-    st_verify_eq_(store.versions_count(), 0);
-    st_verify_(store.empty());
-    st_verify_eq_(vacuumed(store), 0);
+    expect_equal(store.versions_count(trivial_key_t {1}), 0);
+    expect_equal(store.versions_count(), 0);
+    expect_true(store.empty());
+    expect_equal(vacuumed(store), 0);
 }
 
 /** Tests that a direct write outside any transaction publishes and prunes on the spot */
@@ -592,14 +605,15 @@ static void test_direct_writes_prune_themselves() {
     using member_t = typename store_type_::value_type;
     store_type_ store;
 
-    for (int value = 0; value != 8; ++value) st_verify_(store.upsert(trivial_id_to_member<member_t>(1, value)));
-    st_verify_eq_(store.versions_count(), 1);
-    st_verify_eq_(mapped_or_absent(store, 1), 7);
+    for (int value = 0; value != 8; ++value)
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(1, value)), success_k);
+    expect_equal(store.versions_count(), 1);
+    expect_equal(mapped_or_absent(store, 1), 7);
 
-    st_verify_(store.erase(trivial_key_t {1}));
-    st_verify_eq_(store.versions_count(), 0);
-    st_verify_eq_(store.erase(trivial_key_t {1}), status_t::key_not_found_k);
-    st_verify_(store.empty());
+    expect_equal(store.erase(trivial_key_t {1}), success_k);
+    expect_equal(store.versions_count(), 0);
+    expect_equal(store.erase(trivial_key_t {1}), status_t::key_not_found_k);
+    expect_true(store.empty());
 }
 
 /** Tests that neither a direct write nor a sweep touches a version an open transaction staged */
@@ -610,20 +624,20 @@ static void test_pruning_spares_staged_versions() {
     commit_write(store, 1, 100);
 
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
-    st_verify_(writer->upsert(trivial_id_to_member<member_t>(1, 111)));
-    st_verify_(writer->stage());
-    st_verify_eq_(store.versions_count(trivial_key_t {1}), 2);
+    if (!expect_true(writer.has_value())) return;
+    expect_equal(writer->upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
+    expect_equal(writer->stage(), success_k);
+    expect_equal(store.versions_count(trivial_key_t {1}), 2);
 
     // A staged version carries no stamp, so no mark can reach past it.
-    st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 999)));
-    st_verify_eq_(vacuumed(store), 0);
-    st_verify_eq_(store.versions_count(trivial_key_t {1}), 3);
-    st_verify_eq_(mapped_or_absent(store, 1), 999);
+    expect_equal(store.upsert(trivial_id_to_member<member_t>(1, 999)), success_k);
+    expect_equal(vacuumed(store), 0);
+    expect_equal(store.versions_count(trivial_key_t {1}), 3);
+    expect_equal(mapped_or_absent(store, 1), 999);
 
-    st_verify_(writer->rollback());
-    st_verify_eq_(writer->changes_count(), 1);
-    st_verify_eq_(mapped_or_absent(store, 1), 999);
+    expect_equal(writer->rollback(), success_k);
+    expect_equal(writer->changes_count(), 1);
+    expect_equal(mapped_or_absent(store, 1), 999);
 }
 
 /** Tests that many keys and many versions survive a single sweep intact */
@@ -637,26 +651,26 @@ static void test_bulk_sweep_keeps_every_reader_whole() {
 
     {
         auto reader = store.transaction();
-        st_verify_(reader.has_value());
+        if (!expect_true(reader.has_value())) return;
         for (int round = 1; round <= rounds_k; ++round) {
             auto writer = store.transaction();
-            st_verify_(writer.has_value());
+            if (!expect_true(writer.has_value())) return;
             for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-                st_verify_(writer->upsert(trivial_id_to_member<member_t>(identifier, round)));
-            st_verify_(writer->stage());
-            st_verify_(writer->commit());
+                expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, round)), success_k);
+            expect_equal(writer->stage(), success_k);
+            expect_equal(writer->commit(), success_k);
         }
 
         for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) {
-            st_verify_eq_(mapped_or_absent(*reader, identifier), 0);
-            st_verify_eq_(mapped_or_absent(store, identifier), rounds_k);
+            expect_equal(mapped_or_absent(*reader, identifier), 0);
+            expect_equal(mapped_or_absent(store, identifier), rounds_k);
         }
-        st_verify_eq_(store.versions_count(), keys_k * (rounds_k + 1));
+        expect_equal(store.versions_count(), keys_k * (rounds_k + 1));
     }
 
-    st_verify_eq_(vacuumed(store), keys_k * rounds_k);
-    st_verify_eq_(store.versions_count(), keys_k);
-    st_verify_eq_(store.size(), keys_k);
+    expect_equal(vacuumed(store), keys_k * rounds_k);
+    expect_equal(store.versions_count(), keys_k);
+    expect_equal(store.size(), keys_k);
 }
 
 /** The oldest snapshot any open reader answers at, which is what retention may not pass. */
@@ -687,23 +701,23 @@ static void test_low_water_mark_tracks_the_oldest_reader() {
         for (std::size_t index = 0; index != readers_k; ++index) {
             commit_write(store, 1, static_cast<int>(index));
             auto opened = store.transaction();
-            st_verify_(opened.has_value());
+            if (!expect_true(opened.has_value())) return;
             readers[index].emplace(std::move(*opened));
-            st_verify_eq_(store.open_snapshots(), index + 1);
-            st_verify_le_(store.low_water_mark(), oldest_open_snapshot(store, readers));
+            expect_equal(store.open_snapshots(), index + 1);
+            expect_true(store.low_water_mark() <= oldest_open_snapshot(store, readers));
         }
 
         for (std::size_t position = 0; position != readers_k; ++position) {
             readers[closing_order[position]].reset();
-            st_verify_eq_(store.open_snapshots(), readers_k - position - 1);
-            st_verify_le_(store.low_water_mark(), oldest_open_snapshot(store, readers));
+            expect_equal(store.open_snapshots(), readers_k - position - 1);
+            expect_true(store.low_water_mark() <= oldest_open_snapshot(store, readers));
             commit_write(store, 2, static_cast<int>(position));
-            st_verify_le_(store.low_water_mark(), oldest_open_snapshot(store, readers));
+            expect_true(store.low_water_mark() <= oldest_open_snapshot(store, readers));
         }
 
-        st_verify_eq_(store.open_snapshots(), 0);
-        st_verify_eq_(store.low_water_mark(), store.published_stamp(),
-                      "with every reader gone the mark catches the watermark exactly");
+        expect_equal(store.open_snapshots(), 0);
+        expect_equal(store.low_water_mark(), store.published_stamp(),
+                     "with every reader gone the mark catches the watermark exactly");
     } while (std::next_permutation(closing_order.begin(), closing_order.end()));
 }
 
@@ -716,7 +730,7 @@ static void test_rolling_readers_keep_reclamation_moving() {
 
     std::optional<transaction_t> holding;
     auto first = store.transaction();
-    st_verify_(first.has_value());
+    if (!expect_true(first.has_value())) return;
     holding.emplace(std::move(*first));
 
     for (int round = 1; round != 64; ++round) {
@@ -725,21 +739,21 @@ static void test_rolling_readers_keep_reclamation_moving() {
         // The next reader arrives before the one before it leaves, so no bucket ever empties -
         // which is the shape a service with one perpetually open transaction has.
         auto opened = store.transaction();
-        st_verify_(opened.has_value());
+        if (!expect_true(opened.has_value())) return;
         std::optional<transaction_t> next;
         next.emplace(std::move(*opened));
-        st_verify_eq_(store.open_snapshots(), 2);
+        expect_equal(store.open_snapshots(), 2);
         holding = std::move(next);
 
-        st_verify_eq_(store.open_snapshots(), 1);
-        st_verify_le_(store.low_water_mark(), holding->snapshot());
+        expect_equal(store.open_snapshots(), 1);
+        expect_true(store.low_water_mark() <= holding->snapshot());
         // The reader that left took its version with it, so the round keeps the write and its base.
-        st_verify_eq_(store.versions_count(trivial_key_t {1}), 2);
+        expect_equal(store.versions_count(trivial_key_t {1}), 2);
     }
 
     holding.reset();
-    st_verify_eq_(store.open_snapshots(), 0);
-    st_verify_eq_(mapped_or_absent(store, 1), 63);
+    expect_equal(store.open_snapshots(), 0);
+    expect_equal(mapped_or_absent(store, 1), 63);
 }
 
 /** Tests that a reader that stays holds retention at its own snapshot once older ones leave */
@@ -751,28 +765,28 @@ static void test_long_lived_reader_holds_its_own_snapshot() {
 
     std::optional<transaction_t> early;
     auto opened_early = store.transaction();
-    st_verify_(opened_early.has_value());
+    if (!expect_true(opened_early.has_value())) return;
     early.emplace(std::move(*opened_early));
 
     commit_write(store, 1, 1);
     auto keeper = store.transaction();
-    st_verify_(keeper.has_value());
-    st_verify_lt_(early->snapshot(), keeper->snapshot());
+    if (!expect_true(keeper.has_value())) return;
+    expect_true(early->snapshot() < keeper->snapshot());
 
     early.reset();
-    st_verify_le_(store.low_water_mark(), keeper->snapshot());
+    expect_true(store.low_water_mark() <= keeper->snapshot());
 
     for (int round = 2; round != 16; ++round) {
         commit_write(store, 1, round);
         {
             auto churning = store.transaction();
-            st_verify_(churning.has_value());
-            st_verify_eq_(store.open_snapshots(), 2);
-            st_verify_le_(store.low_water_mark(), keeper->snapshot());
+            expect_true(churning.has_value());
+            expect_equal(store.open_snapshots(), 2);
+            expect_true(store.low_water_mark() <= keeper->snapshot());
         }
-        st_verify_eq_(store.open_snapshots(), 1);
-        st_verify_le_(store.low_water_mark(), keeper->snapshot());
-        st_verify_eq_(mapped_or_absent(*keeper, 1), 1);
+        expect_equal(store.open_snapshots(), 1);
+        expect_true(store.low_water_mark() <= keeper->snapshot());
+        expect_equal(mapped_or_absent(*keeper, 1), 1);
     }
 }
 
@@ -788,23 +802,23 @@ static void test_point_insert_strategies() {
     store_type_ store;
 
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
-    st_verify_(writer->insert(trivial_id_to_member<member_t>(1)));
-    st_verify_eq_(writer->insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
-    st_verify_(writer->insert_if_missing(trivial_id_to_member<member_t>(1)));
-    st_verify_(writer->upsert(trivial_id_to_member<member_t>(1)));
-    st_verify_(writer->update(trivial_id_to_member<member_t>(1)));
-    st_verify_eq_(writer->update(trivial_id_to_member<member_t>(2)), status_t::key_not_found_k);
-    st_verify_(writer->stage());
-    st_verify_(writer->commit());
-    st_verify_eq_(store.size(), 1);
+    if (!expect_true(writer.has_value())) return;
+    expect_equal(writer->insert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(writer->insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
+    expect_equal(writer->insert_if_missing(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(writer->upsert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(writer->update(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(writer->update(trivial_id_to_member<member_t>(2)), status_t::key_not_found_k);
+    expect_equal(writer->stage(), success_k);
+    expect_equal(writer->commit(), success_k);
+    expect_equal(store.size(), 1);
 
-    st_verify_eq_(store.insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
-    st_verify_(store.insert_if_missing(trivial_id_to_member<member_t>(1)));
-    st_verify_(store.insert(trivial_id_to_member<member_t>(2)));
-    st_verify_eq_(store.update(trivial_id_to_member<member_t>(3)), status_t::key_not_found_k);
-    st_verify_eq_(store.size(), 2);
-    st_verify_eq_(store.count(trivial_key_t {2}), std::size_t {1});
+    expect_equal(store.insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
+    expect_equal(store.insert_if_missing(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(store.insert(trivial_id_to_member<member_t>(2)), success_k);
+    expect_equal(store.update(trivial_id_to_member<member_t>(3)), status_t::key_not_found_k);
+    expect_equal(store.size(), 2);
+    expect_equal(store.count(trivial_key_t {2}), std::size_t {1});
 }
 
 /** Tests that a key allocating on every copy stages, commits and reclaims like a trivial one */
@@ -814,23 +828,23 @@ static void test_heavy_keys_round_trip() {
 
     {
         auto writer = store.transaction();
-        st_verify_(writer.has_value());
+        if (!expect_true(writer.has_value())) return;
         for (trivial_id_t identifier = 0; identifier != 16; ++identifier) {
             auto key = heavy_key_t::make(identifier);
-            st_verify_(key.has_value());
-            st_verify_(writer->upsert(std::move(*key)));
+            if (!expect_true(key.has_value())) return;
+            expect_equal(writer->upsert(std::move(*key)), success_k);
         }
-        st_verify_(writer->stage());
-        st_verify_(writer->commit());
+        expect_equal(writer->stage(), success_k);
+        expect_equal(writer->commit(), success_k);
     }
-    st_verify_eq_(store.size(), 16);
+    expect_equal(store.size(), 16);
 
     auto probe = heavy_key_t::make(trivial_id_t {3});
-    st_verify_(probe.has_value());
-    st_verify_eq_(store.contains(*probe), true);
-    st_verify_(store.erase(*probe));
-    st_verify_eq_(store.contains(*probe), false);
-    st_verify_eq_(store.versions_count(), 15);
+    if (!expect_true(probe.has_value())) return;
+    expect_equal(store.contains(*probe), true);
+    expect_equal(store.erase(*probe), success_k);
+    expect_equal(store.contains(*probe), false);
+    expect_equal(store.versions_count(), 15);
 }
 
 /** Tests that a group spanning a snapshot store and a monotonic one commits both together */
@@ -845,19 +859,19 @@ static void test_group_spans_both_stores() {
     monotonic_t monotonics;
 
     auto group = make_transaction_group(snapshots, monotonics);
-    st_verify_(group.has_value());
-    st_verify_(group->template participant<0>().upsert(trivial_id_to_member<snapshot_member_t>(1, 100)));
-    st_verify_(group->template participant<1>().upsert(trivial_id_to_member<monotonic_member_t>(1, 100)));
+    if (!expect_true(group.has_value())) return;
+    expect_equal(group->template participant<0>().upsert(trivial_id_to_member<snapshot_member_t>(1, 100)), success_k);
+    expect_equal(group->template participant<1>().upsert(trivial_id_to_member<monotonic_member_t>(1, 100)), success_k);
 
-    st_verify_(group->stage());
-    st_verify_eq_(snapshots.size(), 0);
-    st_verify_eq_(monotonics.size(), 0);
+    expect_equal(group->stage(), success_k);
+    expect_equal(snapshots.size(), 0);
+    expect_equal(monotonics.size(), 0);
 
-    st_verify_(group->commit());
-    st_verify_eq_(snapshots.size(), 1);
-    st_verify_eq_(monotonics.size(), 1);
-    st_verify_eq_(mapped_or_absent(snapshots, 1), 100);
-    st_verify_eq_(mapped_or_absent(monotonics, 1), 100);
+    expect_equal(group->commit(), success_k);
+    expect_equal(snapshots.size(), 1);
+    expect_equal(monotonics.size(), 1);
+    expect_equal(mapped_or_absent(snapshots, 1), 100);
+    expect_equal(mapped_or_absent(monotonics, 1), 100);
 }
 
 #pragma endregion Point Access Tests
@@ -870,7 +884,7 @@ static std::vector<trivial_id_t> drain_cursor(cursor_type_ cursor) {
     std::vector<trivial_id_t> seen;
     for (; !cursor.exhausted(); cursor.advance())
         cursor.peek([&](auto const &member) noexcept { seen.push_back(member.key.unique_id); },
-                    []() noexcept { st_verify_(false && "a settled cursor always stands on a key"); });
+                    []() noexcept { expect_true(false, "a settled cursor always stands on a key"); });
     return seen;
 }
 
@@ -883,41 +897,42 @@ static void test_cursor_yields_each_key_once() {
     // An open reader pins the mark, so nothing below it is reclaimed and several versions of one key
     // stay visible at the published stamp at once - which is what the cursor must collapse to one key.
     auto pin = store.transaction();
-    st_verify_(pin.has_value());
+    expect_true(pin.has_value());
     for (int round = 1; round != 4; ++round)
         for (trivial_id_t identifier : {trivial_id_t {0}, trivial_id_t {3}, trivial_id_t {7}})
             commit_write(store, identifier, round);
     commit_erase(store, 5);
     commit_erase(store, 8);
 
-    st_verify_eq_(store.versions_count(trivial_key_t {3}), 4);
-    st_verify_eq_(store.versions_count(trivial_key_t {5}), 2);
+    expect_equal(store.versions_count(trivial_key_t {3}), 4);
+    expect_equal(store.versions_count(trivial_key_t {5}), 2);
 
     std::vector<trivial_id_t> const expected {0, 1, 2, 3, 4, 6, 7, 9};
-    st_verify_(drain_cursor(store.visible_keys()) == expected);
+    expect_true(drain_cursor(store.visible_keys()) == expected);
 
     // The push-style walk and the resumable one must never disagree.
     std::vector<trivial_id_t> pushed;
-    st_verify_(store.range(trivial_key_t {0}, trivial_key_t {10},
-                           [&](auto const &member) noexcept { pushed.push_back(member.key.unique_id); }));
-    st_verify_(pushed == expected);
+    expect_equal(store.range(trivial_key_t {0}, trivial_key_t {10},
+                             [&](auto const &member) noexcept { pushed.push_back(member.key.unique_id); }),
+                 success_k);
+    expect_true(pushed == expected);
 
     std::vector<trivial_id_t> const from_four {4, 6, 7, 9};
-    st_verify_(drain_cursor(store.visible_keys_from(trivial_key_t {4})) == from_four);
+    expect_true(drain_cursor(store.visible_keys_from(trivial_key_t {4})) == from_four);
     // Key 5 is a tombstone that still holds entries, so the cursor must step over its whole run.
     std::vector<trivial_id_t> const from_five {6, 7, 9};
-    st_verify_(drain_cursor(store.visible_keys_from(trivial_key_t {5})) == from_five);
+    expect_true(drain_cursor(store.visible_keys_from(trivial_key_t {5})) == from_five);
 
     auto standing = store.visible_keys_from(trivial_key_t {6});
     auto copied = standing.peek_copy();
-    st_verify_(copied.has_value());
-    st_verify_eq_(copied->key.unique_id, 6);
-    st_verify_eq_(standing.snapshot(), store.published_stamp());
+    if (!expect_true(copied.has_value())) return;
+    expect_equal(copied->key.unique_id, 6);
+    expect_equal(standing.snapshot(), store.published_stamp());
 
     // A cursor past the last key is exhausted rather than standing on nothing.
     auto beyond = store.visible_keys_from(trivial_key_t {10});
-    st_verify_(beyond.exhausted());
-    st_verify_(!store.visible_keys().exhausted());
+    expect_true(beyond.exhausted());
+    expect_true(!store.visible_keys().exhausted());
 }
 
 /** Tests that a transaction's own range is sorted where staged and committed keys interleave */
@@ -928,31 +943,34 @@ static void test_transaction_range_is_sorted() {
     for (trivial_id_t identifier = 0; identifier != 10; identifier += 2) commit_write(store, identifier, 10);
 
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
+    if (!expect_true(writer.has_value())) return;
     for (trivial_id_t identifier : {trivial_id_t {1}, trivial_id_t {3}, trivial_id_t {9}})
-        st_verify_(writer->upsert(trivial_id_to_member<member_t>(identifier, 20)));
-    st_verify_(writer->upsert(trivial_id_to_member<member_t>(2, 22)));
-    st_verify_(writer->erase(trivial_key_t {6}));
+        expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, 20)), success_k);
+    expect_equal(writer->upsert(trivial_id_to_member<member_t>(2, 22)), success_k);
+    expect_equal(writer->erase(trivial_key_t {6}), success_k);
 
     std::vector<trivial_id_t> seen;
     std::vector<int> values;
-    st_verify_(writer->range(trivial_key_t {0}, trivial_key_t {10}, [&](auto const &member) noexcept {
-        seen.push_back(member.key.unique_id);
-        values.push_back(member.mapped);
-    }));
+    expect_equal(writer->range(trivial_key_t {0}, trivial_key_t {10},
+                               [&](auto const &member) noexcept {
+                                   seen.push_back(member.key.unique_id);
+                                   values.push_back(member.mapped);
+                               }),
+                 success_k);
 
     std::vector<trivial_id_t> const expected {0, 1, 2, 3, 4, 8, 9};
-    st_verify_(seen == expected);
+    expect_true(seen == expected);
     // The staged overwrite of key 2 speaks for it, and the staged tombstone hides key 6 entirely.
     std::vector<int> const expected_values {10, 20, 22, 20, 10, 10, 20};
-    st_verify_(values == expected_values);
+    expect_true(values == expected_values);
 
     // A window that opens on a staged key and closes inside the committed ones stays sorted too.
     std::vector<trivial_id_t> window;
-    st_verify_(writer->range(trivial_key_t {1}, trivial_key_t {5},
-                             [&](auto const &member) noexcept { window.push_back(member.key.unique_id); }));
+    expect_equal(writer->range(trivial_key_t {1}, trivial_key_t {5},
+                               [&](auto const &member) noexcept { window.push_back(member.key.unique_id); }),
+                 success_k);
     std::vector<trivial_id_t> const expected_window {1, 2, 3, 4};
-    st_verify_(window == expected_window);
+    expect_true(window == expected_window);
 }
 
 #pragma endregion Cursor Tests
@@ -968,35 +986,35 @@ static void test_publication_is_all_or_nothing() {
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, 0);
 
     auto earlier = store.transaction();
-    st_verify_(earlier.has_value());
+    if (!expect_true(earlier.has_value())) return;
     generation_t const before = store.published_stamp();
 
     auto group = store.publication();
-    st_verify_(group.has_value());
-    st_verify_(group->reserve(keys_k));
+    if (!expect_true(group.has_value())) return;
+    expect_equal(group->reserve(keys_k), success_k);
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-        st_verify_(group->upsert(trivial_id_to_member<member_t>(identifier, 1)));
-    st_verify_eq_(group->staged_count(), keys_k);
+        expect_equal(group->upsert(trivial_id_to_member<member_t>(identifier, 1)), success_k);
+    expect_equal(group->staged_count(), keys_k);
 
     // Filed and unstamped, so neither the store nor any reader can see any of it.
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-        st_verify_eq_(mapped_or_absent(store, identifier), 0);
-    st_verify_eq_(store.published_stamp(), before);
+        expect_equal(mapped_or_absent(store, identifier), 0);
+    expect_equal(store.published_stamp(), before);
 
-    st_verify_(group->publish());
-    st_verify_eq_(group->staged_count(), 0);
+    expect_equal(group->publish(), success_k);
+    expect_equal(group->staged_count(), 0);
 
     // One stamp for the whole group, so a snapshot names all of it or none of it.
-    st_verify_eq_(store.published_stamp(), before + 1);
+    expect_equal(store.published_stamp(), before + 1);
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) {
-        st_verify_eq_(mapped_or_absent(store, identifier), 1);
-        st_verify_eq_(mapped_or_absent(*earlier, identifier), 0);
+        expect_equal(mapped_or_absent(store, identifier), 1);
+        expect_equal(mapped_or_absent(*earlier, identifier), 0);
     }
 
     auto later = store.transaction();
-    st_verify_(later.has_value());
+    if (!expect_true(later.has_value())) return;
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-        st_verify_eq_(mapped_or_absent(*later, identifier), 1);
+        expect_equal(mapped_or_absent(*later, identifier), 1);
 }
 
 /** Tests that a publication erases through tombstones and undoes itself when discarded */
@@ -1007,31 +1025,31 @@ static void test_publication_erases_and_discards() {
     for (trivial_id_t identifier = 0; identifier != 4; ++identifier) commit_write(store, identifier, 10);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
 
     {
         auto group = store.publication();
-        st_verify_(group.has_value());
-        st_verify_(group->erase(trivial_key_t {1}));
-        st_verify_(group->erase(trivial_key_t {2}));
-        st_verify_(group->publish());
+        if (!expect_true(group.has_value())) return;
+        expect_equal(group->erase(trivial_key_t {1}), success_k);
+        expect_equal(group->erase(trivial_key_t {2}), success_k);
+        expect_equal(group->publish(), success_k);
     }
-    st_verify_eq_(store.size(), 2);
-    st_verify_eq_(mapped_or_absent(store, 1), status_t::key_not_found_k);
+    expect_equal(store.size(), 2);
+    expect_equal(mapped_or_absent(store, 1), status_t::key_not_found_k);
     // The erasure is a tombstone, so the snapshot that opened before it still reads the key.
-    st_verify_eq_(mapped_or_absent(*reader, 1), 10);
-    st_verify_eq_(mapped_or_absent(*reader, 2), 10);
+    expect_equal(mapped_or_absent(*reader, 1), 10);
+    expect_equal(mapped_or_absent(*reader, 2), 10);
 
     {
         auto abandoned = store.publication();
-        st_verify_(abandoned.has_value());
-        st_verify_(abandoned->upsert(trivial_id_to_member<member_t>(0, 99)));
-        st_verify_(abandoned->upsert(trivial_id_to_member<member_t>(3, 99)));
-        st_verify_eq_(store.versions_count(trivial_key_t {0}), 2);
+        if (!expect_true(abandoned.has_value())) return;
+        expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(0, 99)), success_k);
+        expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(3, 99)), success_k);
+        expect_equal(store.versions_count(trivial_key_t {0}), 2);
     }
-    st_verify_eq_(mapped_or_absent(store, 0), 10);
-    st_verify_eq_(store.versions_count(trivial_key_t {0}), 1);
-    st_verify_eq_(store.size(), 2);
+    expect_equal(mapped_or_absent(store, 0), 10);
+    expect_equal(store.versions_count(trivial_key_t {0}), 1);
+    expect_equal(store.size(), 2);
 }
 
 /** Tests that clearing is refused while a transaction still holds a snapshot */
@@ -1042,15 +1060,15 @@ static void test_clear_refuses_open_readers() {
 
     {
         auto reader = store.transaction();
-        st_verify_(reader.has_value());
-        st_verify_eq_(store.clear(), status_t::operation_not_permitted_k);
-        st_verify_eq_(mapped_or_absent(*reader, 1), 100);
+        if (!expect_true(reader.has_value())) return;
+        expect_equal(store.clear(), status_t::operation_not_permitted_k);
+        expect_equal(mapped_or_absent(*reader, 1), 100);
     }
 
-    st_verify_eq_(store.open_snapshots(), 0);
-    st_verify_(store.clear());
-    st_verify_(store.empty());
-    st_verify_eq_(store.versions_count(), 0);
+    expect_equal(store.open_snapshots(), 0);
+    expect_equal(store.clear(), success_k);
+    expect_true(store.empty());
+    expect_equal(store.versions_count(), 0);
 }
 
 #pragma endregion Publication Tests
@@ -1061,8 +1079,9 @@ static void test_clear_refuses_open_readers() {
 template <typename readable_type_>
 static std::vector<trivial_id_t> keys_in_range(readable_type_ const &readable, trivial_id_t lower, trivial_id_t upper) {
     std::vector<trivial_id_t> seen;
-    st_verify_(readable.range(trivial_key_t {lower}, trivial_key_t {upper},
-                              [&](auto const &member) noexcept { seen.push_back(member.key.unique_id); }));
+    expect_equal(readable.range(trivial_key_t {lower}, trivial_key_t {upper},
+                                [&](auto const &member) noexcept { seen.push_back(member.key.unique_id); }),
+                 success_k);
     return seen;
 }
 
@@ -1075,24 +1094,27 @@ static void test_equal_range_collapses_to_find() {
     commit_erase(store, 2);
 
     std::vector<int> found;
-    st_verify_(
-        store.equal_range(trivial_key_t {1}, [&](auto const &member) noexcept { found.push_back(member.mapped); }));
-    st_verify_eq_(found.size(), 1);
-    st_verify_eq_(found[0], 100);
+    expect_equal(
+        store.equal_range(trivial_key_t {1}, [&](auto const &member) noexcept { found.push_back(member.mapped); }),
+        success_k);
+    if (!expect_equal(found.size(), 1)) return;
+    expect_equal(found[0], 100);
 
     found.clear();
-    st_verify_(
-        store.equal_range(trivial_key_t {2}, [&](auto const &member) noexcept { found.push_back(member.mapped); }));
-    st_verify_(found.empty());
+    expect_equal(
+        store.equal_range(trivial_key_t {2}, [&](auto const &member) noexcept { found.push_back(member.mapped); }),
+        success_k);
+    expect_true(found.empty());
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
-    st_verify_(reader->upsert(trivial_id_to_member<typename store_type_::value_type>(2, 222)));
+    if (!expect_true(reader.has_value())) return;
+    expect_equal(reader->upsert(trivial_id_to_member<typename store_type_::value_type>(2, 222)), success_k);
     found.clear();
-    st_verify_(
-        reader->equal_range(trivial_key_t {2}, [&](auto const &member) noexcept { found.push_back(member.mapped); }));
-    st_verify_eq_(found.size(), 1);
-    st_verify_eq_(found[0], 222);
+    expect_equal(
+        reader->equal_range(trivial_key_t {2}, [&](auto const &member) noexcept { found.push_back(member.mapped); }),
+        success_k);
+    if (!expect_equal(found.size(), 1)) return;
+    expect_equal(found[0], 222);
 }
 
 /** Tests that a range erase is all-or-nothing to a reader that opened before it */
@@ -1102,31 +1124,32 @@ static void test_erase_range_is_all_or_nothing() {
     for (trivial_id_t identifier = 0; identifier != 10; ++identifier) commit_write(store, identifier, 0);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
 
     generation_t const before = store.published_stamp();
     std::vector<trivial_id_t> retired;
-    st_verify_(store.erase_range(trivial_key_t {2}, trivial_key_t {8},
-                                 [&](auto const &member) noexcept { retired.push_back(member.key.unique_id); }));
+    expect_equal(store.erase_range(trivial_key_t {2}, trivial_key_t {8},
+                                   [&](auto const &member) noexcept { retired.push_back(member.key.unique_id); }),
+                 success_k);
 
     // One stamp for the whole window is what makes it indivisible: a reader either names that stamp or
     // does not, so there is no observable moment where half the keys are gone.
-    st_verify_eq_(store.published_stamp(), before + 1);
-    st_verify_eq_(retired.size(), 6);
-    st_verify_eq_(store.size(), 4);
+    expect_equal(store.published_stamp(), before + 1);
+    expect_equal(retired.size(), 6);
+    expect_equal(store.size(), 4);
 
     std::vector<trivial_id_t> const remaining = keys_in_range(store, 0, 10);
-    st_verify_eq_(remaining.size(), 4);
-    st_verify_eq_(remaining[0], 0);
-    st_verify_eq_(remaining[3], 9);
+    if (!expect_equal(remaining.size(), 4)) return;
+    expect_equal(remaining[0], 0);
+    expect_equal(remaining[3], 9);
 
     // The older snapshot keeps every key it opened on, all ten of them, not a prefix.
     std::vector<trivial_id_t> const observed = keys_in_range(*reader, 0, 10);
-    st_verify_eq_(observed.size(), 10);
-    for (trivial_id_t identifier = 0; identifier != 10; ++identifier) st_verify_eq_(observed[identifier], identifier);
+    if (!expect_equal(observed.size(), 10)) return;
+    for (trivial_id_t identifier = 0; identifier != 10; ++identifier) expect_equal(observed[identifier], identifier);
 
-    st_verify_(store.erase_range(trivial_key_t {0}, trivial_key_t {0}));
-    st_verify_eq_(store.size(), 4);
+    expect_equal(store.erase_range(trivial_key_t {0}, trivial_key_t {0}), success_k);
+    expect_equal(store.size(), 4);
 }
 
 /** Every key @p store shows, in order, which the open-ended erases are checked against. */
@@ -1140,90 +1163,92 @@ template <typename store_type_>
 static void fill_decades(store_type_ &store) {
     using member_t = typename store_type_::value_type;
     for (trivial_id_t identifier = 10; identifier <= 40; identifier += 10)
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier, static_cast<int>(identifier))));
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, static_cast<int>(identifier))), success_k);
 }
 
 /** Tests that an erase with no upper bound takes its lower bound with it */
 template <typename store_type_>
 static void test_erase_from_includes_its_bound() {
     store_type_ empty;
-    st_verify_(empty.erase_from(trivial_key_t {7}));
-    st_verify_eq_(empty.size(), 0);
+    expect_equal(empty.erase_from(trivial_key_t {7}), success_k);
+    expect_equal(empty.size(), 0);
 
     // A bound falling between two keys takes everything after the gap.
     store_type_ between;
     fill_decades(between);
     std::vector<trivial_id_t> retired;
-    st_verify_(between.erase_from(trivial_key_t {25},
-                                  [&](auto const &member) noexcept { retired.push_back(member.key.unique_id); }));
-    st_verify_eq_(retired.size(), 2);
-    st_verify_eq_(retired[0], 30);
-    st_verify_eq_(retired[1], 40);
+    expect_equal(between.erase_from(trivial_key_t {25},
+                                    [&](auto const &member) noexcept { retired.push_back(member.key.unique_id); }),
+                 success_k);
+    if (!expect_equal(retired.size(), 2)) return;
+    expect_equal(retired[0], 30);
+    expect_equal(retired[1], 40);
     std::vector<trivial_id_t> const kept = every_key(between);
-    st_verify_eq_(kept.size(), 2);
-    st_verify_eq_(kept[0], 10);
-    st_verify_eq_(kept[1], 20);
+    if (!expect_equal(kept.size(), 2)) return;
+    expect_equal(kept[0], 10);
+    expect_equal(kept[1], 20);
 
     // The bound itself goes, which is the end `erase_range` includes.
     store_type_ on_key;
     fill_decades(on_key);
-    st_verify_(on_key.erase_from(trivial_key_t {30}));
+    expect_equal(on_key.erase_from(trivial_key_t {30}), success_k);
     std::vector<trivial_id_t> const survivors = every_key(on_key);
-    st_verify_eq_(survivors.size(), 2);
-    st_verify_eq_(survivors[0], 10);
-    st_verify_eq_(survivors[1], 20);
+    if (!expect_equal(survivors.size(), 2)) return;
+    expect_equal(survivors[0], 10);
+    expect_equal(survivors[1], 20);
 
     // Below every key the store empties, above every key nothing moves.
     store_type_ below;
     fill_decades(below);
-    st_verify_(below.erase_from(trivial_key_t {5}));
-    st_verify_eq_(below.size(), 0);
+    expect_equal(below.erase_from(trivial_key_t {5}), success_k);
+    expect_equal(below.size(), 0);
 
     store_type_ above;
     fill_decades(above);
-    st_verify_(above.erase_from(trivial_key_t {45}));
-    st_verify_eq_(above.size(), 4);
-    st_verify_eq_(every_key(above).size(), 4);
+    expect_equal(above.erase_from(trivial_key_t {45}), success_k);
+    expect_equal(above.size(), 4);
+    expect_equal(every_key(above).size(), 4);
 }
 
 /** Tests that an erase with no lower bound stops short of its upper bound */
 template <typename store_type_>
 static void test_erase_up_to_excludes_its_bound() {
     store_type_ empty;
-    st_verify_(empty.erase_up_to(trivial_key_t {7}));
-    st_verify_eq_(empty.size(), 0);
+    expect_equal(empty.erase_up_to(trivial_key_t {7}), success_k);
+    expect_equal(empty.size(), 0);
 
     store_type_ between;
     fill_decades(between);
     std::vector<trivial_id_t> retired;
-    st_verify_(between.erase_up_to(trivial_key_t {25},
-                                   [&](auto const &member) noexcept { retired.push_back(member.key.unique_id); }));
-    st_verify_eq_(retired.size(), 2);
-    st_verify_eq_(retired[0], 10);
-    st_verify_eq_(retired[1], 20);
+    expect_equal(between.erase_up_to(trivial_key_t {25},
+                                     [&](auto const &member) noexcept { retired.push_back(member.key.unique_id); }),
+                 success_k);
+    if (!expect_equal(retired.size(), 2)) return;
+    expect_equal(retired[0], 10);
+    expect_equal(retired[1], 20);
     std::vector<trivial_id_t> const kept = every_key(between);
-    st_verify_eq_(kept.size(), 2);
-    st_verify_eq_(kept[0], 30);
-    st_verify_eq_(kept[1], 40);
+    if (!expect_equal(kept.size(), 2)) return;
+    expect_equal(kept[0], 30);
+    expect_equal(kept[1], 40);
 
     // The bound itself stays, which is the end `erase_range` excludes.
     store_type_ on_key;
     fill_decades(on_key);
-    st_verify_(on_key.erase_up_to(trivial_key_t {30}));
+    expect_equal(on_key.erase_up_to(trivial_key_t {30}), success_k);
     std::vector<trivial_id_t> const survivors = every_key(on_key);
-    st_verify_eq_(survivors.size(), 2);
-    st_verify_eq_(survivors[0], 30);
-    st_verify_eq_(survivors[1], 40);
+    if (!expect_equal(survivors.size(), 2)) return;
+    expect_equal(survivors[0], 30);
+    expect_equal(survivors[1], 40);
 
     store_type_ below;
     fill_decades(below);
-    st_verify_(below.erase_up_to(trivial_key_t {5}));
-    st_verify_eq_(below.size(), 4);
+    expect_equal(below.erase_up_to(trivial_key_t {5}), success_k);
+    expect_equal(below.size(), 4);
 
     store_type_ above;
     fill_decades(above);
-    st_verify_(above.erase_up_to(trivial_key_t {45}));
-    st_verify_eq_(above.size(), 0);
+    expect_equal(above.erase_up_to(trivial_key_t {45}), success_k);
+    expect_equal(above.size(), 0);
 }
 
 /** Tests that the reporting @c insert_if_missing fires the same callback on the same outcome */
@@ -1234,23 +1259,26 @@ static void test_insert_if_missing_reports_outcome() {
 
     expected<int> inserted_mapped;
     std::size_t existing_calls = 0;
-    st_verify_(store.insert_if_missing(
-        trivial_id_to_member<member_t>(1, 100), [&](auto const &member) noexcept { inserted_mapped = member.mapped; },
-        [&](auto const &) noexcept { ++existing_calls; }));
-    st_verify_((inserted_mapped) && "the callback that separates the two cases never fired");
-    st_verify_eq_(*inserted_mapped, 100);
-    st_verify_eq_(existing_calls, 0);
+    expect_equal(store.insert_if_missing(
+                     trivial_id_to_member<member_t>(1, 100),
+                     [&](auto const &member) noexcept { inserted_mapped = member.mapped; },
+                     [&](auto const &) noexcept { ++existing_calls; }),
+                 success_k);
+    if (!expect_true(inserted_mapped.has_value(), "the callback that separates the two cases never fired")) return;
+    expect_equal(*inserted_mapped, 100);
+    expect_equal(existing_calls, 0);
 
     // The second call declines, which is still a success, so only the callback separates the cases.
     expected<int> existing_mapped;
     std::size_t inserted_calls = 0;
-    st_verify_(store.insert_if_missing(
-        trivial_id_to_member<member_t>(1, 999), [&](auto const &) noexcept { ++inserted_calls; },
-        [&](auto const &member) noexcept { existing_mapped = member.mapped; }));
-    st_verify_((existing_mapped) && "the callback that separates the two cases never fired");
-    st_verify_eq_(*existing_mapped, 100);
-    st_verify_eq_(inserted_calls, 0);
-    st_verify_eq_(mapped_or_absent(store, 1), 100);
+    expect_equal(store.insert_if_missing(
+                     trivial_id_to_member<member_t>(1, 999), [&](auto const &) noexcept { ++inserted_calls; },
+                     [&](auto const &member) noexcept { existing_mapped = member.mapped; }),
+                 success_k);
+    if (!expect_true(existing_mapped.has_value(), "the callback that separates the two cases never fired")) return;
+    expect_equal(*existing_mapped, 100);
+    expect_equal(inserted_calls, 0);
+    expect_equal(mapped_or_absent(store, 1), 100);
 }
 
 /** Tests that a range update publishes new versions rather than rewriting what readers hold */
@@ -1260,21 +1288,22 @@ static void test_update_range_leaves_readers_alone() {
     for (trivial_id_t identifier = 0; identifier != 6; ++identifier) commit_write(store, identifier, 10);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
 
     generation_t const before = store.published_stamp();
-    st_verify_(store.update_range(trivial_key_t {1}, trivial_key_t {4},
-                                  [](auto const &, int &mapped) noexcept { mapped += 1; }));
-    st_verify_eq_(store.published_stamp(), before + 1);
+    expect_equal(store.update_range(trivial_key_t {1}, trivial_key_t {4},
+                                    [](auto const &, int &mapped) noexcept { mapped += 1; }),
+                 success_k);
+    expect_equal(store.published_stamp(), before + 1);
 
-    st_verify_eq_(mapped_or_absent(store, 0), 10);
-    st_verify_eq_(mapped_or_absent(store, 1), 11);
-    st_verify_eq_(mapped_or_absent(store, 3), 11);
-    st_verify_eq_(mapped_or_absent(store, 4), 10);
-    st_verify_eq_(store.size(), 6);
+    expect_equal(mapped_or_absent(store, 0), 10);
+    expect_equal(mapped_or_absent(store, 1), 11);
+    expect_equal(mapped_or_absent(store, 3), 11);
+    expect_equal(mapped_or_absent(store, 4), 10);
+    expect_equal(store.size(), 6);
 
     for (trivial_id_t identifier = 0; identifier != 6; ++identifier)
-        st_verify_eq_(mapped_or_absent(*reader, identifier), 10);
+        expect_equal(mapped_or_absent(*reader, identifier), 10);
 }
 
 /** Tests that a bounded vacuum reclaims only the runs inside its window */
@@ -1285,30 +1314,30 @@ static void test_bounded_vacuum_sweeps_whole_runs() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) {
         auto reader = store.transaction();
-        st_verify_(reader.has_value());
+        expect_true(reader.has_value());
         commit_write(store, identifier, 1);
         commit_write(store, identifier, 2);
     }
 
     // Each key was written twice under a reader pinning the first, so both versions carry.
-    st_verify_eq_(store.open_snapshots(), 0);
-    st_verify_eq_(store.versions_count(), keys_k * 2);
+    expect_equal(store.open_snapshots(), 0);
+    expect_equal(store.versions_count(), keys_k * 2);
 
-    st_verify_eq_(vacuumed(store, trivial_key_t {0}, trivial_key_t {midpoint_k}), midpoint_k);
+    expect_equal(vacuumed(store, trivial_key_t {0}, trivial_key_t {midpoint_k}), midpoint_k);
     for (trivial_id_t identifier = 0; identifier != midpoint_k; ++identifier)
-        st_verify_eq_(store.versions_count(trivial_key_t {identifier}), 1);
-    st_verify_eq_(store.size(), keys_k);
+        expect_equal(store.versions_count(trivial_key_t {identifier}), 1);
+    expect_equal(store.size(), keys_k);
 
-    st_verify_eq_(vacuumed(store, trivial_key_t {midpoint_k}, trivial_key_t {keys_k}), keys_k - midpoint_k);
-    st_verify_eq_(store.versions_count(), keys_k);
-    st_verify_eq_(store.size(), keys_k);
+    expect_equal(vacuumed(store, trivial_key_t {midpoint_k}, trivial_key_t {keys_k}), keys_k - midpoint_k);
+    expect_equal(store.versions_count(), keys_k);
+    expect_equal(store.size(), keys_k);
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-        st_verify_eq_(mapped_or_absent(store, identifier), 2);
+        expect_equal(mapped_or_absent(store, identifier), 2);
 }
 
 /** Tests that reservoir sampling draws only readable keys, once each per pass */
 template <typename store_type_>
-static void test_sample_reservoir_draws_visible_keys(test_context_t const &context) {
+static void test_sample_reservoir_draws_visible_keys() {
     using member_t = typename store_type_::value_type;
     constexpr trivial_id_t keys_k = 20;
     constexpr trivial_id_t erased_stride_k = 2;
@@ -1319,22 +1348,24 @@ static void test_sample_reservoir_draws_visible_keys(test_context_t const &conte
     for (trivial_id_t identifier = 0; identifier != keys_k; identifier += erased_stride_k)
         commit_erase(store, identifier);
 
-    std::mt19937 generator(mix_seed(context.seed, __func__));
+    split_mix_generator_t generator {case_stream_key()};
     std::vector<member_t> reservoir(4);
     std::size_t seen = 0;
-    st_verify_(store.sample_reservoir(trivial_key_t {0}, trivial_key_t {keys_k}, generator, seen, reservoir.size(),
-                                      reservoir.begin()));
+    expect_equal(store.sample_reservoir(trivial_key_t {0}, trivial_key_t {keys_k}, generator, seen, reservoir.size(),
+                                        reservoir.begin()),
+                 success_k);
 
-    st_verify_eq_(seen, keys_k - keys_k / erased_stride_k);
+    expect_equal(seen, keys_k - keys_k / erased_stride_k);
     for (std::size_t slot = 0; slot != reservoir.size(); ++slot) {
-        st_verify_ne_(reservoir[slot].key.unique_id % erased_stride_k, 0u);
-        st_verify_eq_(store.contains(reservoir[slot].key), true);
+        expect_true(reservoir[slot].key.unique_id % erased_stride_k != 0u);
+        expect_equal(store.contains(reservoir[slot].key), true);
     }
 
     seen = 0;
-    st_verify_(store.sample_reservoir(trivial_key_t {0}, trivial_key_t {window_k}, generator, seen, reservoir.size(),
-                                      reservoir.begin()));
-    st_verify_eq_(seen, window_k - window_k / erased_stride_k);
+    expect_equal(store.sample_reservoir(trivial_key_t {0}, trivial_key_t {window_k}, generator, seen, reservoir.size(),
+                                        reservoir.begin()),
+                 success_k);
+    expect_equal(seen, window_k - window_k / erased_stride_k);
 }
 
 /** Tests that the bulk modifiers commit as one group and refuse the strict clash */
@@ -1349,42 +1380,42 @@ static void test_bulk_modifiers_commit_together() {
         batch.push_back(trivial_id_to_member<member_t>(identifier, 1));
 
     generation_t const before = store.published_stamp();
-    st_verify_(store.insert(batch.begin(), batch.end()));
-    st_verify_eq_(store.published_stamp(), before + 1);
-    st_verify_eq_(store.size(), 5);
+    expect_equal(store.insert(batch.begin(), batch.end()), success_k);
+    expect_equal(store.published_stamp(), before + 1);
+    expect_equal(store.size(), 5);
 
     // The strict variant probes what is published, so a batch overlapping a stored key is refused whole.
     std::vector<member_t> clashing;
     clashing.push_back(trivial_id_to_member<member_t>(9, 1));
     clashing.push_back(trivial_id_to_member<member_t>(3, 1));
-    st_verify_eq_(store.insert(clashing.begin(), clashing.end()), status_t::key_already_exists_k);
-    st_verify_eq_(store.size(), 5);
-    st_verify_eq_(store.contains(trivial_key_t {9}), false);
+    expect_equal(store.insert(clashing.begin(), clashing.end()), status_t::key_already_exists_k);
+    expect_equal(store.size(), 5);
+    expect_equal(store.contains(trivial_key_t {9}), false);
 
-    st_verify_(store.insert_if_missing(clashing.begin(), clashing.end()));
-    st_verify_eq_(store.size(), 6);
-    st_verify_eq_(mapped_or_absent(store, 3), 1);
+    expect_equal(store.insert_if_missing(clashing.begin(), clashing.end()), success_k);
+    expect_equal(store.size(), 6);
+    expect_equal(mapped_or_absent(store, 3), 1);
 
     std::vector<member_t> revised;
     for (trivial_id_t identifier = 0; identifier != 5; ++identifier)
         revised.push_back(trivial_id_to_member<member_t>(identifier, 2));
-    st_verify_(store.update(revised.begin(), revised.end()));
+    expect_equal(store.update(revised.begin(), revised.end()), success_k);
     for (trivial_id_t identifier = 0; identifier != 5; ++identifier)
-        st_verify_eq_(mapped_or_absent(store, identifier), 2);
+        expect_equal(mapped_or_absent(store, identifier), 2);
 
     std::vector<member_t> absent;
     absent.push_back(trivial_id_to_member<member_t>(77, 3));
-    st_verify_eq_(store.update(absent.begin(), absent.end()), status_t::key_not_found_k);
-    st_verify_eq_(store.contains(trivial_key_t {77}), false);
+    expect_equal(store.update(absent.begin(), absent.end()), status_t::key_not_found_k);
+    expect_equal(store.contains(trivial_key_t {77}), false);
 
     std::vector<member_t> mixed;
     mixed.push_back(trivial_id_to_member<member_t>(0, 5));
     mixed.push_back(trivial_id_to_member<member_t>(42, 5));
-    st_verify_(store.upsert(mixed.begin(), mixed.end()));
-    st_verify_eq_(mapped_or_absent(store, 0), 5);
-    st_verify_eq_(mapped_or_absent(store, 42), 5);
+    expect_equal(store.upsert(mixed.begin(), mixed.end()), success_k);
+    expect_equal(mapped_or_absent(store, 0), 5);
+    expect_equal(mapped_or_absent(store, 42), 5);
 
-    st_verify_(store.insert(batch.end(), batch.end()));
+    expect_equal(store.insert(batch.end(), batch.end()), success_k);
 }
 
 #pragma endregion Range Operation Tests
@@ -1402,16 +1433,16 @@ static void test_order_statistics_match_the_walk() {
         commit_erase(store, identifier);
 
     std::vector<trivial_id_t> const expected_order = keys_in_range(store, 0, keys_k);
-    st_verify_eq_(expected_order.size(), keys_k - keys_k / erased_stride_k);
-    st_verify_eq_(store.ranked_size(), store.size());
+    if (!expect_equal(expected_order.size(), keys_k - keys_k / erased_stride_k)) return;
+    expect_equal(store.ranked_size(), store.size());
 
     for (std::size_t ordinal = 0; ordinal != expected_order.size(); ++ordinal) {
-        st_verify_eq_(selected_or_absent(store, ordinal), expected_order[ordinal]);
-        st_verify_eq_(ranked_or_absent(store, expected_order[ordinal]), ordinal);
+        expect_equal(selected_or_absent(store, ordinal), expected_order[ordinal]);
+        expect_equal(ranked_or_absent(store, expected_order[ordinal]), ordinal);
     }
 
-    st_verify_eq_(selected_or_absent(store, expected_order.size()), status_t::key_not_found_k);
-    st_verify_eq_(ranked_or_absent(store, 0), status_t::key_not_found_k);
+    expect_equal(selected_or_absent(store, expected_order.size()), status_t::key_not_found_k);
+    expect_equal(ranked_or_absent(store, 0), status_t::key_not_found_k);
 }
 
 /** Tests that the ordinal descends on the stored counts rather than walking the keys */
@@ -1423,22 +1454,22 @@ static void test_order_statistics_cost_a_logarithm() {
     std::vector<member_t> batch;
     for (trivial_id_t identifier = 0; identifier != size; ++identifier)
         batch.push_back(trivial_id_to_member<member_t>(identifier, 0));
-    st_verify_(store.upsert(batch.begin(), batch.end()));
-    st_verify_eq_(store.size(), size);
-    st_verify_eq_(store.ranked_size(), size);
+    expect_equal(store.upsert(batch.begin(), batch.end()), success_k);
+    expect_equal(store.size(), size);
+    expect_equal(store.ranked_size(), size);
 
     counting_call_tally_t::reset();
     expected<trivial_id_t> const drawn = selected_or_absent(store, size / 2);
-    st_verify_eq_(drawn, size / 2);
+    expect_equal(drawn, size / 2);
     // A select reads only the stored subtree counts, so it never consults the comparator at all.
-    st_verify_eq_(counting_call_tally_t::comparisons_count(), 0);
+    expect_equal(counting_call_tally_t::comparisons_count(), 0);
 
     counting_call_tally_t::reset();
     expected<std::size_t> const ranked = ranked_or_absent(store, size - 1);
-    st_verify_eq_(ranked, size - 1);
+    expect_equal(ranked, size - 1);
     // Both halves of a rank on the last key: the probe deciding it is readable, and the descent summing
     // the counts to its left. Only the balance policy or the shape of that probe moves this.
-    st_verify_eq_(counting_call_tally_t::comparisons_count(), 91);
+    expect_equal(counting_call_tally_t::comparisons_count(), 91);
 }
 
 /** Tests that a transaction's ordinal counts its own staged writes into the committed order */
@@ -1449,20 +1480,20 @@ static void test_transaction_order_statistics_merge() {
     for (trivial_id_t identifier = 0; identifier != 10; identifier += 2) commit_write(store, identifier, 0);
 
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
-    st_verify_(writer->upsert(trivial_id_to_member<member_t>(5, 1)));
-    st_verify_(writer->erase(trivial_key_t {4}));
+    if (!expect_true(writer.has_value())) return;
+    expect_equal(writer->upsert(trivial_id_to_member<member_t>(5, 1)), success_k);
+    expect_equal(writer->erase(trivial_key_t {4}), success_k);
 
     std::vector<trivial_id_t> const expected_order = keys_in_range(*writer, 0, 10);
-    st_verify_eq_(expected_order.size(), 5);
+    if (!expect_equal(expected_order.size(), 5)) return;
 
     for (std::size_t ordinal = 0; ordinal != expected_order.size(); ++ordinal) {
-        st_verify_eq_(selected_or_absent(*writer, ordinal), expected_order[ordinal]);
-        st_verify_eq_(ranked_or_absent(*writer, expected_order[ordinal]), ordinal);
+        expect_equal(selected_or_absent(*writer, ordinal), expected_order[ordinal]);
+        expect_equal(ranked_or_absent(*writer, expected_order[ordinal]), ordinal);
     }
 
-    st_verify_eq_(selected_or_absent(*writer, expected_order.size()), status_t::key_not_found_k);
-    st_verify_eq_(ranked_or_absent(*writer, 4), status_t::key_not_found_k);
+    expect_equal(selected_or_absent(*writer, expected_order.size()), status_t::key_not_found_k);
+    expect_equal(ranked_or_absent(*writer, 4), status_t::key_not_found_k);
 }
 
 /** Tests that the augmented counts follow every publication path, not only the point writes */
@@ -1473,31 +1504,32 @@ static void test_ranked_size_tracks_every_write() {
     std::vector<member_t> batch;
     for (trivial_id_t identifier = 0; identifier != 16; ++identifier)
         batch.push_back(trivial_id_to_member<member_t>(identifier, 0));
-    st_verify_(store.insert(batch.begin(), batch.end()));
-    st_verify_eq_(store.ranked_size(), store.size());
+    expect_equal(store.insert(batch.begin(), batch.end()), success_k);
+    expect_equal(store.ranked_size(), store.size());
 
-    st_verify_(store.erase_range(trivial_key_t {4}, trivial_key_t {12}));
-    st_verify_eq_(store.ranked_size(), store.size());
-    st_verify_eq_(store.ranked_size(), 8);
+    expect_equal(store.erase_range(trivial_key_t {4}, trivial_key_t {12}), success_k);
+    expect_equal(store.ranked_size(), store.size());
+    expect_equal(store.ranked_size(), 8);
 
-    st_verify_(store.update_range(trivial_key_t {0}, trivial_key_t {16},
-                                  [](auto const &, int &mapped) noexcept { mapped = 7; }));
-    st_verify_eq_(store.ranked_size(), store.size());
+    expect_equal(store.update_range(trivial_key_t {0}, trivial_key_t {16},
+                                    [](auto const &, int &mapped) noexcept { mapped = 7; }),
+                 success_k);
+    expect_equal(store.ranked_size(), store.size());
 
     commit_write(store, 100, 1);
     commit_erase(store, 100);
-    st_verify_eq_(store.ranked_size(), store.size());
+    expect_equal(store.ranked_size(), store.size());
 
     [[maybe_unused]] std::size_t const swept = vacuumed(store);
-    st_verify_eq_(store.ranked_size(), store.size());
+    expect_equal(store.ranked_size(), store.size());
 
     auto abandoned = store.transaction();
-    st_verify_(abandoned.has_value());
-    st_verify_(abandoned->upsert(trivial_id_to_member<member_t>(200, 1)));
-    st_verify_(abandoned->stage());
-    st_verify_eq_(store.ranked_size(), store.size());
-    st_verify_(abandoned->rollback());
-    st_verify_eq_(store.ranked_size(), store.size());
+    if (!expect_true(abandoned.has_value())) return;
+    expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(200, 1)), success_k);
+    expect_equal(abandoned->stage(), success_k);
+    expect_equal(store.ranked_size(), store.size());
+    expect_equal(abandoned->rollback(), success_k);
+    expect_equal(store.ranked_size(), store.size());
 }
 
 #pragma endregion Order Statistic Tests
@@ -1508,85 +1540,86 @@ static void test_ranked_size_tracks_every_write() {
 template <typename readable_type_>
 static std::vector<trivial_id_t> keys_enumerated(readable_type_ const &readable) {
     std::vector<trivial_id_t> seen;
-    st_verify_(readable.for_each([&](auto const &member) noexcept { seen.push_back(member.key.unique_id); }));
+    expect_equal(readable.for_each([&](auto const &member) noexcept { seen.push_back(member.key.unique_id); }),
+                 success_k);
     std::sort(seen.begin(), seen.end());
     return seen;
 }
 
 /** Tests that the unordered walk reports every visible element once, and nothing else at all */
 template <typename store_type_>
-static void test_for_each_visits_every_element_once() {
+static void check_for_each_visits_every_element_once() {
 
     store_type_ store;
-    st_verify_(keys_enumerated(store).empty());
+    expect_true(keys_enumerated(store).empty());
 
     for (trivial_id_t identifier = 0; identifier != 12; ++identifier) commit_write(store, identifier, 0);
     for (trivial_id_t identifier = 0; identifier != 12; identifier += 3) commit_erase(store, identifier);
 
     std::vector<trivial_id_t> const seen = keys_enumerated(store);
-    st_verify_eq_(seen.size(), store.size());
-    st_verify_eq_(seen.size(), 8);
+    if (!expect_equal(seen.size(), store.size())) return;
+    if (!expect_equal(seen.size(), 8)) return;
     for (std::size_t slot = 0; slot != seen.size(); ++slot) {
-        st_verify_eq_(store.contains(trivial_key_t {seen[slot]}), true);
+        expect_equal(store.contains(trivial_key_t {seen[slot]}), true);
         // A key reported twice would sort next to itself, and a tombstone would sort in among the rest.
-        if (slot) st_verify_ne_(seen[slot], seen[slot - 1]);
-        st_verify_ne_(seen[slot] % 3, 0u);
+        if (slot) expect_true(seen[slot] != seen[slot - 1]);
+        expect_true(seen[slot] % 3 != 0u);
     }
 }
 
 /** Tests that a transaction enumerates its own staged writes and nobody else's */
 template <typename store_type_>
-static void test_for_each_merges_staged_writes() {
+static void check_for_each_merges_staged_writes() {
     using member_t = typename store_type_::value_type;
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != 4; ++identifier) commit_write(store, identifier, 0);
 
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
-    st_verify_(writer->upsert(trivial_id_to_member<member_t>(9, 1)));
-    st_verify_(writer->erase(trivial_key_t {1}));
+    if (!expect_true(writer.has_value())) return;
+    expect_equal(writer->upsert(trivial_id_to_member<member_t>(9, 1)), success_k);
+    expect_equal(writer->erase(trivial_key_t {1}), success_k);
 
     // A second transaction stages a key without publishing it, which neither side may enumerate.
     auto other = store.transaction();
-    st_verify_(other.has_value());
-    st_verify_(other->upsert(trivial_id_to_member<member_t>(7, 1)));
-    st_verify_(other->stage());
+    if (!expect_true(other.has_value())) return;
+    expect_equal(other->upsert(trivial_id_to_member<member_t>(7, 1)), success_k);
+    expect_equal(other->stage(), success_k);
 
     std::vector<trivial_id_t> const merged = keys_enumerated(*writer);
     std::vector<trivial_id_t> const expected_merged {0, 2, 3, 9};
-    st_verify_(merged == expected_merged);
+    expect_true(merged == expected_merged);
 
     std::vector<trivial_id_t> const published = keys_enumerated(store);
     std::vector<trivial_id_t> const expected_published {0, 1, 2, 3};
-    st_verify_(published == expected_published);
+    expect_true(published == expected_published);
 
-    st_verify_(other->rollback());
+    expect_equal(other->rollback(), success_k);
 }
 
 /** Tests that an enumeration answers at the reader's snapshot rather than at the newest commit */
 template <typename store_type_>
-static void test_for_each_follows_the_snapshot() {
+static void check_for_each_follows_the_snapshot() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != 4; ++identifier) commit_write(store, identifier, 0);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
 
     commit_write(store, 4, 1);
     commit_erase(store, 0);
 
     std::vector<trivial_id_t> const observed = keys_enumerated(*reader);
     std::vector<trivial_id_t> const expected_observed {0, 1, 2, 3};
-    st_verify_(observed == expected_observed);
+    expect_true(observed == expected_observed);
 
     std::vector<trivial_id_t> const published = keys_enumerated(store);
     std::vector<trivial_id_t> const expected_published {1, 2, 3, 4};
-    st_verify_(published == expected_published);
+    expect_true(published == expected_published);
 }
 
 /** Tests that an ordinal answers with one element rather than with every element after it */
 template <typename store_type_>
-static void test_select_answers_exactly_once() {
+static void check_select_answers_exactly_once() {
     trivial_id_t const size = 8;
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != size; ++identifier) commit_write(store, identifier, 0);
@@ -1595,82 +1628,85 @@ static void test_select_answers_exactly_once() {
         std::size_t found_count = 0;
         std::size_t missing_count = 0;
         trivial_id_t drawn = size;
-        st_verify_(store.select(
-            ordinal,
-            [&](auto const &member) noexcept {
-                drawn = member.key.unique_id;
-                ++found_count;
-            },
-            [&]() noexcept { ++missing_count; }));
-        st_verify_eq_(found_count, 1u);
-        st_verify_eq_(missing_count, 0u);
-        st_verify_eq_(drawn, ordinal);
+        expect_equal(store.select(
+                         ordinal,
+                         [&](auto const &member) noexcept {
+                             drawn = member.key.unique_id;
+                             ++found_count;
+                         },
+                         [&]() noexcept { ++missing_count; }),
+                     success_k);
+        expect_equal(found_count, 1u);
+        expect_equal(missing_count, 0u);
+        expect_equal(drawn, ordinal);
     }
 
     std::size_t overshot_found = 0;
     std::size_t overshot_missing = 0;
-    st_verify_(
-        store.select(size, [&](auto const &) noexcept { ++overshot_found; }, [&]() noexcept { ++overshot_missing; }));
-    st_verify_eq_(overshot_found, 0u);
-    st_verify_eq_(overshot_missing, 1u);
+    expect_equal(store.select(
+                     size, [&](auto const &) noexcept { ++overshot_found; }, [&]() noexcept { ++overshot_missing; }),
+                 success_k);
+    expect_equal(overshot_found, 0u);
+    expect_equal(overshot_missing, 1u);
 }
 
 /** Tests that a transaction's ordinal fires once as well, over its merged order */
 template <typename store_type_>
-static void test_transaction_select_answers_exactly_once() {
+static void check_transaction_select_answers_exactly_once() {
     trivial_id_t const size = 8;
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != size; ++identifier) commit_write(store, identifier, 0);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
 
     for (trivial_id_t ordinal = 0; ordinal != size; ++ordinal) {
         std::size_t found_count = 0;
         std::size_t missing_count = 0;
         trivial_id_t drawn = size;
-        st_verify_(reader->select(
-            ordinal,
-            [&](auto const &member) noexcept {
-                drawn = member.key.unique_id;
-                ++found_count;
-            },
-            [&]() noexcept { ++missing_count; }));
-        st_verify_eq_(found_count, 1u);
-        st_verify_eq_(missing_count, 0u);
-        st_verify_eq_(drawn, ordinal);
+        expect_equal(reader->select(
+                         ordinal,
+                         [&](auto const &member) noexcept {
+                             drawn = member.key.unique_id;
+                             ++found_count;
+                         },
+                         [&]() noexcept { ++missing_count; }),
+                     success_k);
+        expect_equal(found_count, 1u);
+        expect_equal(missing_count, 0u);
+        expect_equal(drawn, ordinal);
     }
 }
 
-static void enumeration_visits_every_element_once() {
-    test_for_each_visits_every_element_once<snapshot_avl_map_t>();
-    test_for_each_visits_every_element_once<snapshot_wb_map_t>();
-    test_for_each_visits_every_element_once<snapshot_hash_map_t>();
-    test_for_each_visits_every_element_once<monotonic_avl_map_t>();
-    test_for_each_visits_every_element_once<monotonic_hash_map_t>();
-    test_for_each_visits_every_element_once<reference_avl_map_t>();
+static void test_enumeration_visits_every_element_once() {
+    check_for_each_visits_every_element_once<snapshot_avl_map_t>();
+    check_for_each_visits_every_element_once<snapshot_wb_map_t>();
+    check_for_each_visits_every_element_once<snapshot_hash_map_t>();
+    check_for_each_visits_every_element_once<monotonic_avl_map_t>();
+    check_for_each_visits_every_element_once<monotonic_hash_map_t>();
+    check_for_each_visits_every_element_once<reference_avl_map_t>();
 }
 
-static void enumeration_merges_staged_writes() {
-    test_for_each_merges_staged_writes<snapshot_avl_map_t>();
-    test_for_each_merges_staged_writes<snapshot_hash_map_t>();
-    test_for_each_merges_staged_writes<monotonic_avl_map_t>();
-    test_for_each_merges_staged_writes<monotonic_hash_map_t>();
-    test_for_each_merges_staged_writes<reference_avl_map_t>();
+static void test_enumeration_merges_staged_writes() {
+    check_for_each_merges_staged_writes<snapshot_avl_map_t>();
+    check_for_each_merges_staged_writes<snapshot_hash_map_t>();
+    check_for_each_merges_staged_writes<monotonic_avl_map_t>();
+    check_for_each_merges_staged_writes<monotonic_hash_map_t>();
+    check_for_each_merges_staged_writes<reference_avl_map_t>();
 }
 
-static void enumeration_follows_the_snapshot() {
-    test_for_each_follows_the_snapshot<snapshot_avl_map_t>();
-    test_for_each_follows_the_snapshot<snapshot_wb_map_t>();
-    test_for_each_follows_the_snapshot<snapshot_hash_map_t>();
+static void test_enumeration_follows_the_snapshot() {
+    check_for_each_follows_the_snapshot<snapshot_avl_map_t>();
+    check_for_each_follows_the_snapshot<snapshot_wb_map_t>();
+    check_for_each_follows_the_snapshot<snapshot_hash_map_t>();
 }
 
-static void order_statistics_select_answers_exactly_once() {
-    test_select_answers_exactly_once<snapshot_wb_map_t>();
-    test_select_answers_exactly_once<snapshot_ranked_map_t>();
-    test_select_answers_exactly_once<monotonic_wb_map_t>();
-    test_transaction_select_answers_exactly_once<snapshot_wb_map_t>();
-    test_transaction_select_answers_exactly_once<monotonic_wb_map_t>();
+static void test_order_statistics_select_answers_exactly_once() {
+    check_select_answers_exactly_once<snapshot_wb_map_t>();
+    check_select_answers_exactly_once<snapshot_ranked_map_t>();
+    check_select_answers_exactly_once<monotonic_wb_map_t>();
+    check_transaction_select_answers_exactly_once<snapshot_wb_map_t>();
+    check_transaction_select_answers_exactly_once<monotonic_wb_map_t>();
 }
 
 #pragma endregion Enumeration Tests
@@ -1807,14 +1843,16 @@ static void test_insert_if_missing_reports_the_fresh_insert() {
     store_type_ store;
 
     std::size_t inserted = 0;
-    st_verify_(
-        store.insert_if_missing(trivial_id_to_member<member_t>(1, 10), [&](auto const &) noexcept { ++inserted; }));
-    st_verify_eq_(inserted, 1);
+    expect_equal(
+        store.insert_if_missing(trivial_id_to_member<member_t>(1, 10), [&](auto const &) noexcept { ++inserted; }),
+        success_k);
+    expect_equal(inserted, 1);
 
-    st_verify_(
-        store.insert_if_missing(trivial_id_to_member<member_t>(1, 20), [&](auto const &) noexcept { ++inserted; }));
-    st_verify_eq_(inserted, 1);
-    st_verify_eq_(mapped_or_absent(store, 1), 10);
+    expect_equal(
+        store.insert_if_missing(trivial_id_to_member<member_t>(1, 20), [&](auto const &) noexcept { ++inserted; }),
+        success_k);
+    expect_equal(inserted, 1);
+    expect_equal(mapped_or_absent(store, 1), 10);
 }
 
 /** A strict write refuses an absent key, singly and in a batch, changing nothing when it does. */
@@ -1823,22 +1861,23 @@ static void test_update_refuses_an_absent_key() {
     using member_t = typename store_type_::value_type;
     store_type_ store;
 
-    st_verify_(store.update(trivial_id_to_member<member_t>(1, 10)) == status_t::key_not_found_k);
-    st_verify_eq_(mapped_or_absent(store, 1), status_t::key_not_found_k);
+    expect_true(store.update(trivial_id_to_member<member_t>(1, 10)) == status_t::key_not_found_k);
+    expect_equal(mapped_or_absent(store, 1), status_t::key_not_found_k);
 
-    st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 10)));
-    st_verify_(store.update(trivial_id_to_member<member_t>(1, 20)));
-    st_verify_eq_(mapped_or_absent(store, 1), 20);
+    expect_equal(store.upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
+    expect_equal(store.update(trivial_id_to_member<member_t>(1, 20)), success_k);
+    expect_equal(mapped_or_absent(store, 1), 20);
 
     member_t present_and_absent[2] = {trivial_id_to_member<member_t>(1, 30), trivial_id_to_member<member_t>(2, 40)};
-    st_verify_(store.update(std::make_move_iterator(present_and_absent),
-                            std::make_move_iterator(present_and_absent + 2)) == status_t::key_not_found_k);
-    st_verify_eq_(mapped_or_absent(store, 1), 20);
-    st_verify_eq_(mapped_or_absent(store, 2), status_t::key_not_found_k);
+    expect_true(store.update(std::make_move_iterator(present_and_absent),
+                             std::make_move_iterator(present_and_absent + 2)) == status_t::key_not_found_k);
+    expect_equal(mapped_or_absent(store, 1), 20);
+    expect_equal(mapped_or_absent(store, 2), status_t::key_not_found_k);
 
     member_t both_present[1] = {trivial_id_to_member<member_t>(1, 50)};
-    st_verify_(store.update(std::make_move_iterator(both_present), std::make_move_iterator(both_present + 1)));
-    st_verify_eq_(mapped_or_absent(store, 1), 50);
+    expect_equal(store.update(std::make_move_iterator(both_present), std::make_move_iterator(both_present + 1)),
+                 success_k);
+    expect_equal(mapped_or_absent(store, 1), 50);
 }
 
 /** Every engine's ordinals must agree with the walk the oracle answers them by. */
@@ -1856,22 +1895,22 @@ static void test_ordinals_agree_with_the_oracle() {
         commit_erase(store, identifier);
         commit_erase(oracle, identifier);
     }
-    st_verify_eq_(store.size(), oracle.size());
+    expect_equal(store.size(), oracle.size());
 
     // An answer carries its own absence, so an engine that reports nothing cannot pass by holding a seed.
     for (std::size_t ordinal = 0; ordinal != oracle.size() + 2; ++ordinal) {
         expected<trivial_id_t> const expected_key = selected_or_absent(oracle, ordinal);
         expected<trivial_id_t> const observed_key = selected_or_absent(store, ordinal);
-        st_verify_eq_(observed_key.status(), expected_key.status(),
-                      "an ordinal one of them answered and the other did not");
-        if (expected_key.has_value()) st_verify_eq_(observed_key, *expected_key);
+        expect_equal(observed_key.status(), expected_key.status(),
+                     "an ordinal one of them answered and the other did not");
+        if (expected_key.has_value()) expect_equal(observed_key, *expected_key);
     }
 
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) {
         expected<std::size_t> const expected_rank = ranked_or_absent(oracle, identifier);
         expected<std::size_t> const observed_rank = ranked_or_absent(store, identifier);
-        st_verify_eq_(observed_rank.status(), expected_rank.status(), "a key one of them ranked and the other did not");
-        if (expected_rank.has_value()) st_verify_eq_(observed_rank, *expected_rank);
+        expect_equal(observed_rank.status(), expected_rank.status(), "a key one of them ranked and the other did not");
+        if (expected_rank.has_value()) expect_equal(observed_rank, *expected_rank);
     }
 }
 
@@ -1882,56 +1921,60 @@ static void test_oracle_transaction_ordinals_include_staged_writes() {
     for (trivial_id_t identifier = 0; identifier != 8; identifier += 2) commit_write(oracle, identifier, 0);
 
     auto staging = oracle.transaction();
-    st_verify_(staging.has_value());
-    st_verify_(staging->upsert(trivial_id_to_member<member_t>(3, 1)));
-    st_verify_(staging->erase(trivial_key_t {4}));
+    if (!expect_true(staging.has_value())) return;
+    expect_equal(staging->upsert(trivial_id_to_member<member_t>(3, 1)), success_k);
+    expect_equal(staging->erase(trivial_key_t {4}), success_k);
 
     // Committed 0, 2, 6 with 4 tombstoned, plus a staged 3, so the walk reads 0, 2, 3, 6.
     trivial_id_t const expected_order[4] = {0, 2, 3, 6};
     for (std::size_t ordinal = 0; ordinal != 4; ++ordinal)
-        st_verify_eq_(selected_or_absent(*staging, ordinal), expected_order[ordinal]);
+        expect_equal(selected_or_absent(*staging, ordinal), expected_order[ordinal]);
 
-    st_verify_eq_(ranked_or_absent(*staging, 3), std::size_t {2});
-    st_verify_eq_(ranked_or_absent(*staging, 4), status_t::key_not_found_k);
+    expect_equal(ranked_or_absent(*staging, 3), std::size_t {2});
+    expect_equal(ranked_or_absent(*staging, 4), status_t::key_not_found_k);
 
     std::size_t staged_visits = 0;
-    st_verify_(staging->equal_range(trivial_key_t {3}, [&](auto const &) noexcept { ++staged_visits; }));
-    st_verify_eq_(staged_visits, 1);
+    expect_equal(staging->equal_range(trivial_key_t {3}, [&](auto const &) noexcept { ++staged_visits; }), success_k);
+    expect_equal(staged_visits, 1);
 
     std::size_t tombstoned_visits = 0;
-    st_verify_(staging->equal_range(trivial_key_t {4}, [&](auto const &) noexcept { ++tombstoned_visits; }));
-    st_verify_eq_(tombstoned_visits, 0);
+    expect_equal(staging->equal_range(trivial_key_t {4}, [&](auto const &) noexcept { ++tombstoned_visits; }),
+                 success_k);
+    expect_equal(tombstoned_visits, 0);
 }
 
 /** A single draw lands inside its window and never names a key the newest commit hides. */
 template <typename store_type_>
-static void test_sample_one_draws_from_the_visible_window(test_context_t const &context) {
+static void test_sample_one_draws_from_the_visible_window() {
     constexpr trivial_id_t keys_k = 16;
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
         commit_write(store, identifier, int(identifier));
     for (trivial_id_t identifier = 0; identifier < keys_k; identifier += 2) commit_erase(store, identifier);
 
-    std::mt19937 generator(mix_seed(context.seed, __func__));
+    split_mix_generator_t generator {case_stream_key()};
     std::size_t drawn = 0;
     bool saw_lowest = false;
     bool saw_highest = false;
     for (int attempt = 0; attempt != 256; ++attempt)
-        st_verify_(store.sample_one(trivial_key_t {4}, trivial_key_t {12}, generator, [&](auto const &member) noexcept {
-            ++drawn;
-            st_verify_ge_(member.key.unique_id, 4);
-            st_verify_lt_(member.key.unique_id, 12);
-            st_verify_(member.key.unique_id % 2 == 1);
-            saw_lowest |= member.key.unique_id == 5;
-            saw_highest |= member.key.unique_id == 11;
-        }));
-    st_verify_eq_(drawn, 256);
-    st_verify_(saw_lowest && saw_highest);
+        expect_equal(store.sample_one(trivial_key_t {4}, trivial_key_t {12}, generator,
+                                      [&](auto const &member) noexcept {
+                                          ++drawn;
+                                          expect_true(member.key.unique_id >= 4);
+                                          expect_true(member.key.unique_id < 12);
+                                          expect_true(member.key.unique_id % 2 == 1);
+                                          saw_lowest |= member.key.unique_id == 5;
+                                          saw_highest |= member.key.unique_id == 11;
+                                      }),
+                     success_k);
+    expect_equal(drawn, 256);
+    expect_true(saw_lowest && saw_highest);
 
     std::size_t out_of_range = 0;
-    st_verify_(store.sample_one(trivial_key_t {100}, trivial_key_t {200}, generator,
-                                [&](auto const &) noexcept { ++out_of_range; }));
-    st_verify_eq_(out_of_range, 0);
+    expect_equal(store.sample_one(trivial_key_t {100}, trivial_key_t {200}, generator,
+                                  [&](auto const &) noexcept { ++out_of_range; }),
+                 success_k);
+    expect_equal(out_of_range, 0);
 }
 
 /**
@@ -1945,38 +1988,47 @@ static void test_smallest_opens_the_walk() {
     using member_t = typename store_type_::value_type;
     store_type_ store;
 
-    st_verify_(store.smallest([](member_t const &) noexcept { st_verify_(false && "an empty store has no first key"); },
-                              [&]() noexcept {}));
+    expect_equal(
+        store.smallest([](member_t const &) noexcept { expect_true(false, "an empty store has no first key"); },
+                       [&]() noexcept {}),
+        success_k);
 
     for (trivial_id_t identifier : {40, 10, 30, 20})
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier, static_cast<int>(identifier))));
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, static_cast<int>(identifier))), success_k);
 
     trivial_id_t walked_first = 0;
-    st_verify_(store.range(trivial_key_t {0}, trivial_key_t {1000}, [&](member_t const &member) noexcept {
-        if (!walked_first) walked_first = mapping_key_or_itself(member).unique_id;
-    }));
+    expect_equal(store.range(trivial_key_t {0}, trivial_key_t {1000},
+                             [&](member_t const &member) noexcept {
+                                 if (!walked_first) walked_first = mapping_key_or_itself(member).unique_id;
+                             }),
+                 success_k);
 
     trivial_id_t answered = 0;
     std::size_t missing_count = 0;
-    st_verify_(
+    expect_equal(
         store.smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
-                       [&]() noexcept { ++missing_count; }));
-    st_verify_eq_(missing_count, 0);
-    st_verify_eq_(answered, walked_first);
-    st_verify_eq_(answered, 10);
+                       [&]() noexcept { ++missing_count; }),
+        success_k);
+    expect_equal(missing_count, 0);
+    expect_equal(answered, walked_first);
+    expect_equal(answered, 10);
 
     // Erasing the incumbent has to move the answer on, not merely hide it.
-    st_verify_(store.erase(trivial_id_to_key<member_t>(10)));
-    st_verify_(store.smallest(
-        [&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; }, no_op_t {}));
-    st_verify_eq_(answered, 20);
+    expect_equal(store.erase(trivial_id_to_key<member_t>(10)), success_k);
+    expect_equal(
+        store.smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
+                       no_op_t {}),
+        success_k);
+    expect_equal(answered, 20);
 
-    for (trivial_id_t identifier : {20, 30, 40}) st_verify_(store.erase(trivial_id_to_key<member_t>(identifier)));
+    for (trivial_id_t identifier : {20, 30, 40})
+        expect_equal(store.erase(trivial_id_to_key<member_t>(identifier)), success_k);
     missing_count = 0;
-    st_verify_(
-        store.smallest([](member_t const &) noexcept { st_verify_(false && "a fully tombstoned store reads nothing"); },
-                       [&]() noexcept { ++missing_count; }));
-    st_verify_eq_(missing_count, 1);
+    expect_equal(
+        store.smallest([](member_t const &) noexcept { expect_true(false, "a fully tombstoned store reads nothing"); },
+                       [&]() noexcept { ++missing_count; }),
+        success_k);
+    expect_equal(missing_count, 1);
 }
 
 /** A transaction opens on its own snapshot and staged writes, not on the newest commit. */
@@ -1985,37 +2037,45 @@ static void test_smallest_answers_at_the_readers_snapshot() {
     using member_t = typename store_type_::value_type;
     store_type_ store;
     for (trivial_id_t identifier : {30, 40})
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier, static_cast<int>(identifier))));
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, static_cast<int>(identifier))), success_k);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
 
     trivial_id_t answered = 0;
-    st_verify_(reader->smallest(
-        [&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; }, no_op_t {}));
-    st_verify_eq_(answered, 30);
+    expect_equal(
+        reader->smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
+                         no_op_t {}),
+        success_k);
+    expect_equal(answered, 30);
 
     // Only a reader holding a stamp is shielded from a commit landing under it; a monotonic reader
     // holds none and is meant to see the newest published state, which is the level it advertises.
-    st_verify_(store.upsert(trivial_id_to_member<member_t>(10, 10)));
-    st_verify_(reader->smallest(
-        [&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; }, no_op_t {}));
-    if constexpr (at_least(store_type_::isolation_k, isolation_t::snapshot_k)) { st_verify_eq_(answered, 30); }
-    else { st_verify_eq_(answered, 10); }
+    expect_equal(store.upsert(trivial_id_to_member<member_t>(10, 10)), success_k);
+    expect_equal(
+        reader->smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
+                         no_op_t {}),
+        success_k);
+    if constexpr (at_least(store_type_::isolation_k, isolation_t::snapshot_k)) { expect_equal(answered, 30); }
+    else { expect_equal(answered, 10); }
 
     // Its own staged write does move it, at either level, so the key is put below everything committed
     // rather than between - which would only answer the same on a reader that is shielded.
-    st_verify_(reader->upsert(trivial_id_to_member<member_t>(5, 5)));
-    st_verify_(reader->smallest(
-        [&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; }, no_op_t {}));
-    st_verify_eq_(answered, 5);
+    expect_equal(reader->upsert(trivial_id_to_member<member_t>(5, 5)), success_k);
+    expect_equal(
+        reader->smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
+                         no_op_t {}),
+        success_k);
+    expect_equal(answered, 5);
 
     // A fresh reader opens on the committed key whether or not the earlier one was shielded from it.
     auto later = store.transaction();
-    st_verify_(later.has_value());
-    st_verify_(later->smallest(
-        [&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; }, no_op_t {}));
-    st_verify_eq_(answered, 10);
+    if (!expect_true(later.has_value())) return;
+    expect_equal(
+        later->smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
+                        no_op_t {}),
+        success_k);
+    expect_equal(answered, 10);
 }
 
 #pragma endregion Surface Convergence Tests
@@ -2031,7 +2091,7 @@ static trivial_id_t identifier_in_partition(std::size_t partition_index) {
     for (trivial_id_t identifier = 0; identifier != 4096; ++identifier)
         if (hasher(identifier_t {trivial_key_t {identifier}}) % store_type_::partitions_k == partition_index)
             return identifier;
-    st_verify_(false && "sixteen partitions out of four thousand keys is not a hash function");
+    expect_true(false, "sixteen partitions out of four thousand keys is not a hash function");
     return 0;
 }
 
@@ -2050,11 +2110,11 @@ template <typename store_type_>
 static void commit_write_many(store_type_ &store, std::vector<trivial_id_t> const &identifiers, int value) {
     using member_t = typename store_type_::value_type;
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
+    if (!expect_true(writer.has_value())) return;
     for (trivial_id_t identifier : identifiers)
-        st_verify_(writer->upsert(trivial_id_to_member<member_t>(identifier, value)));
-    st_verify_(writer->stage());
-    st_verify_(writer->commit());
+        expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
+    expect_equal(writer->stage(), success_k);
+    expect_equal(writer->commit(), success_k);
 }
 
 /** Tests that a reader answers every partition at the one snapshot it opened on */
@@ -2065,23 +2125,23 @@ static void test_sharded_reader_holds_one_snapshot() {
     commit_write_many(store, identifiers, 100);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
 
     // Two rounds land while the reader is open, each spanning every partition. Neither may show.
     commit_write_many(store, identifiers, 200);
     commit_write_many(store, identifiers, 300);
 
-    for (trivial_id_t identifier : identifiers) st_verify_eq_(mapped_or_absent(*reader, identifier), 100);
+    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(*reader, identifier), 100);
 
     // The reader's own writes are its own, in whichever partition they land.
     using member_t = typename store_type_::value_type;
-    st_verify_(reader->upsert(trivial_id_to_member<member_t>(identifiers.front(), 111)));
-    st_verify_eq_(mapped_or_absent(*reader, identifiers.front()), 111);
+    expect_equal(reader->upsert(trivial_id_to_member<member_t>(identifiers.front(), 111)), success_k);
+    expect_equal(mapped_or_absent(*reader, identifiers.front()), 111);
 
     // A reader opening after both rounds sees the newer of them, whole.
     auto fresh = store.transaction();
-    st_verify_(fresh.has_value());
-    for (trivial_id_t identifier : identifiers) st_verify_eq_(mapped_or_absent(*fresh, identifier), 300);
+    if (!expect_true(fresh.has_value())) return;
+    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(*fresh, identifier), 300);
 }
 
 /**
@@ -2098,21 +2158,21 @@ static void test_sharded_transaction_reads_its_own_commit() {
     commit_write_many(store, identifiers, 100);
 
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
+    if (!expect_true(writer.has_value())) return;
     for (int round = 2; round != 5; ++round) {
         for (trivial_id_t identifier : identifiers)
-            st_verify_(writer->upsert(trivial_id_to_member<member_t>(identifier, round * 100)));
-        st_verify_(writer->stage());
-        st_verify_(writer->commit());
+            expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, round * 100)), success_k);
+        expect_equal(writer->stage(), success_k);
+        expect_equal(writer->commit(), success_k);
 
         // The same transaction, still open, answers every partition at the stamp it just published.
-        for (trivial_id_t identifier : identifiers) st_verify_eq_(mapped_or_absent(*writer, identifier), round * 100);
+        for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(*writer, identifier), round * 100);
     }
 
     // A reset moves the transaction forward, never back to a snapshot below its own commits.
-    st_verify_(writer->reset());
-    for (trivial_id_t identifier : identifiers) st_verify_eq_(mapped_or_absent(*writer, identifier), 400);
-    for (trivial_id_t identifier : identifiers) st_verify_eq_(mapped_or_absent(store, identifier), 400);
+    expect_equal(writer->reset(), success_k);
+    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(*writer, identifier), 400);
+    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(store, identifier), 400);
 }
 
 /** Tests that a range walked inside one transaction admits no key committed after it opened */
@@ -2124,7 +2184,7 @@ static void test_sharded_range_admits_no_phantoms() {
     commit_write_many(store, identifiers, 100);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
 
     // The predicate is evaluated through the transaction, over a span wide enough that every
     // partition answers part of it.
@@ -2132,13 +2192,13 @@ static void test_sharded_range_admits_no_phantoms() {
         std::size_t seen = 0;
         for (trivial_id_t candidate = 0; candidate != 64; ++candidate) {
             expected<bool> const is_present = reader->contains(trivial_key_t {candidate});
-            st_verify_(is_present);
+            if (!expect_equal(is_present.status(), success_k)) return seen;
             if (*is_present) ++seen;
         }
         return seen;
     };
     std::size_t const before = count_present();
-    st_verify_eq_(before, identifiers.size());
+    expect_equal(before, identifiers.size());
 
     // A whole second generation of keys arrives across every partition, and none of it may appear.
     std::vector<trivial_id_t> intruders;
@@ -2147,11 +2207,11 @@ static void test_sharded_range_admits_no_phantoms() {
             intruders.push_back(candidate);
     commit_write_many(store, intruders, 900);
 
-    st_verify_eq_(count_present(), before);
+    expect_equal(count_present(), before);
 
     // The transaction's own insert is not a phantom - it is the transaction's own writing.
-    st_verify_(reader->upsert(trivial_id_to_member<member_t>(intruders.front(), 7)));
-    st_verify_eq_(count_present(), before + 1);
+    expect_equal(reader->upsert(trivial_id_to_member<member_t>(intruders.front(), 7)), success_k);
+    expect_equal(count_present(), before + 1);
 }
 
 /**
@@ -2169,19 +2229,19 @@ static void test_sharded_mark_pins_every_partition() {
 
     {
         auto reader = store.transaction();
-        st_verify_(reader.has_value());
+        if (!expect_true(reader.has_value())) return;
 
         // Enough rounds that a version tail left unpinned would be collapsed several times over,
         // each round committed through a partition lock this reader is not holding.
         for (int round = 1; round != 8; ++round) commit_write_many(store, identifiers, 100 + round);
 
         // Every partition still answers with the version the reader opened on.
-        for (trivial_id_t identifier : identifiers) st_verify_eq_(mapped_or_absent(*reader, identifier), 100);
+        for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(*reader, identifier), 100);
     }
 
     // Once the reader has left, nothing is pinned and the next commit collapses the tails again.
     commit_write_many(store, identifiers, 500);
-    for (trivial_id_t identifier : identifiers) st_verify_eq_(mapped_or_absent(store, identifier), 500);
+    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(store, identifier), 500);
 }
 
 #pragma endregion Sharded Isolation Tests
@@ -2207,26 +2267,30 @@ template <typename store_type_>
 
     auto first = store.transaction();
     auto second = store.transaction();
-    st_verify_(first.has_value() && second.has_value());
+    if (!expect_true(first.has_value() && second.has_value())) return false;
 
     // Each reads both keys and concludes the other one covers the invariant.
     std::size_t first_total = 0, second_total = 0;
     for (trivial_id_t key = 1; key != 3; ++key) {
-        st_verify_(first->find(
-            trivial_id_to_key<member_t>(key),
-            [&](member_t const &held) noexcept { first_total += static_cast<std::size_t>(held.mapped); }, no_op_t {}));
-        st_verify_(second->find(
-            trivial_id_to_key<member_t>(key),
-            [&](member_t const &held) noexcept { second_total += static_cast<std::size_t>(held.mapped); }, no_op_t {}));
+        expect_equal(first->find(
+                         trivial_id_to_key<member_t>(key),
+                         [&](member_t const &held) noexcept { first_total += static_cast<std::size_t>(held.mapped); },
+                         no_op_t {}),
+                     success_k);
+        expect_equal(second->find(
+                         trivial_id_to_key<member_t>(key),
+                         [&](member_t const &held) noexcept { second_total += static_cast<std::size_t>(held.mapped); },
+                         no_op_t {}),
+                     success_k);
     }
-    st_verify_eq_(first_total, 2u);
-    st_verify_eq_(second_total, 2u);
+    expect_equal(first_total, 2u);
+    expect_equal(second_total, 2u);
 
-    st_verify_(first->upsert(trivial_id_to_member<member_t>(1, 0)));
-    st_verify_(second->upsert(trivial_id_to_member<member_t>(2, 0)));
+    expect_equal(first->upsert(trivial_id_to_member<member_t>(1, 0)), success_k);
+    expect_equal(second->upsert(trivial_id_to_member<member_t>(2, 0)), success_k);
 
-    st_verify_(first->stage());
-    st_verify_(first->commit());
+    expect_equal(first->stage(), success_k);
+    expect_equal(first->commit(), success_k);
 
     if (failed(second->stage())) return false;
     return succeeded(second->commit());
@@ -2234,10 +2298,10 @@ template <typename store_type_>
 
 /** Snapshot isolation admits write skew, and the serializable level refuses it. */
 static void test_write_skew_separates_the_levels() {
-    st_verify_((write_skew_commits<snapshot_avl_map_t>()) &&
-               "snapshot isolation compares only written keys, so it must admit write skew");
-    st_verify_((!write_skew_commits<serializable_avl_map_t>()) &&
-               "validating the read set is what refuses a transaction whose read was overwritten");
+    expect_true(write_skew_commits<snapshot_avl_map_t>(),
+                "snapshot isolation compares only written keys, so it must admit write skew");
+    expect_true(!write_skew_commits<serializable_avl_map_t>(),
+                "validating the read set is what refuses a transaction whose read was overwritten");
 }
 
 #pragma endregion Write Skew
@@ -2256,15 +2320,16 @@ static void test_phantom_insert_refuses_the_walker() {
     commit_write(store, 30, 1);
 
     auto walker = store.transaction();
-    st_verify_(walker.has_value());
+    if (!expect_true(walker.has_value())) return;
     std::size_t seen = 0;
-    st_verify_(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100),
-                             [&](member_t const &) noexcept { ++seen; }));
-    st_verify_eq_(seen, 2u);
+    expect_equal(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100),
+                               [&](member_t const &) noexcept { ++seen; }),
+                 success_k);
+    expect_equal(seen, 2u);
 
     commit_write(store, 20, 1); // lands inside the window the walker recorded
 
-    st_verify_eq_(walker->stage(), status_t::phantom_conflict_k);
+    expect_equal(walker->stage(), status_t::phantom_conflict_k);
 }
 
 /** An erase inside a watched window refuses too, since it publishes a tombstone in the window. */
@@ -2276,16 +2341,17 @@ static void test_phantom_erase_refuses_the_walker() {
     commit_write(store, 30, 1);
 
     auto walker = store.transaction();
-    st_verify_(walker.has_value());
-    st_verify_(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100), no_op_t {}));
+    if (!expect_true(walker.has_value())) return;
+    expect_equal(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100), no_op_t {}),
+                 success_k);
 
     auto eraser = store.transaction();
-    st_verify_(eraser.has_value());
-    st_verify_(eraser->erase(trivial_id_to_key<member_t>(10)));
-    st_verify_(eraser->stage());
-    st_verify_(eraser->commit());
+    if (!expect_true(eraser.has_value())) return;
+    expect_equal(eraser->erase(trivial_id_to_key<member_t>(10)), success_k);
+    expect_equal(eraser->stage(), success_k);
+    expect_equal(eraser->commit(), success_k);
 
-    st_verify_eq_(walker->stage(), status_t::phantom_conflict_k);
+    expect_equal(walker->stage(), status_t::phantom_conflict_k);
 }
 
 /**
@@ -2302,26 +2368,28 @@ static void test_phantom_refuses_a_bounded_scan() {
     commit_write(store, 30, 1);
 
     auto reader = store.transaction();
-    st_verify_(reader.has_value());
+    if (!expect_true(reader.has_value())) return;
 
     // Step the window [10, 40) the way a caller would, by bounds rather than by a range call.
     std::size_t counted = 0;
     trivial_id_t at = 10;
     while (true) {
         expected<trivial_id_t> next {status_t::key_not_found_k};
-        st_verify_(reader->lower_bound(
-            trivial_id_to_key<member_t>(at),
-            [&](member_t const &member) noexcept { next = mapping_key_or_itself<member_t>(member).unique_id; },
-            no_op_t {}));
+        expect_equal(
+            reader->lower_bound(
+                trivial_id_to_key<member_t>(at),
+                [&](member_t const &member) noexcept { next = mapping_key_or_itself<member_t>(member).unique_id; },
+                no_op_t {}),
+            success_k);
         if (!next || *next >= 40) break;
         ++counted;
         at = *next + 1;
     }
-    st_verify_eq_(counted, 2u);
+    expect_equal(counted, 2u);
 
     commit_write(store, 20, 1); // inside a window the scan crossed but never named before
 
-    st_verify_eq_(reader->stage(), status_t::phantom_conflict_k);
+    expect_equal(reader->stage(), status_t::phantom_conflict_k);
 }
 
 /**
@@ -2339,11 +2407,11 @@ static void test_ordinal_window_ignores_a_commit_above_it() {
         store_t store;
         for (trivial_id_t identifier : {10, 20, 30}) commit_write(store, identifier, 1);
         auto reader = store.transaction();
-        st_verify_(reader.has_value());
-        st_verify_(reader->select(0, no_op_t {}, no_op_t {}));
+        if (!expect_true(reader.has_value())) return;
+        expect_equal(reader->select(0, no_op_t {}, no_op_t {}), success_k);
         commit_write(store, 99, 1); // ordered after the key `select(0)` landed on
-        st_verify_(reader->stage());
-        st_verify_(reader->commit());
+        expect_equal(reader->stage(), success_k);
+        expect_equal(reader->commit(), success_k);
     }
 
     // A commit below it moves the answer, so it must refuse.
@@ -2351,10 +2419,10 @@ static void test_ordinal_window_ignores_a_commit_above_it() {
         store_t store;
         for (trivial_id_t identifier : {10, 20, 30}) commit_write(store, identifier, 1);
         auto reader = store.transaction();
-        st_verify_(reader.has_value());
-        st_verify_(reader->select(1, no_op_t {}, no_op_t {}));
+        if (!expect_true(reader.has_value())) return;
+        expect_equal(reader->select(1, no_op_t {}, no_op_t {}), success_k);
         commit_write(store, 5, 1); // ordered before the key `select(1)` landed on
-        st_verify_eq_(reader->stage(), status_t::phantom_conflict_k);
+        expect_equal(reader->stage(), status_t::phantom_conflict_k);
     }
 }
 
@@ -2368,10 +2436,10 @@ static void test_each_refusal_names_its_cause() {
         store_t store;
         commit_write(store, 1, 1);
         auto writer = store.transaction();
-        st_verify_(writer.has_value());
-        st_verify_(writer->upsert(trivial_id_to_member<member_t>(1, 7)));
+        if (!expect_true(writer.has_value())) return;
+        expect_equal(writer->upsert(trivial_id_to_member<member_t>(1, 7)), success_k);
         commit_write(store, 1, 2);
-        st_verify_eq_(writer->stage(), status_t::write_conflict_k);
+        expect_equal(writer->stage(), status_t::write_conflict_k);
     }
 
     // A key this transaction read was published over.
@@ -2379,11 +2447,11 @@ static void test_each_refusal_names_its_cause() {
         store_t store;
         commit_write(store, 1, 1);
         auto reader = store.transaction();
-        st_verify_(reader.has_value());
-        st_verify_(reader->find(trivial_id_to_key<member_t>(1), no_op_t {}, no_op_t {}));
-        st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 7)));
+        if (!expect_true(reader.has_value())) return;
+        expect_equal(reader->find(trivial_id_to_key<member_t>(1), no_op_t {}, no_op_t {}), success_k);
+        expect_equal(reader->upsert(trivial_id_to_member<member_t>(2, 7)), success_k);
         commit_write(store, 1, 2);
-        st_verify_eq_(reader->stage(), status_t::read_conflict_k);
+        expect_equal(reader->stage(), status_t::read_conflict_k);
     }
 
     // A window this transaction read gained a member.
@@ -2391,10 +2459,11 @@ static void test_each_refusal_names_its_cause() {
         store_t store;
         commit_write(store, 10, 1);
         auto walker = store.transaction();
-        st_verify_(walker.has_value());
-        st_verify_(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100), no_op_t {}));
+        if (!expect_true(walker.has_value())) return;
+        expect_equal(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100), no_op_t {}),
+                     success_k);
         commit_write(store, 50, 1);
-        st_verify_eq_(walker->stage(), status_t::phantom_conflict_k);
+        expect_equal(walker->stage(), status_t::phantom_conflict_k);
     }
 }
 
@@ -2405,12 +2474,12 @@ static void test_unbounded_read_refuses_any_commit() {
     commit_write(store, 1, 1);
 
     auto walker = store.transaction();
-    st_verify_(walker.has_value());
-    st_verify_(walker->for_each(no_op_t {}));
+    if (!expect_true(walker.has_value())) return;
+    expect_equal(walker->for_each(no_op_t {}), success_k);
 
     commit_write(store, 999, 1); // anywhere at all, since the read covered everything
 
-    st_verify_eq_(walker->stage(), status_t::phantom_conflict_k);
+    expect_equal(walker->stage(), status_t::phantom_conflict_k);
 }
 
 /**
@@ -2422,18 +2491,18 @@ static void test_unbounded_read_refuses_any_commit() {
  *  that lost it. The latch stays as well, because a caller may discard the status and the commit
  *  still has to refuse.
  */
-static void test_a_read_reports_what_it_could_not_record() {
+static void test_serializable_a_read_reports_what_it_could_not_record() {
     using store_t = budgeted_serializable_avl_map_t;
     using member_t = typename store_t::value_type;
 
     allocation_ledger_t ledger;
     {
         store_t store {typename store_t::allocator_t(ledger)};
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 1)));
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(2, 1)));
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(2, 1)), success_k);
 
         auto reader = store.transaction();
-        st_verify_(reader);
+        if (!expect_equal(reader.status(), success_k)) return;
 
         // Everything the transaction needed is already allocated, so the next request is the read set's.
         ledger.refuse_everything();
@@ -2441,19 +2510,19 @@ static void test_a_read_reports_what_it_could_not_record() {
         status_t const answered = reader->find(
             trivial_key_t {1}, [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); },
             no_op_t {});
-        st_verify_eq_(answered, status_t::out_of_memory_heap_k,
-                      "a read that could not be recorded must say so at the read");
-        st_verify_eq_(seen, 1u, "and it must still answer, because what it read is not in doubt");
+        expect_equal(answered, status_t::out_of_memory_heap_k,
+                     "a read that could not be recorded must say so at the read");
+        expect_equal(seen, 1u, "and it must still answer, because what it read is not in doubt");
 
         // A commit lands, so validation has to consult the read set rather than take its fast path.
         ledger.allow(unlimited_budget_k);
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(3, 1)));
-        st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 5)));
-        st_verify_eq_(reader->stage(), status_t::read_conflict_k,
-                      "a read it cannot name is a read it cannot prove untouched");
-        st_verify_(reader->reset());
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(3, 1)), success_k);
+        expect_equal(reader->upsert(trivial_id_to_member<member_t>(2, 5)), success_k);
+        expect_equal(reader->stage(), status_t::read_conflict_k,
+                     "a read it cannot name is a read it cannot prove untouched");
+        expect_equal(reader->reset(), success_k);
     }
-    ledger.verify_balanced();
+    ledger.check_balanced();
 }
 
 /** One rung down nothing is recorded, so the same refused allocator leaves the read untouched. */
@@ -2464,20 +2533,22 @@ static void test_an_unvalidated_read_records_nothing_to_lose() {
     allocation_ledger_t ledger;
     {
         store_t store {typename store_t::allocator_t(ledger)};
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 1)));
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
 
         auto reader = store.transaction();
-        st_verify_(reader);
+        if (!expect_equal(reader.status(), success_k)) return;
 
         ledger.refuse_everything();
         std::size_t seen = 0;
-        st_verify_(reader->find(
-            trivial_key_t {1}, [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); },
-            no_op_t {}));
-        st_verify_eq_(seen, 1u);
+        expect_equal(
+            reader->find(
+                trivial_key_t {1}, [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); },
+                no_op_t {}),
+            success_k);
+        expect_equal(seen, 1u);
         ledger.allow(unlimited_budget_k);
     }
-    ledger.verify_balanced();
+    ledger.check_balanced();
 }
 
 /**
@@ -2488,31 +2559,31 @@ static void test_an_unvalidated_read_records_nothing_to_lose() {
  *  leaving the refusal behind left a transaction that could never commit again however many times
  *  it was reset.
  */
-static void serializable_reset_clears_a_whole_keyspace_read() {
+static void test_serializable_reset_clears_a_whole_keyspace_read() {
     using store_t = serializable_avl_map_t;
     using member_t = typename store_t::value_type;
 
     store_t store;
-    st_verify_(store.upsert(trivial_id_to_member<member_t>(1)));
+    expect_equal(store.upsert(trivial_id_to_member<member_t>(1)), success_k);
 
     auto reader = store.transaction();
-    st_verify_(reader);
-    st_verify_(reader->for_each(no_op_t {}));
+    if (!expect_equal(reader.status(), success_k)) return;
+    expect_equal(reader->for_each(no_op_t {}), success_k);
 
     // Somebody commits, so the whole-keyspace read is now stale and the transaction must refuse.
-    st_verify_(store.upsert(trivial_id_to_member<member_t>(2)));
-    st_verify_eq_(reader->stage(), status_t::phantom_conflict_k);
+    expect_equal(store.upsert(trivial_id_to_member<member_t>(2)), success_k);
+    expect_equal(reader->stage(), status_t::phantom_conflict_k);
 
     // Reset drops that read. What follows is a fresh transaction in all but name, and must commit.
-    st_verify_(reader->reset());
-    st_verify_(reader->upsert(trivial_id_to_member<member_t>(3)));
+    expect_equal(reader->reset(), success_k);
+    expect_equal(reader->upsert(trivial_id_to_member<member_t>(3)), success_k);
 
     // A commit lands on a key this transaction never read, after the reset - so validation has to look
     // past its fast path and consult the read set, which is where an uncleared refusal would be found.
-    st_verify_(store.upsert(trivial_id_to_member<member_t>(4)));
-    st_verify_(reader->stage());
-    st_verify_((succeeded(reader->commit())) && "a reset transaction must not inherit the refusal it was reset from");
-    st_verify_eq_(store.size(), 4u);
+    expect_equal(store.upsert(trivial_id_to_member<member_t>(4)), success_k);
+    expect_equal(reader->stage(), success_k);
+    expect_true(succeeded(reader->commit()), "a reset transaction must not inherit the refusal it was reset from");
+    expect_equal(store.size(), 4u);
 }
 
 /**
@@ -2523,44 +2594,45 @@ static void serializable_reset_clears_a_whole_keyspace_read() {
  *  write the store has not published, and each erasing walk to stage rather than publish.
  */
 template <typename store_type_>
-static void transaction_range_surface_sees_its_own_writes() {
+static void test_transaction_range_surface_sees_its_own_writes() {
     using store_t = store_type_;
     using member_t = typename store_t::value_type;
 
     store_t store;
     for (std::size_t identifier = 0; identifier != 8; ++identifier)
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier)));
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
     auto writer = store.transaction();
-    st_verify_(writer);
+    if (!expect_equal(writer.status(), success_k)) return;
 
     // A staged member the store has not published must be visible to every read on this transaction.
-    st_verify_(writer->upsert(trivial_id_to_member<member_t>(100)));
-    st_verify_eq_(writer->count(trivial_id_to_key<member_t>(100)), std::size_t {1},
-                  "a staged key must be counted by the transaction that staged it");
-    st_verify_eq_(store.count(trivial_id_to_key<member_t>(100)), std::size_t {0},
-                  "and must stay invisible to the store until it commits");
+    expect_equal(writer->upsert(trivial_id_to_member<member_t>(100)), success_k);
+    expect_equal(writer->count(trivial_id_to_key<member_t>(100)), std::size_t {1},
+                 "a staged key must be counted by the transaction that staged it");
+    expect_equal(store.count(trivial_id_to_key<member_t>(100)), std::size_t {0},
+                 "and must stay invisible to the store until it commits");
 
     auto const bounded = writer->lower_bound_copy(trivial_id_to_key<member_t>(100));
-    st_verify_(bounded);
-    st_verify_eq_(mapping_key_or_itself<member_t>(*bounded), trivial_id_to_key<member_t>(100),
-                  "a bound copy must reach the transaction's own staged member");
+    if (!expect_equal(bounded.status(), success_k)) return;
+    expect_equal(mapping_key_or_itself<member_t>(*bounded), trivial_id_to_key<member_t>(100),
+                 "a bound copy must reach the transaction's own staged member");
 
     // An erasing walk stages tombstones; the store keeps its members until the commit lands.
     std::size_t erased = 0;
-    st_verify_(writer->erase_range(trivial_id_to_key<member_t>(2), trivial_id_to_key<member_t>(5),
-                                   [&](member_t const &) noexcept { ++erased; }));
-    st_verify_eq_(erased, std::size_t {3}, "the window held three members");
-    st_verify_eq_(writer->count(trivial_id_to_key<member_t>(3)), std::size_t {0},
-                  "an erased key must be gone from the transaction that erased it");
-    st_verify_eq_(store.count(trivial_id_to_key<member_t>(3)), std::size_t {1},
-                  "and must remain in the store until the commit lands");
+    expect_equal(writer->erase_range(trivial_id_to_key<member_t>(2), trivial_id_to_key<member_t>(5),
+                                     [&](member_t const &) noexcept { ++erased; }),
+                 success_k);
+    expect_equal(erased, std::size_t {3}, "the window held three members");
+    expect_equal(writer->count(trivial_id_to_key<member_t>(3)), std::size_t {0},
+                 "an erased key must be gone from the transaction that erased it");
+    expect_equal(store.count(trivial_id_to_key<member_t>(3)), std::size_t {1},
+                 "and must remain in the store until the commit lands");
 
-    st_verify_(writer->stage());
-    st_verify_(writer->commit());
-    st_verify_eq_(store.count(trivial_id_to_key<member_t>(3)), std::size_t {0},
-                  "the commit publishes what the transaction staged");
-    st_verify_eq_(store.count(trivial_id_to_key<member_t>(100)), std::size_t {1});
+    expect_equal(writer->stage(), success_k);
+    expect_equal(writer->commit(), success_k);
+    expect_equal(store.count(trivial_id_to_key<member_t>(3)), std::size_t {0},
+                 "the commit publishes what the transaction staged");
+    expect_equal(store.count(trivial_id_to_key<member_t>(100)), std::size_t {1});
 }
 
 #pragma region Pinned Reader Tests
@@ -2596,32 +2668,32 @@ static void test_commit_stamp_follows_commit_order() {
 
     auto first = store.transaction();
     auto second = store.transaction();
-    st_verify_(first.has_value() && second.has_value());
-    st_verify_eq_(first->commit_stamp(), 0, "no commit has gone out yet");
+    if (!expect_true(first.has_value() && second.has_value())) return;
+    expect_equal(first->commit_stamp(), 0, "no commit has gone out yet");
 
-    st_verify_(second->upsert(trivial_id_to_member<member_t>(2, 20)));
-    st_verify_(stage_and_commit(*second));
-    st_verify_(first->upsert(trivial_id_to_member<member_t>(1, 10)));
-    st_verify_(stage_and_commit(*first));
-    st_verify_gt_(second->commit_stamp(), 0);
-    st_verify_gt_(first->commit_stamp(), second->commit_stamp(), "the later commit carries the larger stamp");
+    expect_equal(second->upsert(trivial_id_to_member<member_t>(2, 20)), success_k);
+    expect_equal(stage_and_commit(*second), success_k);
+    expect_equal(first->upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
+    expect_equal(stage_and_commit(*first), success_k);
+    expect_true(second->commit_stamp() > 0);
+    expect_true(first->commit_stamp() > second->commit_stamp(), "the later commit carries the larger stamp");
 
     // A reader opened after both reads at or above the newer stamp.
     auto const pinned = store.reader();
-    st_verify_ge_(pinned.snapshot(), first->commit_stamp());
+    expect_true(pinned.snapshot() >= first->commit_stamp());
 
     // A refused commit leaves the stamp where the last successful one put it.
     generation_t const kept = first->commit_stamp();
-    st_verify_(first->upsert(trivial_id_to_member<member_t>(7, 70)));
+    expect_equal(first->upsert(trivial_id_to_member<member_t>(7, 70)), success_k);
     commit_write(store, 7, 71);
-    st_verify_eq_(stage_and_commit(*first), status_t::write_conflict_k);
-    st_verify_eq_(first->commit_stamp(), kept);
+    expect_equal(stage_and_commit(*first), status_t::write_conflict_k);
+    expect_equal(first->commit_stamp(), kept);
 
     // The same transaction committing again moves past every stamp before it.
-    st_verify_(first->reset());
-    st_verify_(first->upsert(trivial_id_to_member<member_t>(1, 11)));
-    st_verify_(stage_and_commit(*first));
-    st_verify_gt_(first->commit_stamp(), kept);
+    expect_equal(first->reset(), success_k);
+    expect_equal(first->upsert(trivial_id_to_member<member_t>(1, 11)), success_k);
+    expect_equal(stage_and_commit(*first), success_k);
+    expect_true(first->commit_stamp() > kept);
 }
 
 /** Tests that a store-level window write over every partition goes out under one stamp, which is
@@ -2636,18 +2708,19 @@ static void test_window_writes_publish_under_one_stamp() {
     commit_write_many(store, identifiers, 1);
 
     generation_t const before_erase = store.reader().snapshot();
-    st_verify_(store.erase_range(trivial_key_t {0}, trivial_key_t {upper}));
-    st_verify_eq_(store.reader().snapshot() - before_erase, generation_t {1},
-                  "every partition's tombstones publish under the one stamp the window drew");
+    expect_equal(store.erase_range(trivial_key_t {0}, trivial_key_t {upper}), success_k);
+    expect_equal(store.reader().snapshot() - before_erase, generation_t {1},
+                 "every partition's tombstones publish under the one stamp the window drew");
     for (trivial_id_t identifier : identifiers)
-        st_verify_eq_(mapped_or_absent(store, identifier).status(), status_t::key_not_found_k);
+        expect_equal(mapped_or_absent(store, identifier).status(), status_t::key_not_found_k);
 
     commit_write_many(store, identifiers, 2);
     generation_t const before_update = store.reader().snapshot();
-    st_verify_(store.update_range(trivial_key_t {0}, trivial_key_t {upper},
-                                  [](trivial_key_t const &, int &mapped) noexcept { mapped += 10; }));
-    st_verify_eq_(store.reader().snapshot() - before_update, generation_t {1}, "and so does a window update");
-    for (trivial_id_t identifier : identifiers) st_verify_eq_(mapped_or_absent(store, identifier), 12);
+    expect_equal(store.update_range(trivial_key_t {0}, trivial_key_t {upper},
+                                    [](trivial_key_t const &, int &mapped) noexcept { mapped += 10; }),
+                 success_k);
+    expect_equal(store.reader().snapshot() - before_update, generation_t {1}, "and so does a window update");
+    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(store, identifier), 12);
 }
 
 /** Tests that a reader answers every read at its stamp through commits, erasures and reclamation */
@@ -2665,33 +2738,37 @@ static void test_reader_holds_its_stamp() {
                 commit_write(store, identifier, 100 + round);
         commit_erase(store, 3);
         [[maybe_unused]] std::size_t const swept = vacuumed(store);
-        st_verify_le_(store.low_water_mark(), pinned.snapshot(), "the reader's claim holds the mark at its stamp");
+        expect_true(store.low_water_mark() <= pinned.snapshot(), "the reader's claim holds the mark at its stamp");
 
         for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-            st_verify_eq_(mapped_or_absent(pinned, identifier), 100, "a pinned read ignores every later commit");
+            expect_equal(mapped_or_absent(pinned, identifier), 100, "a pinned read ignores every later commit");
 
         trivial_id_t expected = 0;
         std::size_t mismatched = 0;
-        st_verify_(pinned.range(trivial_key_t {0}, trivial_key_t {keys_k}, [&](member_t const &member) noexcept {
-            if (member.key.unique_id != expected++ || member.mapped != 100) ++mismatched;
-        }));
-        st_verify_eq_(expected, keys_k, "a pinned walk hands over every key its stamp reads, the erased one included");
-        st_verify_eq_(mismatched, 0u, "in order, at the values the stamp reads");
+        expect_equal(pinned.range(trivial_key_t {0}, trivial_key_t {keys_k},
+                                  [&](member_t const &member) noexcept {
+                                      if (member.key.unique_id != expected++ || member.mapped != 100) ++mismatched;
+                                  }),
+                     success_k);
+        expect_equal(expected, keys_k, "a pinned walk hands over every key its stamp reads, the erased one included");
+        expect_equal(mismatched, 0u, "in order, at the values the stamp reads");
 
         std::size_t handed = 0;
-        st_verify_(pinned.range(trivial_key_t {0}, trivial_key_t {keys_k}, [&](member_t const &) noexcept {
-            return ++handed == 5 ? walk_control_t::halt_k : walk_control_t::resume_k;
-        }));
-        st_verify_eq_(handed, 5u, "a pinned walk stops where its callback says");
+        expect_equal(pinned.range(trivial_key_t {0}, trivial_key_t {keys_k},
+                                  [&](member_t const &) noexcept {
+                                      return ++handed == 5 ? walk_control_t::halt_k : walk_control_t::resume_k;
+                                  }),
+                     success_k);
+        expect_equal(handed, 5u, "a pinned walk stops where its callback says");
 
-        st_verify_eq_(mapped_or_absent(store, 0), 104, "the store itself reads the newest commit");
-        st_verify_eq_(mapped_or_absent(store, 3).status(), status_t::key_not_found_k);
-        st_verify_gt_(store.versions_count(), keys_k, "every version the stamp still names is retained");
+        expect_equal(mapped_or_absent(store, 0), 104, "the store itself reads the newest commit");
+        expect_equal(mapped_or_absent(store, 3).status(), status_t::key_not_found_k);
+        expect_true(store.versions_count() > keys_k, "every version the stamp still names is retained");
     }
 
     // Nothing is pinned once the reader closes, so a sweep collapses every key to the one it reads.
     [[maybe_unused]] std::size_t const reclaimed = vacuumed(store);
-    st_verify_eq_(store.versions_count(), keys_k - 1, "one version per live key, and none for the erased one");
+    expect_equal(store.versions_count(), keys_k - 1, "one version per live key, and none for the erased one");
 }
 
 /** Tests that a reader walks from a bound to the very last key at its stamp, the largest one a key
@@ -2712,27 +2789,32 @@ static void test_reader_walks_from_a_bound_to_the_end() {
 
     std::vector<trivial_id_t> seen;
     std::size_t mismatched = 0;
-    st_verify_(pinned.range_from(trivial_key_t {lower_k}, [&](member_t const &member) noexcept {
-        seen.push_back(member.key.unique_id);
-        if (member.mapped != 100) ++mismatched;
-    }));
+    expect_equal(pinned.range_from(trivial_key_t {lower_k},
+                                   [&](member_t const &member) noexcept {
+                                       seen.push_back(member.key.unique_id);
+                                       if (member.mapped != 100) ++mismatched;
+                                   }),
+                 success_k);
     std::vector<trivial_id_t> expected;
     for (trivial_id_t identifier = lower_k; identifier != keys_k; ++identifier) expected.push_back(identifier);
     expected.push_back(largest_k);
-    st_verify_((seen == expected) && "every key from the bound on, in order, at the reader's stamp");
-    st_verify_eq_(mismatched, 0u, "at the values the stamp reads");
+    expect_true(seen == expected, "every key from the bound on, in order, at the reader's stamp");
+    expect_equal(mismatched, 0u, "at the values the stamp reads");
 
     std::size_t handed = 0;
-    st_verify_(pinned.range_from(trivial_key_t {lower_k}, [&](member_t const &) noexcept {
-        return ++handed == 5 ? walk_control_t::halt_k : walk_control_t::resume_k;
-    }));
-    st_verify_eq_(handed, 5u, "a walk with no upper end still stops where its callback says");
+    expect_equal(pinned.range_from(trivial_key_t {lower_k},
+                                   [&](member_t const &) noexcept {
+                                       return ++handed == 5 ? walk_control_t::halt_k : walk_control_t::resume_k;
+                                   }),
+                 success_k);
+    expect_equal(handed, 5u, "a walk with no upper end still stops where its callback says");
 }
 
 /** Tests that one reader serves several threads with no lock of their own while writers commit,
  *  erase windows and reclaim. */
 template <typename store_type_>
-static void test_reader_serves_threads_without_a_lock(std::size_t rounds = 60) {
+static void test_reader_serves_threads_without_a_lock() {
+    std::size_t const rounds = scaled_iterations(60);
     using member_t = typename store_type_::value_type;
     constexpr trivial_id_t keys_k = 64;
     constexpr std::size_t readers_k = 3;
@@ -2748,15 +2830,15 @@ static void test_reader_serves_threads_without_a_lock(std::size_t rounds = 60) {
     std::vector<std::thread> threads;
 
     threads.emplace_back([&]() noexcept {
-        while (!readers_inside.load(std::memory_order_acquire)) std::this_thread::yield();
+        expect_true(spin_until([&] { return readers_inside.load(std::memory_order_acquire); }));
         for (std::size_t round = 0; round != rounds; ++round) {
             if (round >= least_rounds_k && std::chrono::steady_clock::now() >= deadline) break;
             auto writer = store.transaction();
-            st_verify_(writer.has_value());
+            if (!expect_true(writer.has_value())) break;
             for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-                st_verify_(writer->upsert(trivial_id_to_member<member_t>(identifier, int(round) + 2)));
-            st_verify_(stage_and_commit(*writer));
-            st_verify_(store.erase_range(trivial_key_t {10}, trivial_key_t {20}));
+                expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, int(round) + 2)), success_k);
+            expect_equal(stage_and_commit(*writer), success_k);
+            expect_equal(store.erase_range(trivial_key_t {10}, trivial_key_t {20}), success_k);
             [[maybe_unused]] auto const reclaimed = store.vacuum();
             rounds_run.fetch_add(1, std::memory_order_relaxed);
         }
@@ -2789,7 +2871,7 @@ static void test_reader_serves_threads_without_a_lock(std::size_t rounds = 60) {
     threads.emplace_back([&]() noexcept {
         do {
             auto adopted = store.transaction(pinned);
-            st_verify_(adopted.has_value());
+            if (!expect_true(adopted.has_value())) return;
             for (trivial_id_t identifier = 0; identifier < keys_k; identifier += 7) {
                 expected<int> const observed = mapped_or_absent(*adopted, identifier);
                 if (!observed || *observed != 1) wrong.fetch_add(1, std::memory_order_relaxed);
@@ -2799,11 +2881,11 @@ static void test_reader_serves_threads_without_a_lock(std::size_t rounds = 60) {
     });
 
     for (std::thread &thread : threads) thread.join();
-    st_verify_eq_(wrong.load(), 0u,
-                  "no read through the reader or an adoption may see a later commit or a freed version");
-    st_verify_ge_(rounds_run.load(), least_rounds_k, "the budget may shorten the run, never skip the race");
-    st_verify_gt_(passes.load(), 0u);
-    st_verify_gt_(adoptions.load(), 0u);
+    expect_equal(wrong.load(), 0u,
+                 "no read through the reader or an adoption may see a later commit or a freed version");
+    expect_true(rounds_run.load() >= least_rounds_k, "the budget may shorten the run, never skip the race");
+    expect_true(passes.load() > 0u);
+    expect_true(adoptions.load() > 0u);
 }
 
 /** Tests that a transaction adopting a reader's stamp reads what the reader reads and is validated
@@ -2819,38 +2901,38 @@ static void test_adopted_stamp_is_validated() {
 
     {
         auto adopted = store.transaction(pinned);
-        st_verify_(adopted.has_value());
-        st_verify_eq_(mapped_or_absent(*adopted, 1), 10, "an adoption reads at the stamp, not at the newest commit");
-        st_verify_(adopted->upsert(trivial_id_to_member<member_t>(1, 12)));
-        st_verify_eq_(stage_and_commit(*adopted), status_t::write_conflict_k,
-                      "writing a key published over since the stamp is a lost update at every level");
+        if (!expect_true(adopted.has_value())) return;
+        expect_equal(mapped_or_absent(*adopted, 1), 10, "an adoption reads at the stamp, not at the newest commit");
+        expect_equal(adopted->upsert(trivial_id_to_member<member_t>(1, 12)), success_k);
+        expect_equal(stage_and_commit(*adopted), status_t::write_conflict_k,
+                     "writing a key published over since the stamp is a lost update at every level");
     }
     {
         auto adopted = store.transaction(pinned);
-        st_verify_(adopted.has_value());
-        st_verify_eq_(mapped_or_absent(*adopted, 1), 10);
-        st_verify_(adopted->upsert(trivial_id_to_member<member_t>(3, 30)));
+        if (!expect_true(adopted.has_value())) return;
+        expect_equal(mapped_or_absent(*adopted, 1), 10);
+        expect_equal(adopted->upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
         if constexpr (at_least(store_type_::isolation_k, isolation_t::serializable_k))
-            st_verify_eq_(stage_and_commit(*adopted), status_t::read_conflict_k,
-                          "a read of a key published over since the stamp is refused from serializable up");
-        else st_verify_(stage_and_commit(*adopted));
+            expect_equal(stage_and_commit(*adopted), status_t::read_conflict_k,
+                         "a read of a key published over since the stamp is refused from serializable up");
+        else expect_equal(stage_and_commit(*adopted), success_k);
     }
     if constexpr (!at_least(store_type_::isolation_k, isolation_t::serializable_k)) {
         auto adopted = store.transaction(pinned);
-        st_verify_(adopted.has_value());
-        st_verify_(adopted->watch(trivial_key_t {1}));
-        st_verify_(adopted->upsert(trivial_id_to_member<member_t>(4, 40)));
-        st_verify_eq_(stage_and_commit(*adopted), status_t::read_conflict_k,
-                      "a watched key published over since the stamp is refused at snapshot isolation too");
+        if (!expect_true(adopted.has_value())) return;
+        expect_equal(adopted->watch(trivial_key_t {1}), success_k);
+        expect_equal(adopted->upsert(trivial_id_to_member<member_t>(4, 40)), success_k);
+        expect_equal(stage_and_commit(*adopted), status_t::read_conflict_k,
+                     "a watched key published over since the stamp is refused at snapshot isolation too");
     }
     {
         auto adopted = store.transaction(pinned);
-        st_verify_(adopted.has_value());
-        st_verify_eq_(mapped_or_absent(*adopted, 2), 20);
-        st_verify_(adopted->upsert(trivial_id_to_member<member_t>(2, 21)));
-        st_verify_(stage_and_commit(*adopted));
-        st_verify_gt_(adopted->commit_stamp(), pinned.snapshot());
-        st_verify_eq_(mapped_or_absent(store, 2), 21);
+        if (!expect_true(adopted.has_value())) return;
+        expect_equal(mapped_or_absent(*adopted, 2), 20);
+        expect_equal(adopted->upsert(trivial_id_to_member<member_t>(2, 21)), success_k);
+        expect_equal(stage_and_commit(*adopted), success_k);
+        expect_true(adopted->commit_stamp() > pinned.snapshot());
+        expect_equal(mapped_or_absent(store, 2), 21);
     }
 }
 
@@ -2866,14 +2948,14 @@ static void test_adoption_outlives_the_reader() {
         auto const pinned = store.reader();
         return store.transaction(pinned);
     }();
-    st_verify_(adopted.has_value());
+    if (!expect_true(adopted.has_value())) return;
 
     for (int round = 2; round != 6; ++round) {
         for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, round);
         [[maybe_unused]] std::size_t const swept = vacuumed(store);
     }
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-        st_verify_eq_(mapped_or_absent(*adopted, identifier), 1, "the adoption's own claim keeps its versions");
+        expect_equal(mapped_or_absent(*adopted, identifier), 1, "the adoption's own claim keeps its versions");
 }
 
 /** The three ordered walks a page can be read through. */
@@ -2891,11 +2973,15 @@ static trivial_id_t read_a_page(transaction_type_ const &transaction, page_walk_
         return ++handed == page_size ? walk_control_t::halt_k : walk_control_t::resume_k;
     };
     switch (walk) {
-    case page_walk_t::range_k: st_verify_(transaction.range(trivial_key_t {0}, trivial_key_t {upper}, step)); break;
-    case page_walk_t::range_from_k: st_verify_(transaction.range_from(trivial_key_t {0}, step)); break;
-    case page_walk_t::range_up_to_k: st_verify_(transaction.range_up_to(trivial_key_t {upper}, step)); break;
+    case page_walk_t::range_k:
+        expect_equal(transaction.range(trivial_key_t {0}, trivial_key_t {upper}, step), success_k);
+        break;
+    case page_walk_t::range_from_k: expect_equal(transaction.range_from(trivial_key_t {0}, step), success_k); break;
+    case page_walk_t::range_up_to_k:
+        expect_equal(transaction.range_up_to(trivial_key_t {upper}, step), success_k);
+        break;
     }
-    st_verify_eq_(handed, page_size, "the page must be full, or it records the whole window");
+    expect_equal(handed, page_size, "the page must be full, or it records the whole window");
     return last;
 }
 
@@ -2916,45 +3002,45 @@ static void test_page_ignores_commits_past_its_last_key() {
 
         {
             auto paging = store.transaction();
-            st_verify_(paging.has_value());
-            st_verify_eq_(read_a_page(*paging, walk, page_k, upper_k), last_on_page_k);
+            if (!expect_true(paging.has_value())) return;
+            expect_equal(read_a_page(*paging, walk, page_k, upper_k), last_on_page_k);
             // Past the page: an insert beside its last key, an update, an erase, and an insert past the window.
             commit_write(store, last_on_page_k + 5, 1);
             commit_write(store, 50 * spacing_k, 1);
             commit_erase(store, 70 * spacing_k);
             commit_write(store, upper_k + 5, 1);
-            st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
-            st_verify_((succeeded(stage_and_commit(*paging))) &&
-                       "a commit past the page's last key must not refuse it");
+            expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
+            expect_true(succeeded(stage_and_commit(*paging)), "a commit past the page's last key must not refuse it");
         }
         {
             auto paging = store.transaction();
-            st_verify_(paging.has_value());
-            st_verify_eq_(read_a_page(*paging, walk, page_k, upper_k), last_on_page_k);
+            if (!expect_true(paging.has_value())) return;
+            expect_equal(read_a_page(*paging, walk, page_k, upper_k), last_on_page_k);
             commit_write(store, 4 * spacing_k + 5, 1);
-            st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
+            expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
             if constexpr (validated_k)
-                st_verify_eq_(stage_and_commit(*paging), status_t::phantom_conflict_k,
-                              "an insert inside the page is still a phantom from serializable up");
-            else st_verify_(stage_and_commit(*paging));
+                expect_equal(stage_and_commit(*paging), status_t::phantom_conflict_k,
+                             "an insert inside the page is still a phantom from serializable up");
+            else expect_equal(stage_and_commit(*paging), success_k);
         }
         {
             auto paging = store.transaction();
-            st_verify_(paging.has_value());
+            if (!expect_true(paging.has_value())) return;
             trivial_id_t const stopped = read_a_page(*paging, walk, page_k, upper_k);
             commit_write(store, stopped, -1);
-            st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
+            expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
             if constexpr (validated_k)
-                st_verify_eq_(stage_and_commit(*paging), status_t::read_conflict_k,
-                              "the key a page stopped on is a key it read");
-            else st_verify_(stage_and_commit(*paging));
+                expect_equal(stage_and_commit(*paging), status_t::read_conflict_k,
+                             "the key a page stopped on is a key it read");
+            else expect_equal(stage_and_commit(*paging), success_k);
         }
     }
 }
 
 /** Tests that no reader ever sees a store-level window write spanning partitions half applied */
 template <typename store_type_>
-static void test_window_writes_are_never_seen_half_applied(std::size_t rounds = 200) {
+static void test_window_writes_are_never_seen_half_applied() {
+    std::size_t const rounds = scaled_iterations(200);
     using member_t = typename store_type_::value_type;
     constexpr std::size_t readers_k = 3;
     store_type_ store;
@@ -2969,15 +3055,16 @@ static void test_window_writes_are_never_seen_half_applied(std::size_t rounds = 
     std::vector<std::thread> threads;
 
     threads.emplace_back([&]() noexcept {
-        while (!readers_inside.load(std::memory_order_acquire)) std::this_thread::yield();
+        expect_true(spin_until([&] { return readers_inside.load(std::memory_order_acquire); }));
         for (std::size_t round = 0; round != rounds; ++round) {
             if (round >= least_rounds_k && std::chrono::steady_clock::now() >= deadline) break;
-            st_verify_(store.erase_range(trivial_key_t {0}, trivial_key_t {upper}));
+            expect_equal(store.erase_range(trivial_key_t {0}, trivial_key_t {upper}), success_k);
             while (saw_empty.load(std::memory_order_relaxed) == 0 && std::chrono::steady_clock::now() < deadline)
                 std::this_thread::yield();
             commit_write_many(store, identifiers, int(round) + 2);
-            st_verify_(store.update_range(trivial_key_t {0}, trivial_key_t {upper},
-                                          [](trivial_key_t const &, int &mapped) noexcept { mapped += 1000; }));
+            expect_equal(store.update_range(trivial_key_t {0}, trivial_key_t {upper},
+                                            [](trivial_key_t const &, int &mapped) noexcept { mapped += 1000; }),
+                         success_k);
             rounds_run.fetch_add(1, std::memory_order_relaxed);
         }
         writing_done.store(true, std::memory_order_release);
@@ -3008,24 +3095,24 @@ static void test_window_writes_are_never_seen_half_applied(std::size_t rounds = 
             do {
                 tally(store.reader());
                 auto opened = store.transaction();
-                st_verify_(opened.has_value());
-                tally(*opened);
+                if (expect_true(opened.has_value())) tally(*opened);
                 readers_inside.store(true, std::memory_order_release);
             } while (!writing_done.load(std::memory_order_acquire));
         });
 
     for (std::thread &thread : threads) thread.join();
-    st_verify_eq_(torn.load(), 0u, "a snapshot names a window write's one stamp or does not");
-    st_verify_ge_(rounds_run.load(), least_rounds_k, "the budget may shorten the run, never skip the race");
-    st_verify_gt_(observations.load(), 0u);
-    st_verify_gt_(saw_filled.load(), 0u, "and the readers met the window both erased and filled");
-    st_verify_gt_(saw_empty.load(), 0u);
+    expect_equal(torn.load(), 0u, "a snapshot names a window write's one stamp or does not");
+    expect_true(rounds_run.load() >= least_rounds_k, "the budget may shorten the run, never skip the race");
+    expect_true(observations.load() > 0u);
+    expect_true(saw_filled.load() > 0u, "and the readers met the window both erased and filled");
+    expect_true(saw_empty.load() > 0u);
 }
 
 /** Tests that a staged sharded transaction destroyed, reset or assigned over takes its versions
  *  back under the partition locks. */
 template <typename store_type_>
-static void test_staged_transaction_unwinds_under_partition_locks(std::size_t rounds = 150) {
+static void test_staged_transaction_unwinds_under_partition_locks() {
+    std::size_t const rounds = scaled_iterations(150);
     using member_t = typename store_type_::value_type;
     store_type_ store;
     auto const identifiers = one_identifier_per_partition<store_type_>();
@@ -3035,42 +3122,42 @@ static void test_staged_transaction_unwinds_under_partition_locks(std::size_t ro
 
     auto const stage_everything = [&](auto &transaction) {
         for (trivial_id_t identifier : identifiers)
-            st_verify_(transaction.upsert(trivial_id_to_member<member_t>(identifier, 2)));
-        st_verify_(transaction.stage());
-        st_verify_eq_(store.versions_count(), settled + identifiers.size(),
-                      "staging files one invisible version per key");
+            expect_equal(transaction.upsert(trivial_id_to_member<member_t>(identifier, 2)), success_k);
+        expect_equal(transaction.stage(), success_k);
+        expect_equal(store.versions_count(), settled + identifiers.size(),
+                     "staging files one invisible version per key");
     };
 
     {
         auto staged = store.transaction();
-        st_verify_(staged.has_value());
+        if (!expect_true(staged.has_value())) return;
         stage_everything(*staged);
     }
-    st_verify_eq_(store.versions_count(), settled, "a staged transaction going away takes its versions back");
+    expect_equal(store.versions_count(), settled, "a staged transaction going away takes its versions back");
 
     {
         auto staged = store.transaction();
-        st_verify_(staged.has_value());
+        if (!expect_true(staged.has_value())) return;
         stage_everything(*staged);
-        st_verify_(staged->reset());
-        st_verify_eq_(store.versions_count(), settled, "a reset takes them back too");
+        expect_equal(staged->reset(), success_k);
+        expect_equal(store.versions_count(), settled, "a reset takes them back too");
     }
 
     {
         auto staged = store.transaction();
         auto fresh = store.transaction();
-        st_verify_(staged.has_value() && fresh.has_value());
+        if (!expect_true(staged.has_value() && fresh.has_value())) return;
         stage_everything(*staged);
         *staged = std::move(*fresh);
-        st_verify_eq_(store.versions_count(), settled,
-                      "a staged transaction assigned over unwinds before it is replaced");
-        st_verify_(staged->upsert(trivial_id_to_member<member_t>(identifiers.front(), 3)));
-        st_verify_(stage_and_commit(*staged));
+        expect_equal(store.versions_count(), settled,
+                     "a staged transaction assigned over unwinds before it is replaced");
+        expect_equal(staged->upsert(trivial_id_to_member<member_t>(identifiers.front(), 3)), success_k);
+        expect_equal(stage_and_commit(*staged), success_k);
     }
-    st_verify_eq_(mapped_or_absent(store, identifiers.front()), 3);
+    expect_equal(mapped_or_absent(store, identifiers.front()), 3);
     for (std::size_t index = 1; index != identifiers.size(); ++index)
-        st_verify_eq_(mapped_or_absent(store, identifiers[index]), 1,
-                      "nothing an unwound transaction staged was published");
+        expect_equal(mapped_or_absent(store, identifiers[index]), 1,
+                     "nothing an unwound transaction staged was published");
 
     // Walkers crossing the partitions while staged transactions are abandoned under them.
     std::atomic<bool> walking_done {false};
@@ -3089,17 +3176,17 @@ static void test_staged_transaction_unwinds_under_partition_locks(std::size_t ro
     for (; rounds_run != rounds; ++rounds_run) {
         if (rounds_run >= least_rounds_k && std::chrono::steady_clock::now() >= deadline) break;
         auto abandoned = store.transaction();
-        st_verify_(abandoned.has_value());
+        if (!expect_true(abandoned.has_value())) break;
         for (trivial_id_t identifier : identifiers)
-            st_verify_(abandoned->upsert(trivial_id_to_member<member_t>(identifier + 5000, 9)));
-        st_verify_(abandoned->stage());
+            expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(identifier + 5000, 9)), success_k);
+        expect_equal(abandoned->stage(), success_k);
     }
     walking_done.store(true, std::memory_order_release);
     walker.join();
-    st_verify_eq_(wrong.load(), 0u, "no walk may meet a staged version or a half-removed node");
-    st_verify_ge_(rounds_run, least_rounds_k, "the budget may shorten the run, never skip the race");
-    st_verify_gt_(walks.load(), 0u);
-    st_verify_eq_(store.versions_count(), settled, "every abandoned stage was taken back");
+    expect_equal(wrong.load(), 0u, "no walk may meet a staged version or a half-removed node");
+    expect_true(rounds_run >= least_rounds_k, "the budget may shorten the run, never skip the race");
+    expect_true(walks.load() > 0u);
+    expect_equal(store.versions_count(), settled, "every abandoned stage was taken back");
 }
 
 #pragma endregion Pinned Reader Tests
@@ -3123,7 +3210,8 @@ using contents_t = std::map<trivial_id_t, int>;
 template <typename store_type_>
 static contents_t contents_of(store_type_ const &store) {
     contents_t contents;
-    st_verify_(store.for_each([&](auto const &member) noexcept { contents[member.key.unique_id] = member.mapped; }));
+    expect_equal(store.for_each([&](auto const &member) noexcept { contents[member.key.unique_id] = member.mapped; }),
+                 success_k);
     return contents;
 }
 
@@ -3132,21 +3220,24 @@ template <typename reader_type_>
 static std::vector<logged_version_t> versions_after(reader_type_ const &reader, generation_t stamp,
                                                     std::size_t limit = (std::numeric_limits<std::size_t>::max)()) {
     std::vector<logged_version_t> walked;
-    st_verify_(reader.for_each_version_after(stamp, [&](auto const &key, generation_t committed, presence_t presence,
-                                                        auto const &member) noexcept {
-        walked.push_back({key.unique_id, committed, presence, presence == presence_t::present_k ? member.mapped : 0});
-        return walked.size() == limit ? walk_control_t::halt_k : walk_control_t::resume_k;
-    }));
+    expect_equal(reader.for_each_version_after(
+                     stamp,
+                     [&](auto const &key, generation_t committed, presence_t presence, auto const &member) noexcept {
+                         walked.push_back({key.unique_id, committed, presence,
+                                           presence == presence_t::present_k ? member.mapped : 0});
+                         return walked.size() == limit ? walk_control_t::halt_k : walk_control_t::resume_k;
+                     }),
+                 success_k);
     return walked;
 }
 
 /** Commits up to three distinct keys to @p store and the @p oracle alike, logging each version. */
 template <typename store_type_>
-static void commit_logged_round(store_type_ &store, fuzz_oracle_t &oracle, std::mt19937 &generator,
+static void commit_logged_round(store_type_ &store, fuzz_oracle_t &oracle, split_mix_generator_t &generator,
                                 std::vector<logged_version_t> &log) {
     using member_t = typename store_type_::value_type;
     auto writer = store.transaction();
-    st_verify_(writer.has_value());
+    if (!expect_true(writer.has_value())) return;
     std::vector<logged_version_t> written;
     trivial_id_t const first = trivial_id_t(generator() % fuzz_keyspace_k);
     std::size_t const count = 1 + generator() % 3;
@@ -3154,34 +3245,35 @@ static void commit_logged_round(store_type_ &store, fuzz_oracle_t &oracle, std::
         // Seven is coprime with the keyspace, so three steps never land on one key twice.
         trivial_id_t const key = trivial_id_t((first + offset * 7) % fuzz_keyspace_k);
         expected<bool> const present = oracle.contains(trivial_key_t {key});
-        st_verify_(present.has_value());
+        if (!expect_true(present.has_value())) return;
         if (*present && generator() % 3 == 0) {
-            st_verify_(writer->erase(trivial_key_t {key}));
-            st_verify_(oracle.erase(trivial_key_t {key}));
+            expect_equal(writer->erase(trivial_key_t {key}), success_k);
+            expect_equal(oracle.erase(trivial_key_t {key}), success_k);
             written.push_back({key, 0, presence_t::erased_k, 0});
             continue;
         }
         int const value = int(generator() % 1000);
-        st_verify_(writer->upsert(trivial_id_to_member<member_t>(key, value)));
-        st_verify_(oracle.upsert(trivial_id_to_member<member_t>(key, value)));
+        expect_equal(writer->upsert(trivial_id_to_member<member_t>(key, value)), success_k);
+        expect_equal(oracle.upsert(trivial_id_to_member<member_t>(key, value)), success_k);
         written.push_back({key, 0, presence_t::present_k, value});
     }
-    st_verify_(stage_and_commit(*writer));
+    expect_equal(stage_and_commit(*writer), success_k);
     for (logged_version_t &version : written) version.stamp = writer->commit_stamp();
     log.insert(log.end(), written.begin(), written.end());
 }
 
 /** Erases a window of @p store and the @p oracle alike under one stamp, logging each tombstone. */
 template <typename store_type_>
-static void erase_logged_window(store_type_ &store, fuzz_oracle_t &oracle, std::mt19937 &generator,
+static void erase_logged_window(store_type_ &store, fuzz_oracle_t &oracle, split_mix_generator_t &generator,
                                 std::vector<logged_version_t> &log) {
     using member_t = typename store_type_::value_type;
     trivial_id_t const lower = trivial_id_t(generator() % fuzz_keyspace_k);
     trivial_id_t const upper = lower + trivial_id_t(generator() % 6);
     std::vector<trivial_id_t> erased;
-    st_verify_(oracle.erase_range(trivial_key_t {lower}, trivial_key_t {upper},
-                                  [&](member_t const &member) noexcept { erased.push_back(member.key.unique_id); }));
-    st_verify_(store.erase_range(trivial_key_t {lower}, trivial_key_t {upper}, no_op_t {}));
+    expect_equal(oracle.erase_range(trivial_key_t {lower}, trivial_key_t {upper},
+                                    [&](member_t const &member) noexcept { erased.push_back(member.key.unique_id); }),
+                 success_k);
+    expect_equal(store.erase_range(trivial_key_t {lower}, trivial_key_t {upper}, no_op_t {}), success_k);
     for (trivial_id_t const key : erased)
         log.push_back({key, store.order().published_stamp(), presence_t::erased_k, 0});
 }
@@ -3200,8 +3292,8 @@ struct logged_pin {
  *  Replaying the walk onto what the oracle held at the pin's stamp must land on what it holds now.
  */
 template <typename store_type_, typename pins_type_>
-static void verify_version_walks(store_type_ const &store, fuzz_oracle_t const &oracle, pins_type_ const &pins,
-                                 std::vector<logged_version_t> const &log) {
+static void check_version_walks(store_type_ const &store, fuzz_oracle_t const &oracle, pins_type_ const &pins,
+                                std::vector<logged_version_t> const &log) {
     constexpr bool partitioned_k = requires { store_type_::partitions_k; };
     auto const sort_by_key_and_stamp = [](std::vector<logged_version_t> &versions) {
         std::sort(versions.begin(), versions.end(), [](logged_version_t const &first, logged_version_t const &second) {
@@ -3212,7 +3304,7 @@ static void verify_version_walks(store_type_ const &store, fuzz_oracle_t const &
     contents_t const current = contents_of(oracle);
     for (auto const &pin : pins) {
         generation_t const pinned = pin.reader.snapshot();
-        st_verify_le_(store.low_water_mark(), pinned, "an open pin holds the mark at or below its stamp");
+        expect_true(store.low_water_mark() <= pinned, "an open pin holds the mark at or below its stamp");
 
         std::vector<logged_version_t> walked = versions_after(now, pinned);
         std::vector<logged_version_t> expected;
@@ -3223,32 +3315,32 @@ static void verify_version_walks(store_type_ const &store, fuzz_oracle_t const &
         for (std::size_t index = 1; index < walked.size(); ++index) {
             logged_version_t const &previous = walked[index - 1], &current_version = walked[index];
             if (previous.key == current_version.key) {
-                st_verify_lt_(previous.stamp, current_version.stamp, "a key's versions arrive oldest first");
+                expect_true(previous.stamp < current_version.stamp, "a key's versions arrive oldest first");
                 continue;
             }
             finished_keys.push_back(previous.key);
-            st_verify_(
-                (std::find(finished_keys.begin(), finished_keys.end(), current_version.key) == finished_keys.end()) &&
+            expect_true(
+                std::find(finished_keys.begin(), finished_keys.end(), current_version.key) == finished_keys.end(),
                 "the versions of one key arrive together");
             if constexpr (!partitioned_k)
-                st_verify_lt_(previous.key, current_version.key, "a single store walks its keys in order");
+                expect_true(previous.key < current_version.key, "a single store walks its keys in order");
         }
 
         contents_t replayed = pin.contents;
         for (logged_version_t const &version : walked)
             if (version.presence == presence_t::present_k) replayed[version.key] = version.mapped;
             else replayed.erase(version.key);
-        st_verify_((replayed == current) && "the history above a pin replays onto its contents as the oracle's now");
+        expect_true(replayed == current, "the history above a pin replays onto its contents as the oracle's now");
 
         std::size_t const page = min_of<std::size_t>(walked.size(), 3);
         std::vector<logged_version_t> const halted = versions_after(now, pinned, page);
-        st_verify_((page == 0 || std::equal(halted.begin(), halted.end(), walked.begin())) &&
-                   "a halted walk hands over a prefix of the whole one");
-        st_verify_eq_(halted.size(), page, "a walk stops where its callback says");
+        expect_true(page == 0 || std::equal(halted.begin(), halted.end(), walked.begin()),
+                    "a halted walk hands over a prefix of the whole one");
+        expect_equal(halted.size(), page, "a walk stops where its callback says");
 
         sort_by_key_and_stamp(walked);
         sort_by_key_and_stamp(expected);
-        st_verify_((walked == expected) && "a walk hands over every logged version in its window, once");
+        expect_true(walked == expected, "a walk hands over every logged version in its window, once");
 
         // Through the pin itself from the oldest pin, so the window's upper end is the pin's stamp.
         generation_t const oldest = pins.front().reader.snapshot();
@@ -3258,17 +3350,18 @@ static void verify_version_walks(store_type_ const &store, fuzz_oracle_t const &
             if (version.stamp > oldest && version.stamp <= pinned) up_to_the_pin.push_back(version);
         sort_by_key_and_stamp(through_the_pin);
         sort_by_key_and_stamp(up_to_the_pin);
-        st_verify_((through_the_pin == up_to_the_pin) && "a walk ends at its own reader's stamp");
+        expect_true(through_the_pin == up_to_the_pin, "a walk ends at its own reader's stamp");
     }
 }
 
 /** Tests that a version walk hands over every commit and removal above a pinned stamp, across pins
  *  opening and closing, window erasures and sweeps. */
 template <typename store_type_>
-static void test_version_walk_matches_the_commit_log(test_context_t const &context, std::size_t rounds = 240) {
+static void test_version_walk_matches_the_commit_log() {
+    std::size_t const rounds = scaled_iterations(240);
     using reader_t = typename store_type_::reader_t;
     constexpr std::size_t pins_k = 4;
-    std::mt19937 generator(mix_seed(context.seed, __func__));
+    split_mix_generator_t generator {case_stream_key()};
     store_type_ store;
     fuzz_oracle_t oracle;
     std::vector<logged_version_t> log;
@@ -3287,9 +3380,9 @@ static void test_version_walk_matches_the_commit_log(test_context_t const &conte
         case 2: erase_logged_window(store, oracle, generator, log); break;
         default: commit_logged_round(store, oracle, generator, log); break;
         }
-        if (round % 16 == 15) verify_version_walks(store, oracle, pins, log);
+        if (round % 16 == 15) check_version_walks(store, oracle, pins, log);
     }
-    verify_version_walks(store, oracle, pins, log);
+    check_version_walks(store, oracle, pins, log);
 
     // With every pin gone the mark passes the oldest stamp, which is how a caller learns that
     // history below it may be gone.
@@ -3297,8 +3390,8 @@ static void test_version_walk_matches_the_commit_log(test_context_t const &conte
     pins.clear();
     commit_logged_round(store, oracle, generator, log);
     [[maybe_unused]] std::size_t const reclaimed = vacuumed(store);
-    st_verify_eq_(store.low_water_mark(), store.order().published_stamp(), "nothing open, nothing pinned");
-    st_verify_gt_(store.low_water_mark(), oldest, "the mark moves past a released pin once commits follow it");
+    expect_equal(store.low_water_mark(), store.order().published_stamp(), "nothing open, nothing pinned");
+    expect_true(store.low_water_mark() > oldest, "the mark moves past a released pin once commits follow it");
 }
 
 #pragma endregion Version Walk Tests
@@ -3318,29 +3411,30 @@ static std::vector<trivial_id_t> keys_down(view_type_ const &view, descent_bound
         walked.push_back(member.key.unique_id);
         return walked.size() == limit ? walk_control_t::halt_k : walk_control_t::resume_k;
     };
-    if (from && until) st_verify_(view.range(trivial_key_t {*from}, trivial_key_t {*until}, step, descending));
-    else if (from) st_verify_(view.range(trivial_key_t {*from}, unbounded, step, descending));
-    else if (until) st_verify_(view.range(unbounded, trivial_key_t {*until}, step, descending));
-    else st_verify_(view.range(unbounded, unbounded, step, descending));
+    if (from && until)
+        expect_equal(view.range(trivial_key_t {*from}, trivial_key_t {*until}, step, descending), success_k);
+    else if (from) expect_equal(view.range(trivial_key_t {*from}, unbounded, step, descending), success_k);
+    else if (until) expect_equal(view.range(unbounded, trivial_key_t {*until}, step, descending), success_k);
+    else expect_equal(view.range(unbounded, unbounded, step, descending), success_k);
     return walked;
 }
 
 /** Checks that @p view descends between each pair of @p bounds as @p ascending reads, reversed. */
 template <typename view_type_>
-static void verify_descents_reverse(view_type_ const &view, std::vector<trivial_id_t> const &ascending,
-                                    std::vector<descent_bound_t> const &bounds) {
+static void check_descents_reverse(view_type_ const &view, std::vector<trivial_id_t> const &ascending,
+                                   std::vector<descent_bound_t> const &bounds) {
     std::vector<trivial_id_t> const reversed(ascending.rbegin(), ascending.rend());
     for (descent_bound_t const from : bounds)
         for (descent_bound_t const until : bounds) {
             std::vector<trivial_id_t> expected;
             for (trivial_id_t const key : reversed)
                 if ((!from || key <= *from) && (!until || key > *until)) expected.push_back(key);
-            st_verify_((keys_down(view, from, until) == expected) && "a descent reads the forward walk reversed");
+            expect_true(keys_down(view, from, until) == expected, "a descent reads the forward walk reversed");
             std::size_t const page = min_of<std::size_t>(expected.size(), 3);
             if (page == 0) continue;
-            st_verify_((std::vector<trivial_id_t>(expected.begin(), expected.begin() + std::ptrdiff_t(page)) ==
-                        keys_down(view, from, until, page)) &&
-                       "a descent stops where its callback says");
+            expect_true(std::vector<trivial_id_t>(expected.begin(), expected.begin() + std::ptrdiff_t(page)) ==
+                            keys_down(view, from, until, page),
+                        "a descent stops where its callback says");
         }
 }
 
@@ -3361,27 +3455,29 @@ static void test_descending_range_reverses_the_forward_walk() {
         largest_k - 1, largest_k};
     auto const ascending_through = [](auto const &view) {
         std::vector<trivial_id_t> ascending;
-        st_verify_(view.range_from(
-            trivial_key_t {0}, [&](member_t const &member) noexcept { ascending.push_back(member.key.unique_id); }));
+        expect_equal(
+            view.range_from(trivial_key_t {0},
+                            [&](member_t const &member) noexcept { ascending.push_back(member.key.unique_id); }),
+            success_k);
         return ascending;
     };
     {
         auto writer = store.transaction();
-        st_verify_(writer.has_value());
-        st_verify_(writer->upsert(trivial_id_to_member<member_t>(2 * spacing_k + 1, -1)));
-        st_verify_(writer->upsert(trivial_id_to_member<member_t>(6 * spacing_k, -6)));
-        st_verify_(writer->upsert(trivial_id_to_member<member_t>(3 * spacing_k, -3)));
-        st_verify_(writer->erase(trivial_key_t {8 * spacing_k}));
-        st_verify_(writer->erase(trivial_key_t {largest_k}));
+        if (!expect_true(writer.has_value())) return;
+        expect_equal(writer->upsert(trivial_id_to_member<member_t>(2 * spacing_k + 1, -1)), success_k);
+        expect_equal(writer->upsert(trivial_id_to_member<member_t>(6 * spacing_k, -6)), success_k);
+        expect_equal(writer->upsert(trivial_id_to_member<member_t>(3 * spacing_k, -3)), success_k);
+        expect_equal(writer->erase(trivial_key_t {8 * spacing_k}), success_k);
+        expect_equal(writer->erase(trivial_key_t {largest_k}), success_k);
         std::vector<trivial_id_t> const ascending = ascending_through(*writer);
-        st_verify_(std::find(ascending.begin(), ascending.end(), 8 * spacing_k) == ascending.end());
-        verify_descents_reverse(*writer, ascending, bounds);
+        expect_true(std::find(ascending.begin(), ascending.end(), 8 * spacing_k) == ascending.end());
+        check_descents_reverse(*writer, ascending, bounds);
     }
     if constexpr (offers_descending_range<store_type_>) {
         auto fresh = store.transaction();
-        st_verify_(fresh.has_value());
+        if (!expect_true(fresh.has_value())) return;
         std::vector<trivial_id_t> const newest = ascending_through(*fresh);
-        verify_descents_reverse(store, newest, bounds);
+        check_descents_reverse(store, newest, bounds);
     }
     if constexpr (requires { store.reader(); }) {
         auto const pinned = store.reader();
@@ -3389,10 +3485,10 @@ static void test_descending_range_reverses_the_forward_walk() {
         commit_erase(store, 5 * spacing_k);
         commit_erase(store, largest_k);
         auto adopted = store.transaction(pinned);
-        st_verify_(adopted.has_value());
+        if (!expect_true(adopted.has_value())) return;
         std::vector<trivial_id_t> const at_the_stamp = ascending_through(*adopted);
-        st_verify_eq_(at_the_stamp.back(), largest_k, "the reader's stamp still reads the largest key");
-        verify_descents_reverse(pinned, at_the_stamp, bounds);
+        expect_equal(at_the_stamp.back(), largest_k, "the reader's stamp still reads the largest key");
+        check_descents_reverse(pinned, at_the_stamp, bounds);
     }
 }
 
@@ -3416,21 +3512,22 @@ static void test_descending_page_records_what_it_handed_over() {
         store_type_ store;
         for (trivial_id_t index = 0; index != keys_k; ++index) commit_write(store, index * spacing_k, int(index));
         auto paging = store.transaction();
-        st_verify_(paging.has_value());
+        if (!expect_true(paging.has_value())) return;
         std::size_t handed = 0;
         trivial_id_t last = 0;
-        st_verify_(paging->range(
-            trivial_key_t {upper_k}, unbounded,
-            [&](member_t const &member) noexcept {
-                last = member.key.unique_id;
-                return ++handed == page_k ? walk_control_t::halt_k : walk_control_t::resume_k;
-            },
-            descending));
-        st_verify_eq_(last, stopped_k, "the page stops where its callback says");
+        expect_equal(paging->range(
+                         trivial_key_t {upper_k}, unbounded,
+                         [&](member_t const &member) noexcept {
+                             last = member.key.unique_id;
+                             return ++handed == page_k ? walk_control_t::halt_k : walk_control_t::resume_k;
+                         },
+                         descending),
+                     success_k);
+        expect_equal(last, stopped_k, "the page stops where its callback says");
         commit_write(store, probe.written, -1);
-        st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
-        st_verify_eq_(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
-                      "only a commit inside the page, its bound included, refuses it from serializable up");
+        expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
+        expect_equal(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
+                     "only a commit inside the page, its bound included, refuses it from serializable up");
     }
 
     // A page from the top reaches past the largest key, so only a commit below its stop is outside.
@@ -3440,21 +3537,22 @@ static void test_descending_page_records_what_it_handed_over() {
         store_type_ store;
         for (trivial_id_t index = 0; index != keys_k; ++index) commit_write(store, index * spacing_k, int(index));
         auto paging = store.transaction();
-        st_verify_(paging.has_value());
+        if (!expect_true(paging.has_value())) return;
         std::size_t handed = 0;
         trivial_id_t last = 0;
-        st_verify_(paging->range(
-            unbounded, unbounded,
-            [&](member_t const &member) noexcept {
-                last = member.key.unique_id;
-                return ++handed == page_k ? walk_control_t::halt_k : walk_control_t::resume_k;
-            },
-            descending));
-        st_verify_eq_(last, topmost_stop_k, "a page from the top stops where its callback says");
+        expect_equal(paging->range(
+                         unbounded, unbounded,
+                         [&](member_t const &member) noexcept {
+                             last = member.key.unique_id;
+                             return ++handed == page_k ? walk_control_t::halt_k : walk_control_t::resume_k;
+                         },
+                         descending),
+                     success_k);
+        expect_equal(last, topmost_stop_k, "a page from the top stops where its callback says");
         commit_write(store, probe.written, -1);
-        st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
-        st_verify_eq_(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
-                      "a commit above a page from the top is a phantom from serializable up");
+        expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
+        expect_equal(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
+                     "a commit above a page from the top is a phantom from serializable up");
     }
 
     // A walk that runs out at its lower bound depends on the bound itself, as no half-open window
@@ -3464,16 +3562,17 @@ static void test_descending_page_records_what_it_handed_over() {
         store_type_ store;
         for (trivial_id_t index = 0; index != keys_k; ++index) commit_write(store, index * spacing_k, int(index));
         auto paging = store.transaction();
-        st_verify_(paging.has_value());
+        if (!expect_true(paging.has_value())) return;
         std::size_t handed = 0;
-        st_verify_(paging->range(
-            trivial_key_t {upper_k}, trivial_key_t {until_k}, [&](member_t const &) noexcept { ++handed; },
-            descending));
-        st_verify_eq_(handed, std::size_t(page_k), "the window ( until, from ] holds the page");
+        expect_equal(paging->range(
+                         trivial_key_t {upper_k}, trivial_key_t {until_k}, [&](member_t const &) noexcept { ++handed; },
+                         descending),
+                     success_k);
+        expect_equal(handed, std::size_t(page_k), "the window ( until, from ] holds the page");
         commit_write(store, probe.written, -1);
-        st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
-        st_verify_eq_(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
-                      "a walk that ran out depends on its lower bound and nothing below it");
+        expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
+        expect_equal(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
+                     "a walk that ran out depends on its lower bound and nothing below it");
     }
 }
 
@@ -3502,17 +3601,17 @@ static void test_sorted_staging_equals_element_staging() {
 
     auto sorted = sorted_store.transaction();
     auto element = element_store.transaction();
-    st_verify_(sorted.has_value() && element.has_value());
-    st_verify_(sorted->upsert(members.begin(), members.end(), assume_sorted));
-    st_verify_(element->upsert(members.begin(), members.end()));
-    st_verify_eq_(sorted->changes_count(), element->changes_count());
-    st_verify_eq_(mapped_or_absent(*sorted, 5), 50);
+    if (!expect_true(sorted.has_value() && element.has_value())) return;
+    expect_equal(sorted->upsert(members.begin(), members.end(), assume_sorted), success_k);
+    expect_equal(element->upsert(members.begin(), members.end()), success_k);
+    expect_equal(sorted->changes_count(), element->changes_count());
+    expect_equal(mapped_or_absent(*sorted, 5), 50);
     for (auto *transaction : {&*sorted, &*element}) {
-        st_verify_(transaction->stage());
-        st_verify_(transaction->commit());
+        expect_equal(transaction->stage(), success_k);
+        expect_equal(transaction->commit(), success_k);
     }
     for (trivial_id_t identifier = 0; identifier != 64; ++identifier)
-        st_verify_eq_(mapped_or_absent(sorted_store, identifier), mapped_or_absent(element_store, identifier));
+        expect_equal(mapped_or_absent(sorted_store, identifier), mapped_or_absent(element_store, identifier));
 }
 
 /** Tests that a sorted range stages in a linear count of comparisons, where element staging
@@ -3523,12 +3622,12 @@ static void test_sorted_staging_compares_linearly() {
     std::vector<member_t> const members = ascending_members<member_t>(0, size);
     snapshot_ranked_map_t store;
     auto transaction = store.transaction();
-    st_verify_(transaction.has_value());
+    if (!expect_true(transaction.has_value())) return;
     counting_call_tally_t::reset();
-    st_verify_(transaction->upsert(members.begin(), members.end(), assume_sorted));
+    expect_equal(transaction->upsert(members.begin(), members.end(), assume_sorted), success_k);
     // The ascent check compares each neighbouring pair, and the build itself compares nothing.
-    st_verify_le_(counting_call_tally_t::comparisons_count(), 2 * size);
-    st_verify_eq_(transaction->changes_count(), size);
+    expect_true(counting_call_tally_t::comparisons_count() <= 2 * size);
+    expect_equal(transaction->changes_count(), size);
 }
 
 /** Tests that partitions staged whole, one sorted bucket each, publish what element staging does */
@@ -3541,14 +3640,15 @@ static void test_sorted_partitions_equal_element_staging() {
     for (member_t const &member : members) buckets[sorted_store.partition_of(member)].push_back(member);
 
     auto sorted = sorted_store.transaction();
-    st_verify_(sorted.has_value());
+    if (!expect_true(sorted.has_value())) return;
     for (std::size_t index = 0; index != buckets.size(); ++index)
-        st_verify_(sorted->upsert_partition(index, buckets[index].begin(), buckets[index].end(), assume_sorted));
-    st_verify_(sorted->stage());
-    st_verify_(sorted->commit());
-    st_verify_(element_store.upsert(members.begin(), members.end()));
+        expect_equal(sorted->upsert_partition(index, buckets[index].begin(), buckets[index].end(), assume_sorted),
+                     success_k);
+    expect_equal(sorted->stage(), success_k);
+    expect_equal(sorted->commit(), success_k);
+    expect_equal(element_store.upsert(members.begin(), members.end()), success_k);
     for (trivial_id_t identifier = 0; identifier != 256; ++identifier)
-        st_verify_eq_(mapped_or_absent(sorted_store, identifier), mapped_or_absent(element_store, identifier));
+        expect_equal(mapped_or_absent(sorted_store, identifier), mapped_or_absent(element_store, identifier));
 }
 
 /** Tests that a range promised sorted that descends or repeats a key is refused, staging nothing */
@@ -3562,464 +3662,455 @@ static void test_sorted_staging_refuses_an_unsorted_range() {
 
     store_type_ store;
     auto transaction = store.transaction();
-    st_verify_(transaction.has_value());
+    if (!expect_true(transaction.has_value())) return;
     for (std::vector<member_t> const *refused : {&descending, &repeated}) {
-        st_verify_eq_(transaction->upsert(refused->begin(), refused->end(), assume_sorted), invalid_argument_k);
-        st_verify_(!transaction->has_changes());
+        expect_equal(transaction->upsert(refused->begin(), refused->end(), assume_sorted), invalid_argument_k);
+        expect_true(!transaction->has_changes());
     }
 }
 
 #pragma endregion Sorted Staging Tests
 
+#pragma region Shared Isolation Suites
+
+/** The shared suite decides what to assert from @c isolation_k. Running it here is what compiles
+ *  and exercises its snapshot arms - every other container in the tree takes the weaker one. */
+static void test_lost_update_matches_isolation() {
+    check_lost_update_matches_isolation<snapshot_avl_map_t>();
+    check_lost_update_matches_isolation<serializable_avl_map_t>();
+}
+
+static void test_write_skew_matches_isolation() {
+    check_write_skew_matches_isolation<snapshot_avl_map_t>();
+    check_write_skew_matches_isolation<serializable_avl_map_t>();
+    check_write_skew_matches_isolation<strict_serializable_avl_map_t>();
+}
+
+static void test_read_conflict_matches_isolation() {
+    check_read_conflict_matches_isolation<snapshot_avl_map_t>();
+    check_read_conflict_matches_isolation<serializable_avl_map_t>();
+    check_read_conflict_matches_isolation<strict_serializable_avl_map_t>();
+}
+
+static void test_repeated_read_matches_isolation() {
+    check_repeated_read_matches_isolation<snapshot_avl_map_t>();
+    check_repeated_read_matches_isolation<snapshot_wb_map_t>();
+    check_repeated_read_matches_isolation<snapshot_hash_map_t>();
+    check_repeated_read_matches_isolation<sharded_snapshot_map_t>();
+}
+
+static void test_repeated_range_matches_isolation() {
+    check_repeated_range_matches_isolation<snapshot_avl_map_t>();
+    check_repeated_range_matches_isolation<snapshot_wb_map_t>();
+    check_repeated_range_matches_isolation<sharded_snapshot_map_t>();
+}
+
+/** Sixteen partitions, one order: sharding a store must not quietly take back what one promises. */
+static void test_commit_spans_partitions_matches_isolation() {
+    check_commit_spans_partitions_matches_isolation<sharded_snapshot_map_t>();
+    check_commit_spans_partitions_matches_isolation<sharded_monotonic_map_t>();
+}
+
+#pragma endregion Shared Isolation Suites
+
 } // namespace ashvardanian::smashtable::test
 
 using namespace ashvardanian::smashtable::test;
 
-int main(int, char **arguments) {
-    settings_t const settings = read_settings(arguments[0]);
-    install_test_signal_handlers();
-    print(probe_machine());
-    print(settings);
-    test_tally_t tally;
+int main(int argc, char **argv) {
+    start_test_run(argc, argv);
 
-    tally += run_test(settings, "enumeration.visits_every_element_once", enumeration_visits_every_element_once);
-    tally += run_test(settings, "enumeration.merges_staged_writes", enumeration_merges_staged_writes);
-    tally += run_test(settings, "enumeration.follows_the_snapshot", enumeration_follows_the_snapshot);
-    tally += run_test(settings, "order_statistics.select_answers_exactly_once",
-                      order_statistics_select_answers_exactly_once);
+    run_test_case("test_enumeration_visits_every_element_once", test_enumeration_visits_every_element_once);
+    run_test_case("test_enumeration_merges_staged_writes", test_enumeration_merges_staged_writes);
+    run_test_case("test_enumeration_follows_the_snapshot", test_enumeration_follows_the_snapshot);
+    run_test_case("test_order_statistics_select_answers_exactly_once",
+                  test_order_statistics_select_answers_exactly_once);
 
-    tally += run_test(settings, "traits.avl", test_isolation_traits<snapshot_avl_map_t>);
-    tally += run_test(settings, "traits.wb", test_isolation_traits<snapshot_wb_map_t>);
-    tally += run_test(settings, "traits.hash", test_isolation_traits<snapshot_hash_map_t>);
+    run_test_case("test_isolation_traits<snapshot_avl_map_t>", test_isolation_traits<snapshot_avl_map_t>);
+    run_test_case("test_isolation_traits<snapshot_wb_map_t>", test_isolation_traits<snapshot_wb_map_t>);
+    run_test_case("test_isolation_traits<snapshot_hash_map_t>", test_isolation_traits<snapshot_hash_map_t>);
 
-    tally +=
-        run_test(settings, "isolation.repeated_read_is_stable.avl", test_repeated_read_is_stable<snapshot_avl_map_t>);
-    tally +=
-        run_test(settings, "isolation.repeated_read_is_stable.wb", test_repeated_read_is_stable<snapshot_wb_map_t>);
-    tally +=
-        run_test(settings, "isolation.repeated_read_is_stable.hash", test_repeated_read_is_stable<snapshot_hash_map_t>);
+    run_test_case("test_repeated_read_is_stable<snapshot_avl_map_t>", test_repeated_read_is_stable<snapshot_avl_map_t>);
+    run_test_case("test_repeated_read_is_stable<snapshot_wb_map_t>", test_repeated_read_is_stable<snapshot_wb_map_t>);
+    run_test_case("test_repeated_read_is_stable<snapshot_hash_map_t>",
+                  test_repeated_read_is_stable<snapshot_hash_map_t>);
 
-    tally += run_test(settings, "isolation.reads_own_writes.avl", test_reads_own_writes<snapshot_avl_map_t>);
-    tally += run_test(settings, "isolation.reads_own_writes.hash", test_reads_own_writes<snapshot_hash_map_t>);
+    run_test_case("test_reads_own_writes<snapshot_avl_map_t>", test_reads_own_writes<snapshot_avl_map_t>);
+    run_test_case("test_reads_own_writes<snapshot_hash_map_t>", test_reads_own_writes<snapshot_hash_map_t>);
 
-    tally +=
-        run_test(settings, "isolation.range_admits_no_phantoms.avl", test_range_admits_no_phantoms<snapshot_avl_map_t>);
-    tally +=
-        run_test(settings, "isolation.range_admits_no_phantoms.wb", test_range_admits_no_phantoms<snapshot_wb_map_t>);
-    tally += run_test(settings, "isolation.bounds_follow_the_snapshot.avl",
-                      test_bounds_follow_the_snapshot<snapshot_avl_map_t>);
-    tally += run_test(settings, "isolation.bounds_follow_the_snapshot.wb",
-                      test_bounds_follow_the_snapshot<snapshot_wb_map_t>);
-    tally += run_test(settings, "transaction_surface.sees_its_own_writes.snapshot",
-                      []() { transaction_range_surface_sees_its_own_writes<snapshot_avl_map_t>(); });
-    tally += run_test(settings, "transaction_surface.sees_its_own_writes.serializable",
-                      []() { transaction_range_surface_sees_its_own_writes<serializable_avl_map_t>(); });
-    tally += run_test(settings, "serializable.reset_clears_a_whole_keyspace_read",
-                      serializable_reset_clears_a_whole_keyspace_read);
+    run_test_case("test_range_admits_no_phantoms<snapshot_avl_map_t>",
+                  test_range_admits_no_phantoms<snapshot_avl_map_t>);
+    run_test_case("test_range_admits_no_phantoms<snapshot_wb_map_t>", test_range_admits_no_phantoms<snapshot_wb_map_t>);
+    run_test_case("test_bounds_follow_the_snapshot<snapshot_avl_map_t>",
+                  test_bounds_follow_the_snapshot<snapshot_avl_map_t>);
+    run_test_case("test_bounds_follow_the_snapshot<snapshot_wb_map_t>",
+                  test_bounds_follow_the_snapshot<snapshot_wb_map_t>);
+    run_test_case("test_transaction_range_surface_sees_its_own_writes<snapshot_avl_map_t>",
+                  test_transaction_range_surface_sees_its_own_writes<snapshot_avl_map_t>);
+    run_test_case("test_transaction_range_surface_sees_its_own_writes<serializable_avl_map_t>",
+                  test_transaction_range_surface_sees_its_own_writes<serializable_avl_map_t>);
+    run_test_case("test_serializable_reset_clears_a_whole_keyspace_read",
+                  test_serializable_reset_clears_a_whole_keyspace_read);
 
-    tally += run_test(settings, "write_skew.separates_the_levels", test_write_skew_separates_the_levels);
-    tally += run_test(settings, "phantom.insert_refuses_the_walker", test_phantom_insert_refuses_the_walker);
-    tally += run_test(settings, "phantom.erase_refuses_the_walker", test_phantom_erase_refuses_the_walker);
-    tally += run_test(settings, "phantom.unbounded_read_refuses_any_commit", test_unbounded_read_refuses_any_commit);
-    tally += run_test(settings, "phantom.refuses_a_bounded_scan", test_phantom_refuses_a_bounded_scan);
-    tally += run_test(settings, "phantom.ordinal_window_ignores_a_commit_above_it",
-                      test_ordinal_window_ignores_a_commit_above_it);
-    tally += run_test(settings, "conflict.each_refusal_names_its_cause", test_each_refusal_names_its_cause);
-    tally += run_test(settings, "conflict.first_committer_wins.avl", test_first_committer_wins<snapshot_avl_map_t>);
-    tally += run_test(settings, "conflict.first_committer_wins.wb", test_first_committer_wins<snapshot_wb_map_t>);
-    tally += run_test(settings, "conflict.first_committer_wins.hash", test_first_committer_wins<snapshot_hash_map_t>);
-    tally +=
-        run_test(settings, "conflict.caught_after_staging.avl", test_conflict_caught_after_staging<snapshot_avl_map_t>);
-    tally += run_test(settings, "conflict.caught_after_staging.hash",
-                      test_conflict_caught_after_staging<snapshot_hash_map_t>);
-    tally += run_test(settings, "conflict.watch_refuses_lost_update.avl",
-                      test_watch_refuses_lost_update<snapshot_avl_map_t>);
-    tally += run_test(settings, "conflict.watch_refuses_lost_update.hash",
-                      test_watch_refuses_lost_update<snapshot_hash_map_t>);
-    tally += run_test(settings, "conflict.watch_records_absence.avl", test_watch_records_absence<snapshot_avl_map_t>);
-    tally += run_test(settings, "conflict.watch_records_absence.hash", test_watch_records_absence<snapshot_hash_map_t>);
-    tally += run_test(settings, "conflict.watch_spans_insert_then_erase.avl",
-                      test_watch_spans_insert_then_erase<snapshot_avl_map_t>);
-    tally += run_test(settings, "conflict.watch_spans_insert_then_erase.hash",
-                      test_watch_spans_insert_then_erase<snapshot_hash_map_t>);
-    tally +=
-        run_test(settings, "conflict.rollback_returns_writes.avl", test_rollback_returns_writes<snapshot_avl_map_t>);
-    tally +=
-        run_test(settings, "conflict.rollback_returns_writes.hash", test_rollback_returns_writes<snapshot_hash_map_t>);
-    tally += run_test(settings, "conflict.abandoned_transaction_leaves_nothing.avl",
-                      test_abandoned_transaction_leaves_nothing<snapshot_avl_map_t>);
-    tally += run_test(settings, "conflict.abandoned_transaction_leaves_nothing.hash",
-                      test_abandoned_transaction_leaves_nothing<snapshot_hash_map_t>);
+    run_test_case("test_write_skew_separates_the_levels", test_write_skew_separates_the_levels);
+    run_test_case("test_phantom_insert_refuses_the_walker", test_phantom_insert_refuses_the_walker);
+    run_test_case("test_phantom_erase_refuses_the_walker", test_phantom_erase_refuses_the_walker);
+    run_test_case("test_unbounded_read_refuses_any_commit", test_unbounded_read_refuses_any_commit);
+    run_test_case("test_phantom_refuses_a_bounded_scan", test_phantom_refuses_a_bounded_scan);
+    run_test_case("test_ordinal_window_ignores_a_commit_above_it", test_ordinal_window_ignores_a_commit_above_it);
+    run_test_case("test_each_refusal_names_its_cause", test_each_refusal_names_its_cause);
+    run_test_case("test_first_committer_wins<snapshot_avl_map_t>", test_first_committer_wins<snapshot_avl_map_t>);
+    run_test_case("test_first_committer_wins<snapshot_wb_map_t>", test_first_committer_wins<snapshot_wb_map_t>);
+    run_test_case("test_first_committer_wins<snapshot_hash_map_t>", test_first_committer_wins<snapshot_hash_map_t>);
+    run_test_case("test_conflict_caught_after_staging<snapshot_avl_map_t>",
+                  test_conflict_caught_after_staging<snapshot_avl_map_t>);
+    run_test_case("test_conflict_caught_after_staging<snapshot_hash_map_t>",
+                  test_conflict_caught_after_staging<snapshot_hash_map_t>);
+    run_test_case("test_watch_refuses_lost_update<snapshot_avl_map_t>",
+                  test_watch_refuses_lost_update<snapshot_avl_map_t>);
+    run_test_case("test_watch_refuses_lost_update<snapshot_hash_map_t>",
+                  test_watch_refuses_lost_update<snapshot_hash_map_t>);
+    run_test_case("test_watch_records_absence<snapshot_avl_map_t>", test_watch_records_absence<snapshot_avl_map_t>);
+    run_test_case("test_watch_records_absence<snapshot_hash_map_t>", test_watch_records_absence<snapshot_hash_map_t>);
+    run_test_case("test_watch_spans_insert_then_erase<snapshot_avl_map_t>",
+                  test_watch_spans_insert_then_erase<snapshot_avl_map_t>);
+    run_test_case("test_watch_spans_insert_then_erase<snapshot_hash_map_t>",
+                  test_watch_spans_insert_then_erase<snapshot_hash_map_t>);
+    run_test_case("test_rollback_returns_writes<snapshot_avl_map_t>", test_rollback_returns_writes<snapshot_avl_map_t>);
+    run_test_case("test_rollback_returns_writes<snapshot_hash_map_t>",
+                  test_rollback_returns_writes<snapshot_hash_map_t>);
+    run_test_case("test_abandoned_transaction_leaves_nothing<snapshot_avl_map_t>",
+                  test_abandoned_transaction_leaves_nothing<snapshot_avl_map_t>);
+    run_test_case("test_abandoned_transaction_leaves_nothing<snapshot_hash_map_t>",
+                  test_abandoned_transaction_leaves_nothing<snapshot_hash_map_t>);
 
-    tally +=
-        run_test(settings, "reclamation.version_tail_collapses.avl", test_version_tail_collapses<snapshot_avl_map_t>);
-    tally +=
-        run_test(settings, "reclamation.version_tail_collapses.wb", test_version_tail_collapses<snapshot_wb_map_t>);
-    tally +=
-        run_test(settings, "reclamation.version_tail_collapses.hash", test_version_tail_collapses<snapshot_hash_map_t>);
-    tally += run_test(settings, "reclamation.open_transaction_pins_versions.avl",
-                      test_open_transaction_pins_versions<snapshot_avl_map_t>);
-    tally += run_test(settings, "reclamation.open_transaction_pins_versions.wb",
-                      test_open_transaction_pins_versions<snapshot_wb_map_t>);
-    tally += run_test(settings, "reclamation.open_transaction_pins_versions.hash",
-                      test_open_transaction_pins_versions<snapshot_hash_map_t>);
-    tally += run_test(settings, "reclamation.tombstones_are_reclaimed.avl",
-                      test_tombstones_are_reclaimed<snapshot_avl_map_t>);
-    tally += run_test(settings, "reclamation.tombstones_are_reclaimed.hash",
-                      test_tombstones_are_reclaimed<snapshot_hash_map_t>);
-    tally += run_test(settings, "reclamation.erase_with_nothing_open_costs_nothing.avl",
-                      test_erase_with_nothing_open_costs_nothing<snapshot_avl_map_t>);
-    tally += run_test(settings, "reclamation.erase_with_nothing_open_costs_nothing.hash",
-                      test_erase_with_nothing_open_costs_nothing<snapshot_hash_map_t>);
-    tally += run_test(settings, "reclamation.direct_writes_prune_themselves.avl",
-                      test_direct_writes_prune_themselves<snapshot_avl_map_t>);
-    tally += run_test(settings, "reclamation.direct_writes_prune_themselves.hash",
-                      test_direct_writes_prune_themselves<snapshot_hash_map_t>);
-    tally += run_test(settings, "reclamation.pruning_spares_staged_versions.avl",
-                      test_pruning_spares_staged_versions<snapshot_avl_map_t>);
-    tally += run_test(settings, "reclamation.pruning_spares_staged_versions.hash",
-                      test_pruning_spares_staged_versions<snapshot_hash_map_t>);
-    tally += run_test(settings, "reclamation.bulk_sweep_keeps_every_reader_whole.avl",
-                      test_bulk_sweep_keeps_every_reader_whole<snapshot_avl_map_t>);
-    tally += run_test(settings, "reclamation.bulk_sweep_keeps_every_reader_whole.wb",
-                      test_bulk_sweep_keeps_every_reader_whole<snapshot_wb_map_t>);
-    tally += run_test(settings, "reclamation.bulk_sweep_keeps_every_reader_whole.hash",
-                      test_bulk_sweep_keeps_every_reader_whole<snapshot_hash_map_t>);
+    run_test_case("test_version_tail_collapses<snapshot_avl_map_t>", test_version_tail_collapses<snapshot_avl_map_t>);
+    run_test_case("test_version_tail_collapses<snapshot_wb_map_t>", test_version_tail_collapses<snapshot_wb_map_t>);
+    run_test_case("test_version_tail_collapses<snapshot_hash_map_t>", test_version_tail_collapses<snapshot_hash_map_t>);
+    run_test_case("test_open_transaction_pins_versions<snapshot_avl_map_t>",
+                  test_open_transaction_pins_versions<snapshot_avl_map_t>);
+    run_test_case("test_open_transaction_pins_versions<snapshot_wb_map_t>",
+                  test_open_transaction_pins_versions<snapshot_wb_map_t>);
+    run_test_case("test_open_transaction_pins_versions<snapshot_hash_map_t>",
+                  test_open_transaction_pins_versions<snapshot_hash_map_t>);
+    run_test_case("test_tombstones_are_reclaimed<snapshot_avl_map_t>",
+                  test_tombstones_are_reclaimed<snapshot_avl_map_t>);
+    run_test_case("test_tombstones_are_reclaimed<snapshot_hash_map_t>",
+                  test_tombstones_are_reclaimed<snapshot_hash_map_t>);
+    run_test_case("test_erase_with_nothing_open_costs_nothing<snapshot_avl_map_t>",
+                  test_erase_with_nothing_open_costs_nothing<snapshot_avl_map_t>);
+    run_test_case("test_erase_with_nothing_open_costs_nothing<snapshot_hash_map_t>",
+                  test_erase_with_nothing_open_costs_nothing<snapshot_hash_map_t>);
+    run_test_case("test_direct_writes_prune_themselves<snapshot_avl_map_t>",
+                  test_direct_writes_prune_themselves<snapshot_avl_map_t>);
+    run_test_case("test_direct_writes_prune_themselves<snapshot_hash_map_t>",
+                  test_direct_writes_prune_themselves<snapshot_hash_map_t>);
+    run_test_case("test_pruning_spares_staged_versions<snapshot_avl_map_t>",
+                  test_pruning_spares_staged_versions<snapshot_avl_map_t>);
+    run_test_case("test_pruning_spares_staged_versions<snapshot_hash_map_t>",
+                  test_pruning_spares_staged_versions<snapshot_hash_map_t>);
+    run_test_case("test_bulk_sweep_keeps_every_reader_whole<snapshot_avl_map_t>",
+                  test_bulk_sweep_keeps_every_reader_whole<snapshot_avl_map_t>);
+    run_test_case("test_bulk_sweep_keeps_every_reader_whole<snapshot_wb_map_t>",
+                  test_bulk_sweep_keeps_every_reader_whole<snapshot_wb_map_t>);
+    run_test_case("test_bulk_sweep_keeps_every_reader_whole<snapshot_hash_map_t>",
+                  test_bulk_sweep_keeps_every_reader_whole<snapshot_hash_map_t>);
 
-    tally += run_test(settings, "reclamation.low_water_mark_tracks_the_oldest_reader.avl",
-                      test_low_water_mark_tracks_the_oldest_reader<snapshot_avl_map_t>);
-    tally += run_test(settings, "reclamation.low_water_mark_tracks_the_oldest_reader.hash",
-                      test_low_water_mark_tracks_the_oldest_reader<snapshot_hash_map_t>);
-    tally += run_test(settings, "reclamation.rolling_readers_keep_reclamation_moving.avl",
-                      test_rolling_readers_keep_reclamation_moving<snapshot_avl_map_t>);
-    tally += run_test(settings, "reclamation.rolling_readers_keep_reclamation_moving.hash",
-                      test_rolling_readers_keep_reclamation_moving<snapshot_hash_map_t>);
-    tally += run_test(settings, "reclamation.long_lived_reader_holds_its_own_snapshot.avl",
-                      test_long_lived_reader_holds_its_own_snapshot<snapshot_avl_map_t>);
-    tally += run_test(settings, "reclamation.long_lived_reader_holds_its_own_snapshot.hash",
-                      test_long_lived_reader_holds_its_own_snapshot<snapshot_hash_map_t>);
+    run_test_case("test_low_water_mark_tracks_the_oldest_reader<snapshot_avl_map_t>",
+                  test_low_water_mark_tracks_the_oldest_reader<snapshot_avl_map_t>);
+    run_test_case("test_low_water_mark_tracks_the_oldest_reader<snapshot_hash_map_t>",
+                  test_low_water_mark_tracks_the_oldest_reader<snapshot_hash_map_t>);
+    run_test_case("test_rolling_readers_keep_reclamation_moving<snapshot_avl_map_t>",
+                  test_rolling_readers_keep_reclamation_moving<snapshot_avl_map_t>);
+    run_test_case("test_rolling_readers_keep_reclamation_moving<snapshot_hash_map_t>",
+                  test_rolling_readers_keep_reclamation_moving<snapshot_hash_map_t>);
+    run_test_case("test_long_lived_reader_holds_its_own_snapshot<snapshot_avl_map_t>",
+                  test_long_lived_reader_holds_its_own_snapshot<snapshot_avl_map_t>);
+    run_test_case("test_long_lived_reader_holds_its_own_snapshot<snapshot_hash_map_t>",
+                  test_long_lived_reader_holds_its_own_snapshot<snapshot_hash_map_t>);
 
-    tally += run_test(settings, "point.insert_strategies.avl", test_point_insert_strategies<snapshot_avl_map_t>);
-    tally += run_test(settings, "point.insert_strategies.hash", test_point_insert_strategies<snapshot_hash_map_t>);
-    tally +=
-        run_test(settings, "cursor.yields_each_key_once.avl", test_cursor_yields_each_key_once<snapshot_avl_map_t>);
-    tally += run_test(settings, "cursor.yields_each_key_once.wb", test_cursor_yields_each_key_once<snapshot_wb_map_t>);
-    tally += run_test(settings, "cursor.transaction_range_is_sorted.avl",
-                      test_transaction_range_is_sorted<snapshot_avl_map_t>);
-    tally += run_test(settings, "cursor.transaction_range_is_sorted.wb",
-                      test_transaction_range_is_sorted<snapshot_wb_map_t>);
+    run_test_case("test_point_insert_strategies<snapshot_avl_map_t>", test_point_insert_strategies<snapshot_avl_map_t>);
+    run_test_case("test_point_insert_strategies<snapshot_hash_map_t>",
+                  test_point_insert_strategies<snapshot_hash_map_t>);
+    run_test_case("test_cursor_yields_each_key_once<snapshot_avl_map_t>",
+                  test_cursor_yields_each_key_once<snapshot_avl_map_t>);
+    run_test_case("test_cursor_yields_each_key_once<snapshot_wb_map_t>",
+                  test_cursor_yields_each_key_once<snapshot_wb_map_t>);
+    run_test_case("test_transaction_range_is_sorted<snapshot_avl_map_t>",
+                  test_transaction_range_is_sorted<snapshot_avl_map_t>);
+    run_test_case("test_transaction_range_is_sorted<snapshot_wb_map_t>",
+                  test_transaction_range_is_sorted<snapshot_wb_map_t>);
 
-    tally +=
-        run_test(settings, "publication.all_or_nothing.avl", test_publication_is_all_or_nothing<snapshot_avl_map_t>);
-    tally +=
-        run_test(settings, "publication.all_or_nothing.hash", test_publication_is_all_or_nothing<snapshot_hash_map_t>);
-    tally += run_test(settings, "publication.erases_and_discards.avl",
-                      test_publication_erases_and_discards<snapshot_avl_map_t>);
-    tally += run_test(settings, "publication.erases_and_discards.hash",
-                      test_publication_erases_and_discards<snapshot_hash_map_t>);
-    tally += run_test(settings, "publication.clear_refuses_open_readers.avl",
-                      test_clear_refuses_open_readers<snapshot_avl_map_t>);
-    tally += run_test(settings, "publication.clear_refuses_open_readers.hash",
-                      test_clear_refuses_open_readers<snapshot_hash_map_t>);
+    run_test_case("test_publication_is_all_or_nothing<snapshot_avl_map_t>",
+                  test_publication_is_all_or_nothing<snapshot_avl_map_t>);
+    run_test_case("test_publication_is_all_or_nothing<snapshot_hash_map_t>",
+                  test_publication_is_all_or_nothing<snapshot_hash_map_t>);
+    run_test_case("test_publication_erases_and_discards<snapshot_avl_map_t>",
+                  test_publication_erases_and_discards<snapshot_avl_map_t>);
+    run_test_case("test_publication_erases_and_discards<snapshot_hash_map_t>",
+                  test_publication_erases_and_discards<snapshot_hash_map_t>);
+    run_test_case("test_clear_refuses_open_readers<snapshot_avl_map_t>",
+                  test_clear_refuses_open_readers<snapshot_avl_map_t>);
+    run_test_case("test_clear_refuses_open_readers<snapshot_hash_map_t>",
+                  test_clear_refuses_open_readers<snapshot_hash_map_t>);
 
-    tally += run_test(settings, "range.equal_range_collapses_to_find.avl",
-                      test_equal_range_collapses_to_find<snapshot_avl_map_t>);
-    tally += run_test(settings, "range.equal_range_collapses_to_find.hash",
-                      test_equal_range_collapses_to_find<snapshot_hash_map_t>);
-    tally += run_test(settings, "range.erase_range_is_all_or_nothing.avl",
-                      test_erase_range_is_all_or_nothing<snapshot_avl_map_t>);
-    tally += run_test(settings, "range.erase_range_is_all_or_nothing.wb",
-                      test_erase_range_is_all_or_nothing<snapshot_wb_map_t>);
-    tally += run_test(settings, "range.erase_from_includes_its_bound.avl",
-                      test_erase_from_includes_its_bound<snapshot_avl_map_t>);
-    tally += run_test(settings, "range.erase_from_includes_its_bound.wb",
-                      test_erase_from_includes_its_bound<snapshot_wb_map_t>);
-    tally += run_test(settings, "range.erase_from_includes_its_bound.monotonic",
-                      test_erase_from_includes_its_bound<monotonic_avl_map_t>);
-    tally += run_test(settings, "range.erase_from_includes_its_bound.reference",
-                      test_erase_from_includes_its_bound<reference_avl_map_t>);
-    tally += run_test(settings, "range.erase_up_to_excludes_its_bound.avl",
-                      test_erase_up_to_excludes_its_bound<snapshot_avl_map_t>);
-    tally += run_test(settings, "range.erase_up_to_excludes_its_bound.wb",
-                      test_erase_up_to_excludes_its_bound<snapshot_wb_map_t>);
-    tally += run_test(settings, "range.erase_up_to_excludes_its_bound.monotonic",
-                      test_erase_up_to_excludes_its_bound<monotonic_avl_map_t>);
-    tally += run_test(settings, "range.erase_up_to_excludes_its_bound.reference",
-                      test_erase_up_to_excludes_its_bound<reference_avl_map_t>);
-    tally += run_test(settings, "modifiers.insert_if_missing_reports_outcome.avl",
-                      test_insert_if_missing_reports_outcome<snapshot_avl_map_t>);
-    tally += run_test(settings, "modifiers.insert_if_missing_reports_outcome.hash",
-                      test_insert_if_missing_reports_outcome<snapshot_hash_map_t>);
-    tally += run_test(settings, "modifiers.insert_if_missing_reports_outcome.monotonic",
-                      test_insert_if_missing_reports_outcome<monotonic_avl_map_t>);
-    tally += run_test(settings, "modifiers.insert_if_missing_reports_outcome.reference",
-                      test_insert_if_missing_reports_outcome<reference_avl_map_t>);
-    tally += run_test(settings, "range.update_range_leaves_readers_alone.avl",
-                      test_update_range_leaves_readers_alone<snapshot_avl_map_t>);
-    tally += run_test(settings, "range.update_range_leaves_readers_alone.wb",
-                      test_update_range_leaves_readers_alone<snapshot_wb_map_t>);
-    tally += run_test(settings, "range.bounded_vacuum_sweeps_whole_runs.avl",
-                      test_bounded_vacuum_sweeps_whole_runs<snapshot_avl_map_t>);
-    tally += run_test(settings, "range.bounded_vacuum_sweeps_whole_runs.wb",
-                      test_bounded_vacuum_sweeps_whole_runs<snapshot_wb_map_t>);
-    tally += run_test(settings, "range.sample_reservoir_draws_visible_keys.avl",
-                      test_sample_reservoir_draws_visible_keys<snapshot_avl_map_t>);
-    tally += run_test(settings, "range.sample_reservoir_draws_visible_keys.wb",
-                      test_sample_reservoir_draws_visible_keys<snapshot_wb_map_t>);
-    tally += run_test(settings, "range.bulk_modifiers_commit_together.avl",
-                      test_bulk_modifiers_commit_together<snapshot_avl_map_t>);
-    tally += run_test(settings, "range.bulk_modifiers_commit_together.hash",
-                      test_bulk_modifiers_commit_together<snapshot_hash_map_t>);
+    run_test_case("test_equal_range_collapses_to_find<snapshot_avl_map_t>",
+                  test_equal_range_collapses_to_find<snapshot_avl_map_t>);
+    run_test_case("test_equal_range_collapses_to_find<snapshot_hash_map_t>",
+                  test_equal_range_collapses_to_find<snapshot_hash_map_t>);
+    run_test_case("test_erase_range_is_all_or_nothing<snapshot_avl_map_t>",
+                  test_erase_range_is_all_or_nothing<snapshot_avl_map_t>);
+    run_test_case("test_erase_range_is_all_or_nothing<snapshot_wb_map_t>",
+                  test_erase_range_is_all_or_nothing<snapshot_wb_map_t>);
+    run_test_case("test_erase_from_includes_its_bound<snapshot_avl_map_t>",
+                  test_erase_from_includes_its_bound<snapshot_avl_map_t>);
+    run_test_case("test_erase_from_includes_its_bound<snapshot_wb_map_t>",
+                  test_erase_from_includes_its_bound<snapshot_wb_map_t>);
+    run_test_case("test_erase_from_includes_its_bound<monotonic_avl_map_t>",
+                  test_erase_from_includes_its_bound<monotonic_avl_map_t>);
+    run_test_case("test_erase_from_includes_its_bound<reference_avl_map_t>",
+                  test_erase_from_includes_its_bound<reference_avl_map_t>);
+    run_test_case("test_erase_up_to_excludes_its_bound<snapshot_avl_map_t>",
+                  test_erase_up_to_excludes_its_bound<snapshot_avl_map_t>);
+    run_test_case("test_erase_up_to_excludes_its_bound<snapshot_wb_map_t>",
+                  test_erase_up_to_excludes_its_bound<snapshot_wb_map_t>);
+    run_test_case("test_erase_up_to_excludes_its_bound<monotonic_avl_map_t>",
+                  test_erase_up_to_excludes_its_bound<monotonic_avl_map_t>);
+    run_test_case("test_erase_up_to_excludes_its_bound<reference_avl_map_t>",
+                  test_erase_up_to_excludes_its_bound<reference_avl_map_t>);
+    run_test_case("test_insert_if_missing_reports_outcome<snapshot_avl_map_t>",
+                  test_insert_if_missing_reports_outcome<snapshot_avl_map_t>);
+    run_test_case("test_insert_if_missing_reports_outcome<snapshot_hash_map_t>",
+                  test_insert_if_missing_reports_outcome<snapshot_hash_map_t>);
+    run_test_case("test_insert_if_missing_reports_outcome<monotonic_avl_map_t>",
+                  test_insert_if_missing_reports_outcome<monotonic_avl_map_t>);
+    run_test_case("test_insert_if_missing_reports_outcome<reference_avl_map_t>",
+                  test_insert_if_missing_reports_outcome<reference_avl_map_t>);
+    run_test_case("test_update_range_leaves_readers_alone<snapshot_avl_map_t>",
+                  test_update_range_leaves_readers_alone<snapshot_avl_map_t>);
+    run_test_case("test_update_range_leaves_readers_alone<snapshot_wb_map_t>",
+                  test_update_range_leaves_readers_alone<snapshot_wb_map_t>);
+    run_test_case("test_bounded_vacuum_sweeps_whole_runs<snapshot_avl_map_t>",
+                  test_bounded_vacuum_sweeps_whole_runs<snapshot_avl_map_t>);
+    run_test_case("test_bounded_vacuum_sweeps_whole_runs<snapshot_wb_map_t>",
+                  test_bounded_vacuum_sweeps_whole_runs<snapshot_wb_map_t>);
+    run_test_case("test_sample_reservoir_draws_visible_keys<snapshot_avl_map_t>",
+                  test_sample_reservoir_draws_visible_keys<snapshot_avl_map_t>);
+    run_test_case("test_sample_reservoir_draws_visible_keys<snapshot_wb_map_t>",
+                  test_sample_reservoir_draws_visible_keys<snapshot_wb_map_t>);
+    run_test_case("test_bulk_modifiers_commit_together<snapshot_avl_map_t>",
+                  test_bulk_modifiers_commit_together<snapshot_avl_map_t>);
+    run_test_case("test_bulk_modifiers_commit_together<snapshot_hash_map_t>",
+                  test_bulk_modifiers_commit_together<snapshot_hash_map_t>);
 
-    tally += run_test(settings, "order.statistics_match_the_walk.wb",
-                      test_order_statistics_match_the_walk<snapshot_wb_map_t>);
-    tally += run_test(settings, "order.statistics_cost_a_logarithm", test_order_statistics_cost_a_logarithm);
-    tally += run_test(settings, "order.transaction_statistics_merge.avl",
-                      test_transaction_order_statistics_merge<snapshot_avl_map_t>);
-    tally += run_test(settings, "order.transaction_statistics_merge.wb",
-                      test_transaction_order_statistics_merge<snapshot_wb_map_t>);
-    tally += run_test(settings, "order.ranked_size_tracks_every_write", test_ranked_size_tracks_every_write);
+    run_test_case("test_order_statistics_match_the_walk<snapshot_wb_map_t>",
+                  test_order_statistics_match_the_walk<snapshot_wb_map_t>);
+    run_test_case("test_order_statistics_cost_a_logarithm", test_order_statistics_cost_a_logarithm);
+    run_test_case("test_transaction_order_statistics_merge<snapshot_avl_map_t>",
+                  test_transaction_order_statistics_merge<snapshot_avl_map_t>);
+    run_test_case("test_transaction_order_statistics_merge<snapshot_wb_map_t>",
+                  test_transaction_order_statistics_merge<snapshot_wb_map_t>);
+    run_test_case("test_ranked_size_tracks_every_write", test_ranked_size_tracks_every_write);
 
-    tally += run_test(settings, "point.heavy_keys_round_trip", test_heavy_keys_round_trip);
-    tally += run_test(settings, "point.group_spans_both_stores", test_group_spans_both_stores);
+    run_test_case("test_heavy_keys_round_trip", test_heavy_keys_round_trip);
+    run_test_case("test_group_spans_both_stores", test_group_spans_both_stores);
 
-    // The shared suite decides what to assert from `isolation_k`. Running it here is what compiles and
-    // exercises its snapshot arms - every other container in the tree takes the weaker one.
-    tally += run_test(settings, "transactional_consistency.lost_update_matches_isolation.snapshot",
-                      test_lost_update_matches_isolation<snapshot_avl_map_t>);
-    tally += run_test(settings, "transactional_consistency.lost_update_matches_isolation.serializable",
-                      test_lost_update_matches_isolation<serializable_avl_map_t>);
-    tally += run_test(settings, "serializable.a_read_reports_what_it_could_not_record",
-                      test_a_read_reports_what_it_could_not_record);
-    tally += run_test(settings, "snapshot.an_unvalidated_read_records_nothing_to_lose",
-                      test_an_unvalidated_read_records_nothing_to_lose);
-    tally += run_test(settings, "transactional_consistency.write_skew_matches_isolation.snapshot",
-                      test_write_skew_matches_isolation<snapshot_avl_map_t>);
-    tally += run_test(settings, "transactional_consistency.write_skew_matches_isolation.serializable",
-                      test_write_skew_matches_isolation<serializable_avl_map_t>);
-    tally += run_test(settings, "transactional_consistency.read_conflict_matches_isolation.snapshot",
-                      test_read_conflict_matches_isolation<snapshot_avl_map_t>);
-    tally += run_test(settings, "transactional_consistency.read_conflict_matches_isolation.serializable",
-                      test_read_conflict_matches_isolation<serializable_avl_map_t>);
-    tally += run_test(settings, "transactional_consistency.write_skew_matches_isolation.strict",
-                      test_write_skew_matches_isolation<strict_serializable_avl_map_t>);
-    tally += run_test(settings, "transactional_consistency.read_conflict_matches_isolation.strict",
-                      test_read_conflict_matches_isolation<strict_serializable_avl_map_t>);
-    tally += run_test(settings, "transactional_consistency.repeated_read_matches_isolation.avl",
-                      test_repeated_read_matches_isolation<snapshot_avl_map_t>);
-    tally += run_test(settings, "transactional_consistency.repeated_read_matches_isolation.wb",
-                      test_repeated_read_matches_isolation<snapshot_wb_map_t>);
-    tally += run_test(settings, "transactional_consistency.repeated_read_matches_isolation.hash",
-                      test_repeated_read_matches_isolation<snapshot_hash_map_t>);
-    tally += run_test(settings, "transactional_consistency.repeated_range_matches_isolation.avl",
-                      test_repeated_range_matches_isolation<snapshot_avl_map_t>);
-    tally += run_test(settings, "transactional_consistency.repeated_range_matches_isolation.wb",
-                      test_repeated_range_matches_isolation<snapshot_wb_map_t>);
+    run_test_case("test_lost_update_matches_isolation", test_lost_update_matches_isolation);
+    run_test_case("test_serializable_a_read_reports_what_it_could_not_record",
+                  test_serializable_a_read_reports_what_it_could_not_record);
+    run_test_case("test_an_unvalidated_read_records_nothing_to_lose", test_an_unvalidated_read_records_nothing_to_lose);
+    run_test_case("test_write_skew_matches_isolation", test_write_skew_matches_isolation);
+    run_test_case("test_read_conflict_matches_isolation", test_read_conflict_matches_isolation);
+    run_test_case("test_repeated_read_matches_isolation", test_repeated_read_matches_isolation);
+    run_test_case("test_repeated_range_matches_isolation", test_repeated_range_matches_isolation);
 
     // Sixteen partitions, one order. The suites above pin what a single store promises; these pin
     // that sharding it does not quietly take that promise back.
-    tally += run_test(settings, "convergence.insert_if_missing_reports_the_fresh_insert.snapshot",
-                      test_insert_if_missing_reports_the_fresh_insert<snapshot_avl_map_t>);
-    tally += run_test(settings, "convergence.insert_if_missing_reports_the_fresh_insert.monotonic",
-                      test_insert_if_missing_reports_the_fresh_insert<monotonic_avl_map_t>);
-    tally += run_test(settings, "convergence.insert_if_missing_reports_the_fresh_insert.reference",
-                      test_insert_if_missing_reports_the_fresh_insert<reference_avl_map_t>);
-    tally += run_test(settings, "convergence.update_refuses_an_absent_key.snapshot",
-                      test_update_refuses_an_absent_key<snapshot_avl_map_t>);
-    tally += run_test(settings, "convergence.update_refuses_an_absent_key.monotonic",
-                      test_update_refuses_an_absent_key<monotonic_avl_map_t>);
-    tally += run_test(settings, "convergence.update_refuses_an_absent_key.reference",
-                      test_update_refuses_an_absent_key<reference_avl_map_t>);
-    tally += run_test(settings, "convergence.smallest_opens_the_walk.snapshot",
-                      test_smallest_opens_the_walk<snapshot_avl_map_t>);
-    tally += run_test(settings, "convergence.smallest_opens_the_walk.snapshot_wb",
-                      test_smallest_opens_the_walk<snapshot_wb_map_t>);
-    tally += run_test(settings, "convergence.smallest_opens_the_walk.monotonic",
-                      test_smallest_opens_the_walk<monotonic_avl_map_t>);
-    tally += run_test(settings, "convergence.smallest_answers_at_the_readers_snapshot.snapshot",
-                      test_smallest_answers_at_the_readers_snapshot<snapshot_avl_map_t>);
-    tally += run_test(settings, "convergence.smallest_answers_at_the_readers_snapshot.monotonic",
-                      test_smallest_answers_at_the_readers_snapshot<monotonic_avl_map_t>);
-    tally += run_test(settings, "convergence.ordinals_agree_with_the_oracle.snapshot",
-                      test_ordinals_agree_with_the_oracle<snapshot_wb_map_t>);
-    tally += run_test(settings, "convergence.ordinals_agree_with_the_oracle.monotonic",
-                      test_ordinals_agree_with_the_oracle<monotonic_wb_map_t>);
-    tally += run_test(settings, "convergence.oracle_transaction_ordinals_include_staged_writes",
-                      test_oracle_transaction_ordinals_include_staged_writes);
-    tally += run_test(settings, "convergence.sample_one_draws_from_the_visible_window.snapshot",
-                      test_sample_one_draws_from_the_visible_window<snapshot_avl_map_t>);
-    tally += run_test(settings, "convergence.sample_one_draws_from_the_visible_window.wb",
-                      test_sample_one_draws_from_the_visible_window<snapshot_wb_map_t>);
-    tally += run_test(settings, "convergence.sample_one_draws_from_the_visible_window.monotonic",
-                      test_sample_one_draws_from_the_visible_window<monotonic_avl_map_t>);
-    tally += run_test(settings, "convergence.sample_one_draws_from_the_visible_window.reference",
-                      test_sample_one_draws_from_the_visible_window<reference_avl_map_t>);
+    run_test_case("test_insert_if_missing_reports_the_fresh_insert<snapshot_avl_map_t>",
+                  test_insert_if_missing_reports_the_fresh_insert<snapshot_avl_map_t>);
+    run_test_case("test_insert_if_missing_reports_the_fresh_insert<monotonic_avl_map_t>",
+                  test_insert_if_missing_reports_the_fresh_insert<monotonic_avl_map_t>);
+    run_test_case("test_insert_if_missing_reports_the_fresh_insert<reference_avl_map_t>",
+                  test_insert_if_missing_reports_the_fresh_insert<reference_avl_map_t>);
+    run_test_case("test_update_refuses_an_absent_key<snapshot_avl_map_t>",
+                  test_update_refuses_an_absent_key<snapshot_avl_map_t>);
+    run_test_case("test_update_refuses_an_absent_key<monotonic_avl_map_t>",
+                  test_update_refuses_an_absent_key<monotonic_avl_map_t>);
+    run_test_case("test_update_refuses_an_absent_key<reference_avl_map_t>",
+                  test_update_refuses_an_absent_key<reference_avl_map_t>);
+    run_test_case("test_smallest_opens_the_walk<snapshot_avl_map_t>", test_smallest_opens_the_walk<snapshot_avl_map_t>);
+    run_test_case("test_smallest_opens_the_walk<snapshot_wb_map_t>", test_smallest_opens_the_walk<snapshot_wb_map_t>);
+    run_test_case("test_smallest_opens_the_walk<monotonic_avl_map_t>",
+                  test_smallest_opens_the_walk<monotonic_avl_map_t>);
+    run_test_case("test_smallest_answers_at_the_readers_snapshot<snapshot_avl_map_t>",
+                  test_smallest_answers_at_the_readers_snapshot<snapshot_avl_map_t>);
+    run_test_case("test_smallest_answers_at_the_readers_snapshot<monotonic_avl_map_t>",
+                  test_smallest_answers_at_the_readers_snapshot<monotonic_avl_map_t>);
+    run_test_case("test_ordinals_agree_with_the_oracle<snapshot_wb_map_t>",
+                  test_ordinals_agree_with_the_oracle<snapshot_wb_map_t>);
+    run_test_case("test_ordinals_agree_with_the_oracle<monotonic_wb_map_t>",
+                  test_ordinals_agree_with_the_oracle<monotonic_wb_map_t>);
+    run_test_case("test_oracle_transaction_ordinals_include_staged_writes",
+                  test_oracle_transaction_ordinals_include_staged_writes);
+    run_test_case("test_sample_one_draws_from_the_visible_window<snapshot_avl_map_t>",
+                  test_sample_one_draws_from_the_visible_window<snapshot_avl_map_t>);
+    run_test_case("test_sample_one_draws_from_the_visible_window<snapshot_wb_map_t>",
+                  test_sample_one_draws_from_the_visible_window<snapshot_wb_map_t>);
+    run_test_case("test_sample_one_draws_from_the_visible_window<monotonic_avl_map_t>",
+                  test_sample_one_draws_from_the_visible_window<monotonic_avl_map_t>);
+    run_test_case("test_sample_one_draws_from_the_visible_window<reference_avl_map_t>",
+                  test_sample_one_draws_from_the_visible_window<reference_avl_map_t>);
 
-    tally += run_test(settings, "sharded.reader_holds_one_snapshot",
-                      test_sharded_reader_holds_one_snapshot<sharded_snapshot_map_t>);
-    tally += run_test(settings, "sharded.transaction_reads_its_own_commit",
-                      test_sharded_transaction_reads_its_own_commit<sharded_snapshot_map_t>);
-    tally += run_test(settings, "sharded.range_admits_no_phantoms",
-                      test_sharded_range_admits_no_phantoms<sharded_snapshot_map_t>);
-    tally += run_test(settings, "sharded.mark_pins_every_partition",
-                      test_sharded_mark_pins_every_partition<sharded_snapshot_map_t>);
-    tally += run_test(settings, "sharded.transactional_consistency.repeated_read",
-                      test_repeated_read_matches_isolation<sharded_snapshot_map_t>);
-    tally += run_test(settings, "sharded.transactional_consistency.repeated_range",
-                      test_repeated_range_matches_isolation<sharded_snapshot_map_t>);
-    tally += run_test(settings, "sharded.refused_commit_publishes_nothing",
-                      []() { test_refused_commit_publishes_nothing<sharded_snapshot_map_t>(); });
-    tally += run_test(settings, "sharded.commit_spans_partitions.snapshot",
-                      []() { test_commit_spans_partitions_matches_isolation<sharded_snapshot_map_t>(); });
-    tally += run_test(settings, "sharded.commit_spans_partitions.monotonic",
-                      []() { test_commit_spans_partitions_matches_isolation<sharded_monotonic_map_t>(); });
-    tally += run_test(settings, "group.publishes_under_one_stamp",
-                      test_group_publishes_under_one_stamp<locked_snapshot_map_t>);
-    tally += run_test(settings, "group.commit_with_runs_the_body",
-                      test_group_commit_with_runs_the_body<locked_snapshot_map_t>);
-    tally += run_test(settings, "group.commit_is_read_whole_across_stores",
-                      []() { test_group_commit_is_read_whole_across_stores<locked_snapshot_map_t>(); });
-    tally += run_test(settings, "group.publishes_under_one_stamp.sharded",
-                      test_group_publishes_under_one_stamp<sharded_snapshot_map_t>);
-    tally += run_test(settings, "group.commit_with_runs_the_body.sharded",
-                      test_group_commit_with_runs_the_body<sharded_snapshot_map_t>);
-    tally += run_test(settings, "group.commit_is_read_whole_across_stores.sharded",
-                      []() { test_group_commit_is_read_whole_across_stores<sharded_snapshot_map_t>(); });
+    run_test_case("test_sharded_reader_holds_one_snapshot<sharded_snapshot_map_t>",
+                  test_sharded_reader_holds_one_snapshot<sharded_snapshot_map_t>);
+    run_test_case("test_sharded_transaction_reads_its_own_commit<sharded_snapshot_map_t>",
+                  test_sharded_transaction_reads_its_own_commit<sharded_snapshot_map_t>);
+    run_test_case("test_sharded_range_admits_no_phantoms<sharded_snapshot_map_t>",
+                  test_sharded_range_admits_no_phantoms<sharded_snapshot_map_t>);
+    run_test_case("test_sharded_mark_pins_every_partition<sharded_snapshot_map_t>",
+                  test_sharded_mark_pins_every_partition<sharded_snapshot_map_t>);
+    run_test_case("test_refused_commit_publishes_nothing<sharded_snapshot_map_t>",
+                  test_refused_commit_publishes_nothing<sharded_snapshot_map_t>);
+    run_test_case("test_commit_spans_partitions_matches_isolation", test_commit_spans_partitions_matches_isolation);
+    run_test_case("test_group_publishes_under_one_stamp<locked_snapshot_map_t>",
+                  test_group_publishes_under_one_stamp<locked_snapshot_map_t>);
+    run_test_case("test_group_commit_with_runs_the_body<locked_snapshot_map_t>",
+                  test_group_commit_with_runs_the_body<locked_snapshot_map_t>);
+    run_test_case("test_group_commit_is_read_whole_across_stores<locked_snapshot_map_t>",
+                  test_group_commit_is_read_whole_across_stores<locked_snapshot_map_t>);
+    run_test_case("test_group_publishes_under_one_stamp<sharded_snapshot_map_t>",
+                  test_group_publishes_under_one_stamp<sharded_snapshot_map_t>);
+    run_test_case("test_group_commit_with_runs_the_body<sharded_snapshot_map_t>",
+                  test_group_commit_with_runs_the_body<sharded_snapshot_map_t>);
+    run_test_case("test_group_commit_is_read_whole_across_stores<sharded_snapshot_map_t>",
+                  test_group_commit_is_read_whole_across_stores<sharded_snapshot_map_t>);
 
-    tally += run_test(settings, "fuzz.writes_match_the_oracle.snapshot", [](test_context_t const &context) {
-        test_random_writes_match_the_oracle<snapshot_avl_map_t>(context);
-    });
-    tally += run_test(settings, "fuzz.writes_match_the_oracle.monotonic", [](test_context_t const &context) {
-        test_random_writes_match_the_oracle<monotonic_avl_map_t>(context);
-    });
-    tally += run_test(settings, "fuzz.writes_match_the_oracle.serializable", [](test_context_t const &context) {
-        test_random_writes_match_the_oracle<serializable_avl_map_t>(context);
-    });
-    tally += run_test(settings, "fuzz.windows_match_the_oracle.snapshot", [](test_context_t const &context) {
-        test_random_windows_match_the_oracle<snapshot_avl_map_t>(context);
-    });
-    tally += run_test(settings, "fuzz.windows_match_the_oracle.sharded_snapshot", [](test_context_t const &context) {
-        test_random_windows_match_the_oracle<sharded_snapshot_map_t>(context);
-    });
-    tally += run_test(settings, "fuzz.refused_group_publishes_nothing", [](test_context_t const &context) {
-        test_a_refused_group_publishes_nothing<grouped_snapshot_map_t, grouped_snapshot_map_t>(context);
-        test_a_refused_group_publishes_nothing<solitary_locked_snapshot_map_t, solitary_locked_snapshot_map_t>(context);
-    });
-    tally += run_test(settings, "fuzz.accepted_group_publishes_everything", [](test_context_t const &context) {
-        test_an_accepted_group_publishes_everything<grouped_snapshot_map_t, grouped_serializable_map_t>(context);
-    });
+    run_test_case("test_random_writes_match_the_oracle<snapshot_avl_map_t>",
+                  test_random_writes_match_the_oracle<snapshot_avl_map_t>);
+    run_test_case("test_random_writes_match_the_oracle<monotonic_avl_map_t>",
+                  test_random_writes_match_the_oracle<monotonic_avl_map_t>);
+    run_test_case("test_random_writes_match_the_oracle<serializable_avl_map_t>",
+                  test_random_writes_match_the_oracle<serializable_avl_map_t>);
+    run_test_case("test_random_windows_match_the_oracle<snapshot_avl_map_t>",
+                  test_random_windows_match_the_oracle<snapshot_avl_map_t>);
+    run_test_case("test_random_windows_match_the_oracle<sharded_snapshot_map_t>",
+                  test_random_windows_match_the_oracle<sharded_snapshot_map_t>);
+    run_test_case("test_a_refused_group_publishes_nothing<grouped_snapshot_map_t, grouped_snapshot_map_t>",
+                  test_a_refused_group_publishes_nothing<grouped_snapshot_map_t, grouped_snapshot_map_t>);
+    run_test_case(
+        "test_a_refused_group_publishes_nothing<solitary_locked_snapshot_map_t, solitary_locked_snapshot_map_t>",
+        test_a_refused_group_publishes_nothing<solitary_locked_snapshot_map_t, solitary_locked_snapshot_map_t>);
+    run_test_case("test_an_accepted_group_publishes_everything<grouped_snapshot_map_t, grouped_serializable_map_t>",
+                  test_an_accepted_group_publishes_everything<grouped_snapshot_map_t, grouped_serializable_map_t>);
 
-    tally += run_test(settings, "commit_stamp.follows_commit_order.snapshot",
-                      test_commit_stamp_follows_commit_order<snapshot_avl_map_t>);
-    tally += run_test(settings, "commit_stamp.follows_commit_order.strict",
-                      test_commit_stamp_follows_commit_order<strict_serializable_avl_map_t>);
-    tally += run_test(settings, "commit_stamp.follows_commit_order.sharded_snapshot",
-                      test_commit_stamp_follows_commit_order<sharded_snapshot_map_t>);
-    tally += run_test(settings, "commit_stamp.follows_commit_order.sharded_strict",
-                      test_commit_stamp_follows_commit_order<sharded_strict_map_t>);
+    run_test_case("test_commit_stamp_follows_commit_order<snapshot_avl_map_t>",
+                  test_commit_stamp_follows_commit_order<snapshot_avl_map_t>);
+    run_test_case("test_commit_stamp_follows_commit_order<strict_serializable_avl_map_t>",
+                  test_commit_stamp_follows_commit_order<strict_serializable_avl_map_t>);
+    run_test_case("test_commit_stamp_follows_commit_order<sharded_snapshot_map_t>",
+                  test_commit_stamp_follows_commit_order<sharded_snapshot_map_t>);
+    run_test_case("test_commit_stamp_follows_commit_order<sharded_strict_map_t>",
+                  test_commit_stamp_follows_commit_order<sharded_strict_map_t>);
 
-    tally += run_test(settings, "reader.holds_its_stamp.snapshot", test_reader_holds_its_stamp<snapshot_avl_map_t>);
-    tally += run_test(settings, "reader.holds_its_stamp.sharded_snapshot",
-                      test_reader_holds_its_stamp<sharded_snapshot_map_t>);
-    tally +=
-        run_test(settings, "reader.holds_its_stamp.strict", test_reader_holds_its_stamp<strict_serializable_avl_map_t>);
-    tally +=
-        run_test(settings, "reader.holds_its_stamp.sharded_strict", test_reader_holds_its_stamp<sharded_strict_map_t>);
-    tally += run_test(settings, "reader.walks_from_a_bound_to_the_end.sharded_snapshot",
-                      test_reader_walks_from_a_bound_to_the_end<sharded_snapshot_map_t>);
-    tally += run_test(settings, "reader.serves_threads_without_a_lock.sharded_snapshot",
-                      []() { test_reader_serves_threads_without_a_lock<sharded_snapshot_map_t>(); });
-    tally += run_test(settings, "reader.serves_threads_without_a_lock.sharded_strict",
-                      []() { test_reader_serves_threads_without_a_lock<sharded_strict_map_t>(); });
+    run_test_case("test_reader_holds_its_stamp<snapshot_avl_map_t>", test_reader_holds_its_stamp<snapshot_avl_map_t>);
+    run_test_case("test_reader_holds_its_stamp<sharded_snapshot_map_t>",
+                  test_reader_holds_its_stamp<sharded_snapshot_map_t>);
+    run_test_case("test_reader_holds_its_stamp<strict_serializable_avl_map_t>",
+                  test_reader_holds_its_stamp<strict_serializable_avl_map_t>);
+    run_test_case("test_reader_holds_its_stamp<sharded_strict_map_t>",
+                  test_reader_holds_its_stamp<sharded_strict_map_t>);
+    run_test_case("test_reader_walks_from_a_bound_to_the_end<sharded_snapshot_map_t>",
+                  test_reader_walks_from_a_bound_to_the_end<sharded_snapshot_map_t>);
+    run_test_case("test_reader_serves_threads_without_a_lock<sharded_snapshot_map_t>",
+                  test_reader_serves_threads_without_a_lock<sharded_snapshot_map_t>);
+    run_test_case("test_reader_serves_threads_without_a_lock<sharded_strict_map_t>",
+                  test_reader_serves_threads_without_a_lock<sharded_strict_map_t>);
 
-    tally += run_test(settings, "adoption.is_validated.snapshot", test_adopted_stamp_is_validated<snapshot_avl_map_t>);
-    tally += run_test(settings, "adoption.is_validated.serializable",
-                      test_adopted_stamp_is_validated<serializable_avl_map_t>);
-    tally += run_test(settings, "adoption.is_validated.strict",
-                      test_adopted_stamp_is_validated<strict_serializable_avl_map_t>);
-    tally += run_test(settings, "adoption.is_validated.sharded_snapshot",
-                      test_adopted_stamp_is_validated<sharded_snapshot_map_t>);
-    tally += run_test(settings, "adoption.is_validated.sharded_strict",
-                      test_adopted_stamp_is_validated<sharded_strict_map_t>);
-    tally += run_test(settings, "adoption.outlives_the_reader.snapshot",
-                      test_adoption_outlives_the_reader<snapshot_avl_map_t>);
-    tally += run_test(settings, "adoption.outlives_the_reader.serializable",
-                      test_adoption_outlives_the_reader<serializable_avl_map_t>);
-    tally += run_test(settings, "adoption.outlives_the_reader.strict",
-                      test_adoption_outlives_the_reader<strict_serializable_avl_map_t>);
-    tally += run_test(settings, "adoption.outlives_the_reader.sharded_snapshot",
-                      test_adoption_outlives_the_reader<sharded_snapshot_map_t>);
-    tally += run_test(settings, "adoption.outlives_the_reader.sharded_strict",
-                      test_adoption_outlives_the_reader<sharded_strict_map_t>);
+    run_test_case("test_adopted_stamp_is_validated<snapshot_avl_map_t>",
+                  test_adopted_stamp_is_validated<snapshot_avl_map_t>);
+    run_test_case("test_adopted_stamp_is_validated<serializable_avl_map_t>",
+                  test_adopted_stamp_is_validated<serializable_avl_map_t>);
+    run_test_case("test_adopted_stamp_is_validated<strict_serializable_avl_map_t>",
+                  test_adopted_stamp_is_validated<strict_serializable_avl_map_t>);
+    run_test_case("test_adopted_stamp_is_validated<sharded_snapshot_map_t>",
+                  test_adopted_stamp_is_validated<sharded_snapshot_map_t>);
+    run_test_case("test_adopted_stamp_is_validated<sharded_strict_map_t>",
+                  test_adopted_stamp_is_validated<sharded_strict_map_t>);
+    run_test_case("test_adoption_outlives_the_reader<snapshot_avl_map_t>",
+                  test_adoption_outlives_the_reader<snapshot_avl_map_t>);
+    run_test_case("test_adoption_outlives_the_reader<serializable_avl_map_t>",
+                  test_adoption_outlives_the_reader<serializable_avl_map_t>);
+    run_test_case("test_adoption_outlives_the_reader<strict_serializable_avl_map_t>",
+                  test_adoption_outlives_the_reader<strict_serializable_avl_map_t>);
+    run_test_case("test_adoption_outlives_the_reader<sharded_snapshot_map_t>",
+                  test_adoption_outlives_the_reader<sharded_snapshot_map_t>);
+    run_test_case("test_adoption_outlives_the_reader<sharded_strict_map_t>",
+                  test_adoption_outlives_the_reader<sharded_strict_map_t>);
 
-    tally += run_test(settings, "pagination.ignores_commits_past_its_last_key.snapshot",
-                      test_page_ignores_commits_past_its_last_key<snapshot_avl_map_t>);
-    tally += run_test(settings, "pagination.ignores_commits_past_its_last_key.serializable",
-                      test_page_ignores_commits_past_its_last_key<serializable_avl_map_t>);
-    tally += run_test(settings, "pagination.ignores_commits_past_its_last_key.strict",
-                      test_page_ignores_commits_past_its_last_key<strict_serializable_avl_map_t>);
-    tally += run_test(settings, "pagination.ignores_commits_past_its_last_key.sharded_snapshot",
-                      test_page_ignores_commits_past_its_last_key<sharded_snapshot_map_t>);
-    tally += run_test(settings, "pagination.ignores_commits_past_its_last_key.sharded_strict",
-                      test_page_ignores_commits_past_its_last_key<sharded_strict_map_t>);
+    run_test_case("test_page_ignores_commits_past_its_last_key<snapshot_avl_map_t>",
+                  test_page_ignores_commits_past_its_last_key<snapshot_avl_map_t>);
+    run_test_case("test_page_ignores_commits_past_its_last_key<serializable_avl_map_t>",
+                  test_page_ignores_commits_past_its_last_key<serializable_avl_map_t>);
+    run_test_case("test_page_ignores_commits_past_its_last_key<strict_serializable_avl_map_t>",
+                  test_page_ignores_commits_past_its_last_key<strict_serializable_avl_map_t>);
+    run_test_case("test_page_ignores_commits_past_its_last_key<sharded_snapshot_map_t>",
+                  test_page_ignores_commits_past_its_last_key<sharded_snapshot_map_t>);
+    run_test_case("test_page_ignores_commits_past_its_last_key<sharded_strict_map_t>",
+                  test_page_ignores_commits_past_its_last_key<sharded_strict_map_t>);
 
-    tally += run_test(settings, "version_walk.matches_the_commit_log.avl", [](test_context_t const &context) {
-        test_version_walk_matches_the_commit_log<snapshot_avl_map_t>(context);
-    });
-    tally += run_test(settings, "version_walk.matches_the_commit_log.wb", [](test_context_t const &context) {
-        test_version_walk_matches_the_commit_log<snapshot_wb_map_t>(context);
-    });
-    tally +=
-        run_test(settings, "version_walk.matches_the_commit_log.sharded_snapshot", [](test_context_t const &context) {
-            test_version_walk_matches_the_commit_log<sharded_snapshot_map_t>(context);
-        });
+    run_test_case("test_version_walk_matches_the_commit_log<snapshot_avl_map_t>",
+                  test_version_walk_matches_the_commit_log<snapshot_avl_map_t>);
+    run_test_case("test_version_walk_matches_the_commit_log<snapshot_wb_map_t>",
+                  test_version_walk_matches_the_commit_log<snapshot_wb_map_t>);
+    run_test_case("test_version_walk_matches_the_commit_log<sharded_snapshot_map_t>",
+                  test_version_walk_matches_the_commit_log<sharded_snapshot_map_t>);
 
-    tally += run_test(settings, "descent.reverses_the_forward_walk.avl",
-                      test_descending_range_reverses_the_forward_walk<snapshot_avl_map_t>);
-    tally += run_test(settings, "descent.reverses_the_forward_walk.wb",
-                      test_descending_range_reverses_the_forward_walk<snapshot_wb_map_t>);
-    tally += run_test(settings, "descent.reverses_the_forward_walk.serializable",
-                      test_descending_range_reverses_the_forward_walk<serializable_avl_map_t>);
-    tally += run_test(settings, "descent.reverses_the_forward_walk.sharded_snapshot",
-                      test_descending_range_reverses_the_forward_walk<sharded_snapshot_map_t>);
-    tally += run_test(settings, "descent.reverses_the_forward_walk.locked_snapshot",
-                      test_descending_range_reverses_the_forward_walk<locked_snapshot_map_t>);
-    tally += run_test(settings, "descent.reverses_the_forward_walk.monotonic",
-                      test_descending_range_reverses_the_forward_walk<monotonic_avl_map_t>);
-    tally += run_test(settings, "descent.reverses_the_forward_walk.sharded_monotonic",
-                      test_descending_range_reverses_the_forward_walk<sharded_monotonic_map_t>);
-    tally += run_test(settings, "descent.page_records_what_it_handed_over.snapshot",
-                      test_descending_page_records_what_it_handed_over<snapshot_avl_map_t>);
-    tally += run_test(settings, "descent.page_records_what_it_handed_over.serializable",
-                      test_descending_page_records_what_it_handed_over<serializable_avl_map_t>);
-    tally += run_test(settings, "descent.page_records_what_it_handed_over.strict",
-                      test_descending_page_records_what_it_handed_over<strict_serializable_avl_map_t>);
+    run_test_case("test_descending_range_reverses_the_forward_walk<snapshot_avl_map_t>",
+                  test_descending_range_reverses_the_forward_walk<snapshot_avl_map_t>);
+    run_test_case("test_descending_range_reverses_the_forward_walk<snapshot_wb_map_t>",
+                  test_descending_range_reverses_the_forward_walk<snapshot_wb_map_t>);
+    run_test_case("test_descending_range_reverses_the_forward_walk<serializable_avl_map_t>",
+                  test_descending_range_reverses_the_forward_walk<serializable_avl_map_t>);
+    run_test_case("test_descending_range_reverses_the_forward_walk<sharded_snapshot_map_t>",
+                  test_descending_range_reverses_the_forward_walk<sharded_snapshot_map_t>);
+    run_test_case("test_descending_range_reverses_the_forward_walk<locked_snapshot_map_t>",
+                  test_descending_range_reverses_the_forward_walk<locked_snapshot_map_t>);
+    run_test_case("test_descending_range_reverses_the_forward_walk<monotonic_avl_map_t>",
+                  test_descending_range_reverses_the_forward_walk<monotonic_avl_map_t>);
+    run_test_case("test_descending_range_reverses_the_forward_walk<sharded_monotonic_map_t>",
+                  test_descending_range_reverses_the_forward_walk<sharded_monotonic_map_t>);
+    run_test_case("test_descending_page_records_what_it_handed_over<snapshot_avl_map_t>",
+                  test_descending_page_records_what_it_handed_over<snapshot_avl_map_t>);
+    run_test_case("test_descending_page_records_what_it_handed_over<serializable_avl_map_t>",
+                  test_descending_page_records_what_it_handed_over<serializable_avl_map_t>);
+    run_test_case("test_descending_page_records_what_it_handed_over<strict_serializable_avl_map_t>",
+                  test_descending_page_records_what_it_handed_over<strict_serializable_avl_map_t>);
 
-    tally += run_test(settings, "window_writes.publish_under_one_stamp.sharded_snapshot",
-                      test_window_writes_publish_under_one_stamp<sharded_snapshot_map_t>);
-    tally += run_test(settings, "window_writes.publish_under_one_stamp.sharded_strict",
-                      test_window_writes_publish_under_one_stamp<sharded_strict_map_t>);
-    tally += run_test(settings, "window_writes.never_seen_half_applied.sharded_snapshot",
-                      []() { test_window_writes_are_never_seen_half_applied<sharded_snapshot_map_t>(); });
-    tally += run_test(settings, "window_writes.never_seen_half_applied.sharded_strict",
-                      []() { test_window_writes_are_never_seen_half_applied<sharded_strict_map_t>(); });
+    run_test_case("test_window_writes_publish_under_one_stamp<sharded_snapshot_map_t>",
+                  test_window_writes_publish_under_one_stamp<sharded_snapshot_map_t>);
+    run_test_case("test_window_writes_publish_under_one_stamp<sharded_strict_map_t>",
+                  test_window_writes_publish_under_one_stamp<sharded_strict_map_t>);
+    run_test_case("test_window_writes_are_never_seen_half_applied<sharded_snapshot_map_t>",
+                  test_window_writes_are_never_seen_half_applied<sharded_snapshot_map_t>);
+    run_test_case("test_window_writes_are_never_seen_half_applied<sharded_strict_map_t>",
+                  test_window_writes_are_never_seen_half_applied<sharded_strict_map_t>);
 
-    tally += run_test(settings, "unwind.staged_transaction_under_partition_locks.sharded_snapshot",
-                      []() { test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_t>(); });
-    tally += run_test(settings, "unwind.staged_transaction_under_partition_locks.sharded_strict",
-                      []() { test_staged_transaction_unwinds_under_partition_locks<sharded_strict_map_t>(); });
+    run_test_case("test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_t>",
+                  test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_t>);
+    run_test_case("test_staged_transaction_unwinds_under_partition_locks<sharded_strict_map_t>",
+                  test_staged_transaction_unwinds_under_partition_locks<sharded_strict_map_t>);
 
-    tally += run_test(settings, "sorted_staging.equals_element_staging.snapshot",
-                      test_sorted_staging_equals_element_staging<snapshot_avl_map_t>);
-    tally += run_test(settings, "sorted_staging.equals_element_staging.wb",
-                      test_sorted_staging_equals_element_staging<snapshot_wb_map_t>);
-    tally += run_test(settings, "sorted_staging.equals_element_staging.hash",
-                      test_sorted_staging_equals_element_staging<snapshot_hash_map_t>);
-    tally += run_test(settings, "sorted_staging.compares_linearly.ranked", test_sorted_staging_compares_linearly);
-    tally += run_test(settings, "sorted_staging.partitions_equal_element_staging.sharded_snapshot",
-                      test_sorted_partitions_equal_element_staging<sharded_snapshot_map_t>);
-    tally += run_test(settings, "sorted_staging.refuses_an_unsorted_range.snapshot",
-                      test_sorted_staging_refuses_an_unsorted_range<snapshot_avl_map_t>);
+    run_test_case("test_sorted_staging_equals_element_staging<snapshot_avl_map_t>",
+                  test_sorted_staging_equals_element_staging<snapshot_avl_map_t>);
+    run_test_case("test_sorted_staging_equals_element_staging<snapshot_wb_map_t>",
+                  test_sorted_staging_equals_element_staging<snapshot_wb_map_t>);
+    run_test_case("test_sorted_staging_equals_element_staging<snapshot_hash_map_t>",
+                  test_sorted_staging_equals_element_staging<snapshot_hash_map_t>);
+    run_test_case("test_sorted_staging_compares_linearly", test_sorted_staging_compares_linearly);
+    run_test_case("test_sorted_partitions_equal_element_staging<sharded_snapshot_map_t>",
+                  test_sorted_partitions_equal_element_staging<sharded_snapshot_map_t>);
+    run_test_case("test_sorted_staging_refuses_an_unsorted_range<snapshot_avl_map_t>",
+                  test_sorted_staging_refuses_an_unsorted_range<snapshot_avl_map_t>);
 
-    return report_test_failures(settings, tally);
+    return finish_test_run();
 }

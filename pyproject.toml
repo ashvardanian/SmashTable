@@ -56,7 +56,11 @@ minversion = "8.0"
 python_files = ["*.py"]
 testpaths = ["test"]
 xfail_strict = true
-markers = ["slow: the long threading soaks; deselect with -m 'not slow'"]
+markers = [
+    "slow: the long threading soaks; deselect with -m 'not slow'",
+    "thread_unsafe(reason): runs the test on one thread under pytest-run-parallel's --parallel-threads",
+    "iterations(count): runs the test this many times under pytest-run-parallel, whatever --iterations says",
+]
 
 [tool.cibuildwheel]
 test-command = "python -X faulthandler -m pytest -x {project}/test"
@@ -72,7 +76,7 @@ target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
-extend-select = ["D", "I", "TID"]
+extend-select = ["D", "I", "PT", "TID"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
@@ -81,7 +85,9 @@ ban-relative-imports = "all"
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"!python/**" = ["D"]
+"!{python,test}/**" = ["D"]
+# Tests owe a docstring on every module-level function (D103) and nothing else from pydocstyle.
+"test/**" = ["D100", "D101", "D102", "D104", "D105", "D106", "D107", "D2", "D3", "D4"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["smashtable"]

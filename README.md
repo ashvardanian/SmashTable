@@ -790,36 +790,12 @@ It runs no __probe__, and its `SMASHTABLE_TARGET_*` macros are the __targets__, 
 ## Testing
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSMASHTABLE_BUILD_TEST=ON -DSMASHTABLE_WERROR=ON
-cmake --build build
-ctest --test-dir build --output-on-failure
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
 ```
 
-The tests and the benchmark read their settings from the environment once, and print them before the first result:
-
-| Variable                | Default    | Meaning                                                                                |
-| :---------------------- | :--------- | :------------------------------------------------------------------------------------- |
-| `SMASHTABLE_FILTER`     | unset      | ECMAScript regex over test or benchmark names, or a substring when it does not compile |
-| `SMASHTABLE_SEED`       | `42`       | Seed for every random draw, or `random` to draw one                                    |
-| `SMASHTABLE_WARMUP`     | `1s`       | Untimed run ahead of each benchmark, `<int>ms` or `<int>s`                             |
-| `SMASHTABLE_TIME_LIMIT` | `10s`      | Timed run of each benchmark, `<int>ms` or `<int>s`                                     |
-| `SMASHTABLE_ROWS`       | `4096`     | Sorted rows per row-kit benchmark                                                      |
-| `SMASHTABLE_KEYS`       | `16777216` | Sorted keys per layout benchmark                                                       |
-| `SMASHTABLE_QUERIES`    | `1048576`  | Queries drawn per benchmark, searched in turn                                          |
-
-A test filter that matches nothing fails the binary:
-
-```bash
-SMASHTABLE_FILTER=transactional_consistency ./build/smashtable_test_avl_tree
-```
-
-The benchmark is built on request and never run by CTest:
-
-```bash
-cmake -B build_release -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_BUILD_TEST=ON -DSMASHTABLE_BUILD_BENCH=ON
-cmake --build build_release
-SMASHTABLE_FILTER=layouts/u64 SMASHTABLE_TIME_LIMIT=200ms ./build_release/smashtable_bench_row_search
-```
+The [Test Suites](CONTRIBUTING.md#test-suites) section of CONTRIBUTING.md covers running the C++ and Python suites and the benchmark, the settings they read, and how a test is written.
 
 One binary per container family runs the same suites — the `std::set` store, both trees, both thread-safety wrappers, the bare hash table and the transactional stores over it — so a behavioural difference between them shows up as a failure rather than a surprise.
 
@@ -831,12 +807,6 @@ A key whose hash keeps only its group forces the long probe runs a well-spread h
 
 `isolation_k` is checked against behaviour rather than against itself.
 The shared suite branches on the level a container declares and asserts both outcomes, so a container that quietly starts snapshotting without raising its level fails just as one that claims a level it does not deliver.
-
-For the Python side:
-
-```bash
-pip install -e . --group test && pytest test/
-```
 
 ### Model Checking
 

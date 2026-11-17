@@ -18,14 +18,14 @@ Date: August 18, 2026
 
 import pytest
 from base import (
-    all_class_names,
+    ALL_CLASSES,
+    ISOLATION_LEVELS,
+    KEY_TYPES,
+    SHARING_MODES,
+    STAMPED_ISOLATION_LEVELS,
     effective_isolation,
-    isolation_levels,
-    key_types,
     make,
     populate,
-    sharing_modes,
-    stamped_isolation_levels,
 )
 
 import smashtable as st
@@ -33,25 +33,23 @@ import smashtable as st
 # region Reporting
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
-@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
-@pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", ALL_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
+@pytest.mark.parametrize("isolation", ISOLATION_LEVELS)
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_isolation_reports_the_effective_level(container, isolation, sharing):
     """The level a container delivers, which is not always the level it was asked for."""
     assert container.isolation == effective_isolation(isolation, sharing)
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", ALL_CLASSES)
 def test_the_default_is_the_stronger_sharing(container_class, key_type):
     """Sharing defaults to one lock, which is the only way snapshot survives above a single key."""
     assert make(container_class, key_type).isolation == "monotonic_atomic_view"
     assert make(container_class, key_type, isolation="snapshot").isolation == "snapshot"
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", ALL_CLASSES)
 def test_sharding_caps_a_stampless_level(container_class, key_type):
     """A monotonic reader holds no stamp, so sharding it can never promise more than Read Committed.
 
@@ -67,17 +65,15 @@ def test_sharding_caps_a_stampless_level(container_class, key_type):
 # region Refusals
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", ALL_CLASSES)
 @pytest.mark.parametrize("argument", ["isolation", "sharing"])
 def test_an_unknown_choice_is_refused(container_class, key_type, argument):
     """A misspelled level is a ValueError at construction, not a silently weaker container."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=f"{argument} must be"):
         container_class(**{"key": key_type, argument: "serialisable"})
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("container_class", ALL_CLASSES)
 @pytest.mark.parametrize("argument", ["isolation", "sharing"])
 def test_a_non_string_choice_is_refused(container_class, key_type, argument):
     """Both axes name a promise, so neither accepts anything but the names."""
@@ -90,10 +86,10 @@ def test_a_non_string_choice_is_refused(container_class, key_type, argument):
 # region Guarantees
 
 
-@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
-@pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
-@pytest.mark.parametrize("class_name", all_class_names)
-@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("container_class", ALL_CLASSES)
+@pytest.mark.parametrize("key_type", KEY_TYPES)
+@pytest.mark.parametrize("isolation", ISOLATION_LEVELS)
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_every_configuration_round_trips(container, keygen):
     """Whatever the level and the sharing, the container is still a container."""
     keys = keygen(8)
@@ -103,7 +99,6 @@ def test_every_configuration_round_trips(container, keygen):
         assert key in container
 
 
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_a_snapshot_repeats_its_reads(keygen):
     """A snapshot transaction answers every read at the instant it opened."""
     key = keygen(1)[0]
@@ -118,7 +113,6 @@ def test_a_snapshot_repeats_its_reads(keygen):
     assert view[key] == "first", "a snapshot read must not follow a later commit"
 
 
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_a_sharded_snapshot_repeats_reads_across_partitions(keygen):
     """Sharding does not cost a snapshot container its level, and the guarantee spans partitions.
 
@@ -143,7 +137,6 @@ def test_a_sharded_snapshot_repeats_reads_across_partitions(keygen):
     assert [fresh_view[key] for key in keys] == [1] * len(keys), "a later transaction sees the commits"
 
 
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_monotonic_does_not_repeat_its_reads(keygen):
     """The weaker level is allowed to see the newer value, and the contrast is the whole point.
 
@@ -175,9 +168,8 @@ def _committed_states(scanned) -> set:
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit mid-walk"
 )
-@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
-@pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("isolation", ISOLATION_LEVELS)
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_a_lazy_walk_tears_where_a_scan_cannot(keygen, isolation, sharing):
     """A walk straddling a whole-store commit reports both states; a scan answers at one of them.
 
@@ -200,9 +192,8 @@ def test_a_lazy_walk_tears_where_a_scan_cannot(keygen, isolation, sharing):
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit between the two reads"
 )
-@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
-@pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("isolation", ISOLATION_LEVELS)
+@pytest.mark.parametrize("sharing", SHARING_MODES)
 def test_a_scan_reports_one_committed_state_at_every_level(keygen, isolation, sharing):
     """Neither scan mixes two states, and the level decides which one the participant reports.
 
@@ -217,7 +208,7 @@ def test_a_scan_reports_one_committed_state_at_every_level(keygen, isolation, sh
     (view,) = group.begin()
     container.update({key: 1 for key in keys})
 
-    stamped = effective_isolation(isolation, sharing) in stamped_isolation_levels
+    stamped = effective_isolation(isolation, sharing) in STAMPED_ISOLATION_LEVELS
     assert _committed_states(view.scan()) == ({0} if stamped else {1}), "a participant scan straddled the commit"
     assert _committed_states(container.scan()) == {1}, "a container scan answers at the newest state"
 
@@ -263,7 +254,6 @@ def _doctors_on_call(isolation: str, keygen) -> tuple[bool, int]:
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
 )
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_snapshot_admits_write_skew(keygen):
     """Snapshot validates only what a transaction wrote, so disjoint writes never conflict.
 
@@ -278,7 +268,6 @@ def test_snapshot_admits_write_skew(keygen):
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
 )
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_serializable_refuses_write_skew(keygen):
     """Serializable validates what was read too, which is exactly what catches this.
 
@@ -298,7 +287,6 @@ def test_serializable_refuses_write_skew(keygen):
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
 )
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_a_written_key_refuses_by_write_conflict(keygen):
     """Both transactions write one key, so the write set alone catches it."""
     container = make(st.SortedMap, "int", isolation="serializable", sharing="locked")
@@ -316,13 +304,11 @@ def test_a_written_key_refuses_by_write_conflict(keygen):
     hers.commit()
     with pytest.raises(st.WriteConflictError):
         his.stage()
-        his.commit()
 
 
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
 )
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_a_read_key_refuses_by_read_conflict(keygen):
     """One transaction reads a key the other then writes, and writes elsewhere itself.
 
@@ -346,7 +332,6 @@ def test_a_read_key_refuses_by_read_conflict(keygen):
     hers.commit()
     with pytest.raises(st.ReadConflictError):
         his.stage()
-        his.commit()
 
 
 def test_every_refusal_cause_is_catchable_as_one():
@@ -391,11 +376,10 @@ def _phantom_at(level: str, keygen, *, lower_bound: str):
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
 )
-@pytest.mark.parametrize("level", ["serializable", "strict_serializable"])
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-def test_a_window_open_at_the_bottom_still_catches_a_phantom(keygen, level):
+@pytest.mark.parametrize("isolation", ["serializable", "strict_serializable"])
+def test_a_window_open_at_the_bottom_still_catches_a_phantom(keygen, isolation):
     """A scan bounded only from above records a window, so a key committed into it refuses."""
-    refusal, seen = _phantom_at(level, keygen, lower_bound="open")
+    refusal, seen = _phantom_at(isolation, keygen, lower_bound="open")
     assert seen == [], "the window was empty, so only the window itself was read"
     assert isinstance(refusal, st.PhantomConflictError)
 
@@ -403,11 +387,10 @@ def test_a_window_open_at_the_bottom_still_catches_a_phantom(keygen, level):
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
 )
-@pytest.mark.parametrize("level", ["serializable", "strict_serializable"])
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-def test_a_scanned_window_refuses_by_phantom_conflict(keygen, level):
+@pytest.mark.parametrize("isolation", ["serializable", "strict_serializable"])
+def test_a_scanned_window_refuses_by_phantom_conflict(keygen, isolation):
     """A key committed into a window this transaction read is what the third cause names."""
-    refusal, seen = _phantom_at(level, keygen, lower_bound="named")
+    refusal, seen = _phantom_at(isolation, keygen, lower_bound="named")
     assert seen == [], "the window was empty, so no key was read and only the window itself was"
     assert isinstance(refusal, st.PhantomConflictError)
 
@@ -415,7 +398,6 @@ def test_a_scanned_window_refuses_by_phantom_conflict(keygen, level):
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
 )
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_snapshot_admits_a_phantom(keygen):
     """Snapshot validates only what a transaction wrote, so a window it read can gain a member.
 

@@ -79,164 +79,164 @@ struct move_only_t {
 #pragma region Expected Tests
 
 /** Every way of constructing an @c expected, checked for a discriminant that matches storage. */
-static void expected_construction_matrix() {
+static void test_expected_construction_matrix() {
     std::size_t const alive_before = counted_t::alive();
 
     // A default-constructed result reports failure and holds nothing.
     {
         expected<counted_t> const result;
-        st_verify_(!result);
-        st_verify_(!result.has_value());
-        st_verify_eq_(result.status(), unknown_k);
+        expect_true(!result);
+        expect_true(!result.has_value());
+        expect_equal(result.status(), unknown_k);
     }
-    st_verify_eq_(counted_t::alive(), alive_before);
+    expect_equal(counted_t::alive(), alive_before);
 
     // A reason with no value behind it constructs nothing.
     {
         std::size_t const constructions_before = counted_t::constructions;
         expected<counted_t> const result {out_of_memory_heap_k};
-        st_verify_(!result);
-        st_verify_eq_(result.status(), out_of_memory_heap_k);
-        st_verify_eq_(counted_t::constructions, constructions_before);
+        expect_true(!result);
+        expect_equal(result.status(), out_of_memory_heap_k);
+        expect_equal(counted_t::constructions, constructions_before);
     }
-    st_verify_eq_(counted_t::alive(), alive_before);
+    expect_equal(counted_t::alive(), alive_before);
 
     // A success handed no value cannot claim to have one, or the destructor would run over
     // storage that was never constructed.
     {
         expected<counted_t> const result {success_k};
-        st_verify_(!result);
-        st_verify_(!result.has_value());
-        st_verify_eq_(result.status(), unknown_k);
+        expect_true(!result);
+        expect_true(!result.has_value());
+        expect_equal(result.status(), unknown_k);
     }
-    st_verify_eq_(counted_t::alive(), alive_before);
+    expect_equal(counted_t::alive(), alive_before);
 
     // A value moved into a success is there, and dies exactly once.
     {
         expected<counted_t> const result {counted_t {7}, success_k};
-        st_verify_(result);
-        st_verify_eq_(result->payload, 7);
-        st_verify_eq_(counted_t::alive(), alive_before + 1);
+        if (!expect_equal(result.status(), success_k)) return;
+        expect_equal(result->payload, 7);
+        expect_equal(counted_t::alive(), alive_before + 1);
     }
-    st_verify_eq_(counted_t::alive(), alive_before);
+    expect_equal(counted_t::alive(), alive_before);
 
     // A value handed to a failure is left to its owner, so nothing outlives the statement.
     {
         expected<counted_t> const result {counted_t {9}, out_of_memory_heap_k};
-        st_verify_(!result);
-        st_verify_eq_(result.status(), out_of_memory_heap_k);
-        st_verify_eq_(counted_t::alive(), alive_before);
+        expect_true(!result);
+        expect_equal(result.status(), out_of_memory_heap_k);
+        expect_equal(counted_t::alive(), alive_before);
     }
-    st_verify_eq_(counted_t::alive(), alive_before);
+    expect_equal(counted_t::alive(), alive_before);
 
     // The same two cases through the copying constructor.
     {
         counted_t const source {11};
         expected<counted_t> const kept {source, success_k};
-        st_verify_(kept);
-        st_verify_eq_(kept->payload, 11);
-        st_verify_eq_(counted_t::alive(), alive_before + 2);
+        if (!expect_equal(kept.status(), success_k)) return;
+        expect_equal(kept->payload, 11);
+        expect_equal(counted_t::alive(), alive_before + 2);
 
         expected<counted_t> const dropped {source, key_not_found_k};
-        st_verify_(!dropped);
-        st_verify_eq_(counted_t::alive(), alive_before + 2);
+        expect_true(!dropped);
+        expect_equal(counted_t::alive(), alive_before + 2);
     }
-    st_verify_eq_(counted_t::alive(), alive_before);
+    expect_equal(counted_t::alive(), alive_before);
 
     // The default status is success, so a bare value is a value.
     {
         expected<counted_t> const result {counted_t {13}};
-        st_verify_(result);
-        st_verify_eq_(result->payload, 13);
+        if (!expect_equal(result.status(), success_k)) return;
+        expect_equal(result->payload, 13);
     }
-    st_verify_eq_(counted_t::alive(), alive_before);
+    expect_equal(counted_t::alive(), alive_before);
 }
 
 /** Moves between all four combinations of full and empty, checked for balance. */
-static void expected_moves_stay_balanced() {
+static void test_expected_moves_stay_balanced() {
     std::size_t const alive_before = counted_t::alive();
 
     // A full source, into a fresh object.
     {
         expected<counted_t> source {counted_t {1}, success_k};
         expected<counted_t> const target {std::move(source)};
-        st_verify_(target);
-        st_verify_eq_(target->payload, 1);
-        st_verify_eq_(counted_t::alive(), alive_before + 2); // ? The moved-from value is still there
+        if (!expect_equal(target.status(), success_k)) return;
+        expect_equal(target->payload, 1);
+        expect_equal(counted_t::alive(), alive_before + 2); // ? The moved-from value is still there
     }
-    st_verify_eq_(counted_t::alive(), alive_before);
+    expect_equal(counted_t::alive(), alive_before);
 
     // An empty source, into a fresh object.
     {
         expected<counted_t> source {invalid_argument_k};
         expected<counted_t> const target {std::move(source)};
-        st_verify_(!target);
-        st_verify_eq_(target.status(), invalid_argument_k);
-        st_verify_eq_(counted_t::alive(), alive_before);
+        expect_true(!target);
+        expect_equal(target.status(), invalid_argument_k);
+        expect_equal(counted_t::alive(), alive_before);
     }
-    st_verify_eq_(counted_t::alive(), alive_before);
+    expect_equal(counted_t::alive(), alive_before);
 
     // Full over full, full over empty, empty over full, empty over empty.
     {
         expected<counted_t> target {counted_t {2}, success_k};
         expected<counted_t> full_source {counted_t {3}, success_k};
         target = std::move(full_source);
-        st_verify_(target);
-        st_verify_eq_(target->payload, 3);
+        if (!expect_equal(target.status(), success_k)) return;
+        expect_equal(target->payload, 3);
 
         expected<counted_t> empty_source {consistency_k};
         target = std::move(empty_source);
-        st_verify_(!target);
-        st_verify_eq_(target.status(), consistency_k);
-        st_verify_eq_(counted_t::alive(), alive_before + 1); // ? Only `full_source` still holds one
+        expect_true(!target);
+        expect_equal(target.status(), consistency_k);
+        expect_equal(counted_t::alive(), alive_before + 1); // ? Only `full_source` still holds one
 
         expected<counted_t> another_full {counted_t {4}, success_k};
         target = std::move(another_full);
-        st_verify_(target);
-        st_verify_eq_(target->payload, 4);
+        if (!expect_equal(target.status(), success_k)) return;
+        expect_equal(target->payload, 4);
 
         expected<counted_t> another_empty {key_already_exists_k};
         target = std::move(another_empty);
-        st_verify_(!target);
+        expect_true(!target);
 
         // Self-assignment must not destroy anything, reached through an alias so the compiler
         // cannot mistake the deliberate case for the accidental one.
         expected<counted_t> &alias = target;
         target = std::move(alias);
-        st_verify_(!target);
+        expect_true(!target);
     }
-    st_verify_eq_(counted_t::alive(), alive_before);
+    expect_equal(counted_t::alive(), alive_before);
 }
 
 /** The tuple protocol behind `auto [value, status]`, on both paths. */
-static void expected_decomposes() {
+static void test_expected_decomposes() {
     std::size_t const alive_before = counted_t::alive();
     {
         auto [value, status] = expected<counted_t> {counted_t {5}, success_k};
-        st_verify_eq_(status, success_k);
-        st_verify_eq_(value.payload, 5);
+        expect_equal(status, success_k);
+        expect_equal(value.payload, 5);
     }
     {
         auto [value, status] = expected<counted_t> {out_of_memory_heap_k};
-        st_verify_eq_(status, out_of_memory_heap_k);
-        st_verify_eq_(value.payload, 0); // ? A failure decomposes into a default, never into garbage
+        expect_equal(status, out_of_memory_heap_k);
+        expect_equal(value.payload, 0); // ? A failure decomposes into a default, never into garbage
     }
-    st_verify_eq_(counted_t::alive(), alive_before);
+    expect_equal(counted_t::alive(), alive_before);
 }
 
 /** A move-only payload, which is the case @c std::optional could not cover. */
-static void expected_carries_move_only() {
+static void test_expected_carries_move_only() {
     expected<move_only_t> held {move_only_t {21}, success_k};
-    st_verify_(held);
-    st_verify_eq_((*held).payload, 21);
+    if (!expect_equal(held.status(), success_k)) return;
+    expect_equal((*held).payload, 21);
 
     expected<move_only_t> const taken {std::move(held)};
-    st_verify_(taken);
-    st_verify_eq_(taken->payload, 21);
+    if (!expect_equal(taken.status(), success_k)) return;
+    expect_equal(taken->payload, 21);
 
     expected<move_only_t> const refused {operation_would_block_k};
-    st_verify_(!refused);
-    st_verify_eq_(refused.status(), operation_would_block_k);
+    expect_true(!refused);
+    expect_equal(refused.status(), operation_would_block_k);
 }
 
 #pragma endregion Expected Tests
@@ -244,26 +244,26 @@ static void expected_carries_move_only() {
 #pragma region Allocator Tests
 
 /** A byte count that would wrap must be refused rather than served a tiny block. */
-static void allocator_refuses_overflowing_counts() {
+static void test_allocator_refuses_overflowing_counts() {
     default_allocator<std::uint64_t> wide_allocator;
 
     // Exactly the largest representable byte count, and the first count past it.
     std::size_t const largest = SIZE_MAX / sizeof(std::uint64_t);
-    st_verify_eq_(wide_allocator.allocate(largest + 1), nullptr);
-    st_verify_eq_(wide_allocator.allocate(SIZE_MAX), nullptr);
-    st_verify_eq_(wide_allocator.allocate(SIZE_MAX / 2), nullptr);
+    expect_equal(wide_allocator.allocate(largest + 1), nullptr);
+    expect_equal(wide_allocator.allocate(SIZE_MAX), nullptr);
+    expect_equal(wide_allocator.allocate(SIZE_MAX / 2), nullptr);
 
     // A count that fits still allocates and frees.
     std::uint64_t *const block = wide_allocator.allocate(16);
-    st_verify_(block != nullptr);
+    expect_true(block != nullptr);
     block[0] = 1, block[15] = 2;
-    st_verify_eq_(block[0] + block[15], 3u);
+    expect_equal(block[0] + block[15], 3u);
     wide_allocator.deallocate(block, 16);
 
     // A single-byte element has no multiplication to overflow, and must keep working.
     default_allocator<char> narrow_allocator;
     char *const bytes = narrow_allocator.allocate(32);
-    st_verify_(bytes != nullptr);
+    expect_true(bytes != nullptr);
     narrow_allocator.deallocate(bytes, 32);
 }
 
@@ -272,7 +272,7 @@ static void allocator_refuses_overflowing_counts() {
 #pragma region Shared Mutex Tests
 
 /** Exclusion holds: a writer never overlaps a reader or another writer. */
-static void shared_mutex_excludes() {
+static void test_shared_mutex_excludes() {
     spin_shared_mutex_t mutex;
     std::atomic<int> readers_inside {0};
     std::atomic<int> writers_inside {0};
@@ -311,15 +311,15 @@ static void shared_mutex_excludes() {
     reading.store(false);
     for (std::size_t reader = writers_count_k; reader != threads.size(); ++reader) threads[reader].join();
 
-    st_verify_(!violated.load());
-    st_verify_eq_(guarded_left, writers_count_k * writes_per_writer_k);
-    st_verify_eq_(guarded_right, guarded_left);
+    expect_true(!violated.load());
+    expect_equal(guarded_left, writers_count_k * writes_per_writer_k);
+    expect_equal(guarded_right, guarded_left);
 }
 
 /** Several writers under a steady read load all finish, which is what the waiting tally buys. One
  *  writer taking the lock must not erase the intent of the writers still queued, or a reader stream
  *  slips back in and parks them forever. */
-static void shared_mutex_admits_every_writer() {
+static void test_shared_mutex_admits_every_writer() {
     // The readers re-enter fast enough that their count effectively never reaches zero, so a writer
     // only gets in by turning them away; the budget is fifty times the deepest run seen.
     constexpr std::size_t writers_count_k = 3;
@@ -354,7 +354,7 @@ static void shared_mutex_admits_every_writer() {
 
     // Every reader has held the lock once before the first writer exists, so each writer arrives at
     // a lock the readers are already streaming through.
-    while (readers_announced.load(std::memory_order_relaxed) < readers_count_k) std::this_thread::yield();
+    expect_true(spin_until([&] { return readers_announced.load(std::memory_order_relaxed) >= readers_count_k; }));
 
     std::vector<std::thread> writers;
     for (std::size_t writer = 0; writer != writers_count_k; ++writer)
@@ -371,7 +371,7 @@ static void shared_mutex_admits_every_writer() {
     for (auto &reader : readers) reader.join();
 
     // A parked writer outlives the readers, so starvation reads as a reader that ran out of budget.
-    st_verify_eq_(readers_spent.load(), std::size_t {0}, "a reader spent its budget while a writer was parked");
+    expect_equal(readers_spent.load(), std::size_t {0}, "a reader spent its budget while a writer was parked");
 }
 
 #pragma endregion Shared Mutex Tests
@@ -556,60 +556,60 @@ static_assert(sizeof(extended_table_t) == sizeof(atomic_hash_set<std::uint64_t>)
               "and costs the pinned table none either");
 
 /** A reference spelling the extended shapes is the one the mutex drives its acquires through. */
-static void extended_atomics_take_the_bounded_path() {
+static void test_extended_atomics_take_the_bounded_path() {
 
     counting_extended_ref<std::uint32_t>::bounded_adds.store(0);
     counting_extended_ref<std::uint32_t>::posted_writes.store(0);
 
     extended_mutex_t mutex;
     mutex.lock();
-    st_verify_eq_(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {1},
-                  "a writer takes the lock with one bounded add, not a compare-exchange loop");
+    expect_equal(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {1},
+                 "a writer takes the lock with one bounded add, not a compare-exchange loop");
     mutex.unlock();
-    st_verify_eq_(counting_extended_ref<std::uint32_t>::posted_writes.load(), std::size_t {1},
-                  "and drops the held bit by posting it, since nothing reads what the word held");
+    expect_equal(counting_extended_ref<std::uint32_t>::posted_writes.load(), std::size_t {1},
+                 "and drops the held bit by posting it, since nothing reads what the word held");
 
     mutex.lock_shared();
     mutex.lock_shared();
-    st_verify_eq_(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {3},
-                  "every reader arrives by the same bounded add");
-    st_verify_eq_(mutex.try_lock(), false, "a writer is refused while readers hold");
+    expect_equal(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {3},
+                 "every reader arrives by the same bounded add");
+    expect_equal(mutex.try_lock(), false, "a writer is refused while readers hold");
     mutex.unlock_shared();
     mutex.unlock_shared();
 
-    st_verify_eq_(mutex.try_lock(), true, "and admitted once the last of them leaves");
+    expect_equal(mutex.try_lock(), true, "and admitted once the last of them leaves");
     mutex.unlock();
 }
 
 /** The pinned table lets every slot go with one posted xor, and moves counters by posted adds. */
-static void extended_atomics_reach_the_pinned_table() {
+static void test_extended_atomics_reach_the_pinned_table() {
 
     counting_extended_ref<std::uint64_t>::posted_flips.store(0);
     counting_extended_ref<std::uint64_t>::posted_writes.store(0);
 
     auto allocated = hash_set<std::uint64_t>::make(std::size_t {64});
-    st_verify_((allocated) && "the table to be pinned must build");
+    if (!expect_true(allocated.has_value(), "the table to be pinned must build")) return;
     extended_table_t pinned = extended_table_t::adopt((*std::move(allocated)).release());
 
-    st_verify_(pinned.emplace(std::uint64_t {42}));
-    st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {1},
-                  "an emplace takes one free slot and lets it go by posting the xor");
-    st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_writes.load(), std::size_t {1},
-                  "and counts the population with one posted add");
+    expect_equal(pinned.emplace(std::uint64_t {42}), success_k);
+    expect_equal(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {1},
+                 "an emplace takes one free slot and lets it go by posting the xor");
+    expect_equal(counting_extended_ref<std::uint64_t>::posted_writes.load(), std::size_t {1},
+                 "and counts the population with one posted add");
 
-    st_verify_eq_(pinned.contains(std::uint64_t {42}), true);
-    st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {2},
-                  "a probe that finds its key locks that slot alone");
+    expect_equal(pinned.contains(std::uint64_t {42}), true);
+    expect_equal(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {2},
+                 "a probe that finds its key locks that slot alone");
 
-    st_verify_(pinned.erase(std::uint64_t {42}));
-    st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {3});
-    st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_writes.load(), std::size_t {3},
-                  "an erase moves both counters by posted writes");
+    expect_equal(pinned.erase(std::uint64_t {42}), success_k);
+    expect_equal(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {3});
+    expect_equal(counting_extended_ref<std::uint64_t>::posted_writes.load(), std::size_t {3},
+                 "an erase moves both counters by posted writes");
 }
 
 /** Eight threads claiming bits of four words until none is left each win distinct bits, all of them
  *  between them, through the reference's own claim. */
-static void extended_atomics_claim_each_bit_once() {
+static void test_extended_atomics_claim_each_bit_once() {
     constexpr std::size_t threads_count_k = 8;
     constexpr std::size_t words_count_k = 4;
     constexpr std::size_t bits_count_k = words_count_k * 64;
@@ -629,21 +629,21 @@ static void extended_atomics_claim_each_bit_once() {
         });
     for (std::thread &thread : threads) thread.join();
 
-    for (std::size_t bit = 0; bit != bits_count_k; ++bit) st_verify_eq_(winners[bit].load(), std::size_t {1});
-    for (std::uint64_t const word : words) st_verify_eq_(word, (std::numeric_limits<std::uint64_t>::max)());
-    st_verify_ge_(counting_extended_ref<std::uint64_t>::bit_claims.load(), bits_count_k,
-                  "every claim goes through the reference's own bit verb");
+    for (std::size_t bit = 0; bit != bits_count_k; ++bit) expect_equal(winners[bit].load(), std::size_t {1});
+    for (std::uint64_t const word : words) expect_equal(word, (std::numeric_limits<std::uint64_t>::max)());
+    expect_true(counting_extended_ref<std::uint64_t>::bit_claims.load() >= bits_count_k,
+                "every claim goes through the reference's own bit verb");
 
-    st_verify_eq_(atomic_fetch_test_and_reset_bit<counting_extended_ref>(words[1], 5u, memory_order_release_k), true);
-    st_verify_eq_(atomic_fetch_test_and_reset_bit<counting_extended_ref>(words[1], 5u, memory_order_release_k), false);
-    st_verify_eq_(atomic_claim_first_clear_bit<counting_extended_ref>(std::span<std::uint64_t>(words)),
-                  std::size_t {64 + 5}, "the one bit given back is the one claimed next");
-    st_verify_eq_(atomic_fetch_test_and_set_bit(words[2], 7u, memory_order_acquire_k), true,
-                  "the standard reference answers the same through its fallback");
+    expect_equal(atomic_fetch_test_and_reset_bit<counting_extended_ref>(words[1], 5u, memory_order_release_k), true);
+    expect_equal(atomic_fetch_test_and_reset_bit<counting_extended_ref>(words[1], 5u, memory_order_release_k), false);
+    expect_equal(atomic_claim_first_clear_bit<counting_extended_ref>(std::span<std::uint64_t>(words)),
+                 std::size_t {64 + 5}, "the one bit given back is the one claimed next");
+    expect_equal(atomic_fetch_test_and_set_bit(words[2], 7u, memory_order_acquire_k), true,
+                 "the standard reference answers the same through its fallback");
 }
 
 /** The mutex asks the policy it was handed once per attempt, parking once the spin is spent. */
-static void waiting_policy_substitutes_in_the_mutex() {
+static void test_waiting_policy_substitutes_in_the_mutex() {
     yielding_waiting_policy_t::pauses.store(0);
 
     yielding_mutex_t mutex;
@@ -652,22 +652,22 @@ static void waiting_policy_substitutes_in_the_mutex() {
     // The contender cannot win the lock until the hold is released, so it spends its whole spin -
     // and the hold is given up only once it has, so the tally is read after the spinning stops.
     std::thread contender {[&]() noexcept { unique_lock<yielding_mutex_t> guard {mutex}; }};
-    while (yielding_waiting_policy_t::pauses.load() < 64) std::this_thread::yield();
+    expect_true(spin_until([] { return yielding_waiting_policy_t::pauses.load() >= 64; }));
     held.release();
     contender.join();
 
-    st_verify_ge_(yielding_waiting_policy_t::pauses.load(), std::size_t {64}, "one pause per spent attempt");
+    expect_true(yielding_waiting_policy_t::pauses.load() >= std::size_t {64}, "one pause per spent attempt");
 }
 
 /** The slot lock asks the same policy, reached through the table, while a prober waits for a held
  *  slot. */
-static void waiting_policy_substitutes_in_the_slot_lock() {
+static void test_waiting_policy_substitutes_in_the_slot_lock() {
     yielding_waiting_policy_t::pauses.store(0);
 
     auto allocated = hash_set<std::uint64_t>::make(std::size_t {64});
-    st_verify_((allocated) && "the table to be pinned must build");
+    if (!expect_true(allocated.has_value(), "the table to be pinned must build")) return;
     yielding_table_t pinned = yielding_table_t::adopt((*std::move(allocated)).release());
-    st_verify_(pinned.emplace(std::uint64_t {42}));
+    expect_equal(pinned.emplace(std::uint64_t {42}), success_k);
 
     // A found callback runs under the slot's lock, which is the one way to hold a slot from outside.
     std::atomic<bool> holding {false};
@@ -675,22 +675,22 @@ static void waiting_policy_substitutes_in_the_slot_lock() {
     std::thread holder {[&]() noexcept {
         [[maybe_unused]] status_t const found = pinned.find(std::uint64_t {42}, [&](auto const &) noexcept {
             holding.store(true);
-            while (!release.load()) std::this_thread::yield();
+            expect_true(spin_until([&] { return release.load(); }));
         });
     }};
-    while (!holding.load()) std::this_thread::yield();
+    expect_true(spin_until([&] { return holding.load(); }));
 
     std::thread prober {
         [&]() noexcept { [[maybe_unused]] expected<bool> const seen = pinned.contains(std::uint64_t {42}); }};
 
     // Every attempt the prober spends on the held slot goes to the policy, so one tally is enough to
     // know the lock is spinning through it rather than through a hint of its own.
-    while (yielding_waiting_policy_t::pauses.load() == 0) std::this_thread::yield();
+    expect_true(spin_until([] { return yielding_waiting_policy_t::pauses.load() != 0; }));
     release.store(true);
     holder.join();
     prober.join();
 
-    st_verify_eq_(pinned.contains(std::uint64_t {42}), true);
+    expect_equal(pinned.contains(std::uint64_t {42}), true);
 }
 
 #pragma endregion Waiting Policy Tests
@@ -858,111 +858,111 @@ static std::vector<std::size_t> stores_visited(std::vector<recorded_call_t> cons
 }
 
 /** Every phase walks the participants in one address order, rollback included. */
-static void transaction_group_walks_one_order() {
+static void test_transaction_group_walks_one_order() {
     std::vector<recorded_call_t> log;
     recording_store<> first {log, 0}, second {log, 1}, third {log, 2};
 
     auto group_result = make_transaction_group(first, second, third);
-    st_verify_(group_result);
+    if (!expect_equal(group_result.status(), success_k)) return;
     auto &group = *group_result;
 
-    st_verify_eq_(group.stage(), success_k);
+    expect_equal(group.stage(), success_k);
     std::vector<std::size_t> const ordered = stores_visited(log, phase_t::stage_k);
-    st_verify_eq_(ordered.size(), 3u);
-    st_verify_eq_(group.rollback(), success_k);
+    expect_equal(ordered.size(), 3u);
+    expect_equal(group.rollback(), success_k);
 
     // Staging a second time takes that same order, and rollback follows it too.
     log.clear();
-    st_verify_eq_(group.stage(), success_k);
-    st_verify_(stores_visited(log, phase_t::stage_k) == ordered);
-    st_verify_eq_(group.rollback(), success_k);
-    st_verify_(stores_visited(log, phase_t::rollback_k) == ordered);
+    expect_equal(group.stage(), success_k);
+    expect_true(stores_visited(log, phase_t::stage_k) == ordered);
+    expect_equal(group.rollback(), success_k);
+    expect_true(stores_visited(log, phase_t::rollback_k) == ordered);
 
     // Commit and reset take it as well.
     log.clear();
-    st_verify_eq_(group.stage(), success_k);
-    st_verify_eq_(group.commit(), success_k);
-    st_verify_(stores_visited(log, phase_t::commit_k) == ordered);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
+    expect_true(stores_visited(log, phase_t::commit_k) == ordered);
 
     log.clear();
-    st_verify_eq_(group.reset(), success_k);
-    st_verify_(stores_visited(log, phase_t::reset_k) == ordered);
+    expect_equal(group.reset(), success_k);
+    expect_true(stores_visited(log, phase_t::reset_k) == ordered);
 
     // The phases refuse to run out of turn.
-    st_verify_eq_(group.rollback(), operation_not_permitted_k);
-    st_verify_eq_(group.commit(), operation_not_permitted_k);
+    expect_equal(group.rollback(), operation_not_permitted_k);
+    expect_equal(group.commit(), operation_not_permitted_k);
 }
 
 /** A refused rollback stops where it was refused and leaves the group staged. */
-static void transaction_group_rollback_stops_at_refusal() {
+static void test_transaction_group_rollback_stops_at_refusal() {
     std::vector<recorded_call_t> log;
     // Array members ascend in address, so the group visits these in the order they are named.
     std::array<recording_store<>, 3> stores {{{log, 0}, {log, 1}, {log, 2}}};
     stores[1].refusals.rollback = operation_would_block_k;
 
     auto group_result = make_transaction_group(stores[0], stores[1], stores[2]);
-    st_verify_(group_result);
+    if (!expect_equal(group_result.status(), success_k)) return;
     auto &group = *group_result;
 
-    st_verify_eq_(group.stage(), success_k);
+    expect_equal(group.stage(), success_k);
     log.clear();
-    st_verify_eq_(group.rollback(), operation_would_block_k);
+    expect_equal(group.rollback(), operation_would_block_k);
 
     // The participant past the refusal was never asked, so it is still staged.
     std::vector<std::size_t> const reached {0, 1};
-    st_verify_(stores_visited(log, phase_t::rollback_k) == reached);
+    expect_true(stores_visited(log, phase_t::rollback_k) == reached);
 
     // And the group still says so, which is what keeps the next `stage` from staging twice over.
-    st_verify_eq_(group.staging(), staging_t::staged_k);
-    st_verify_eq_(group.stage(), operation_not_permitted_k);
+    expect_equal(group.staging(), staging_t::staged_k);
+    expect_equal(group.stage(), operation_not_permitted_k);
 
     // Lifting the refusal lets the rollback reach every participant and reopen the group.
     stores[1].refusals.rollback = success_k;
     log.clear();
-    st_verify_eq_(group.rollback(), success_k);
+    expect_equal(group.rollback(), success_k);
     std::vector<std::size_t> const every {0, 1, 2};
-    st_verify_(stores_visited(log, phase_t::rollback_k) == every);
-    st_verify_eq_(group.staging(), staging_t::pending_k);
+    expect_true(stores_visited(log, phase_t::rollback_k) == every);
+    expect_equal(group.staging(), staging_t::pending_k);
 }
 
 /** One store named twice is refused before either participant is opened. */
-static void transaction_group_refuses_a_duplicate_store() {
+static void test_transaction_group_refuses_a_duplicate_store() {
     std::vector<recorded_call_t> log;
     recording_store<> only {log, 0}, other {log, 1};
 
     auto duplicated = make_transaction_group(only, only);
-    st_verify_eq_(duplicated.status(), invalid_argument_k);
-    st_verify_(log.empty());
+    expect_equal(duplicated.status(), invalid_argument_k);
+    expect_true(log.empty());
 
     // A repeat is caught wherever it sits, not only next to itself.
     auto separated = make_transaction_group(only, other, only);
-    st_verify_eq_(separated.status(), invalid_argument_k);
-    st_verify_(log.empty());
+    expect_equal(separated.status(), invalid_argument_k);
+    expect_true(log.empty());
 
     // Two distinct stores are what the refusal is not about.
     auto distinct = make_transaction_group(only, other);
-    st_verify_(distinct);
+    expect_equal(distinct.status(), success_k);
     std::vector<std::size_t> const opened {0, 1};
-    st_verify_(stores_visited(log, phase_t::open_k) == opened);
+    expect_true(stores_visited(log, phase_t::open_k) == opened);
 }
 
 /** A store refusing to open reports its own status, and the caller hears the first of them. */
-static void transaction_group_reports_what_refused_to_open() {
+static void test_transaction_group_reports_what_refused_to_open() {
     std::vector<recorded_call_t> log;
     recording_store<> first {log, 0}, second {log, 1};
 
     second.refusals.opening = operation_not_permitted_k;
     auto refused = make_transaction_group(first, second);
-    st_verify_eq_(refused.status(), operation_not_permitted_k);
+    expect_equal(refused.status(), operation_not_permitted_k);
 
     // Two refusals fold to the one the caller named first, in argument order.
     first.refusals.opening = capacity_exhausted_k;
     auto both_refused = make_transaction_group(first, second);
-    st_verify_eq_(both_refused.status(), capacity_exhausted_k);
+    expect_equal(both_refused.status(), capacity_exhausted_k);
 }
 
 /** A rollback failing inside a refused stage replaces the refusal and resets every participant. */
-static void transaction_group_failed_unwind_resets() {
+static void test_transaction_group_failed_unwind_resets() {
     using store_t = recording_store<>;
     std::vector<recorded_call_t> log;
     std::array<store_t, 2> stores {{{log, 0}, {log, 1}}};
@@ -970,16 +970,16 @@ static void transaction_group_failed_unwind_resets() {
     stores[1].refusals.stage = write_conflict_k;
 
     auto group_result = make_transaction_group(stores[0], stores[1]);
-    st_verify_(group_result);
+    if (!expect_equal(group_result.status(), success_k)) return;
     auto &group = *group_result;
-    st_verify_eq_(group.stage(), consistency_k);
-    st_verify_eq_(group.staging(), staging_t::pending_k);
+    expect_equal(group.stage(), consistency_k);
+    expect_equal(group.staging(), staging_t::pending_k);
     std::vector<std::size_t> const every {0, 1};
-    st_verify_(stores_visited(log, phase_t::reset_k) == every);
+    expect_true(stores_visited(log, phase_t::reset_k) == every);
 }
 
 /** A commit that published nothing stays staged, and one that tore drops to pending. */
-static void transaction_group_torn_commit_stops_claiming_staged() {
+static void test_transaction_group_torn_commit_stops_claiming_staged() {
     using store_t = recording_store<>;
     static_assert(!transaction_group<store_t, store_t, store_t>::asks_before_writing_k,
                   "a one-call commit is what leaves a group able to tear");
@@ -993,35 +993,35 @@ static void transaction_group_torn_commit_stops_claiming_staged() {
     // The first participant refusing publishes nothing, so the group is staged and still retryable.
     stores[0].refusals.commit = write_conflict_k;
     auto intact_result = make_transaction_group(stores[0], stores[1], stores[2]);
-    st_verify_(intact_result);
+    if (!expect_equal(intact_result.status(), success_k)) return;
     auto &intact = *intact_result;
-    st_verify_eq_(intact.stage(), success_k);
-    st_verify_eq_(intact.commit(), write_conflict_k);
-    st_verify_eq_(intact.staging(), staging_t::staged_k);
-    st_verify_eq_(intact.rollback(), success_k);
+    expect_equal(intact.stage(), success_k);
+    expect_equal(intact.commit(), write_conflict_k);
+    expect_equal(intact.staging(), staging_t::staged_k);
+    expect_equal(intact.rollback(), success_k);
 
     // A refusal after one participant published cannot be pulled back, so the group stops saying staged.
     stores[0].refusals.commit = success_k;
     stores[1].refusals.commit = write_conflict_k;
     auto torn_result = make_transaction_group(stores[0], stores[1], stores[2]);
-    st_verify_(torn_result);
+    if (!expect_equal(torn_result.status(), success_k)) return;
     auto &torn = *torn_result;
-    st_verify_eq_(torn.stage(), success_k);
-    st_verify_eq_(torn.commit(), write_conflict_k);
-    st_verify_eq_(torn.staging(), staging_t::pending_k);
+    expect_equal(torn.stage(), success_k);
+    expect_equal(torn.commit(), write_conflict_k);
+    expect_equal(torn.staging(), staging_t::pending_k);
 
     // Neither phase that needs a staged group will run, and `reset` is what clears the rest.
-    st_verify_eq_(torn.commit(), operation_not_permitted_k);
-    st_verify_eq_(torn.rollback(), operation_not_permitted_k);
+    expect_equal(torn.commit(), operation_not_permitted_k);
+    expect_equal(torn.rollback(), operation_not_permitted_k);
     log.clear();
-    st_verify_eq_(torn.reset(), success_k);
+    expect_equal(torn.reset(), success_k);
     std::vector<std::size_t> const every {0, 1, 2};
-    st_verify_(stores_visited(log, phase_t::reset_k) == every);
+    expect_true(stores_visited(log, phase_t::reset_k) == every);
 }
 
 /** Where every participant splits its commit, a refusal publishes nothing and leaves no hold
  *  behind. */
-static void transaction_group_split_commit_publishes_nothing_on_refusal() {
+static void test_transaction_group_split_commit_publishes_nothing_on_refusal() {
     using store_t = recording_store<commit_shape_t::split_k>;
     static_assert(transaction_group<store_t, store_t>::asks_before_writing_k,
                   "two split participants are asked before either writes");
@@ -1031,31 +1031,31 @@ static void transaction_group_split_commit_publishes_nothing_on_refusal() {
     stores[1].refusals.validate_for_commit = write_conflict_k;
 
     auto group_result = make_transaction_group(stores[0], stores[1]);
-    st_verify_(group_result);
+    if (!expect_equal(group_result.status(), success_k)) return;
     auto &group = *group_result;
 
-    st_verify_eq_(group.stage(), success_k);
+    expect_equal(group.stage(), success_k);
     log.clear();
-    st_verify_eq_(group.commit(), write_conflict_k);
-    st_verify_(stores_visited(log, phase_t::publish_k).empty());
+    expect_equal(group.commit(), write_conflict_k);
+    expect_true(stores_visited(log, phase_t::publish_k).empty());
 
     // Only the store asked before the refusal has a validation to give back.
     std::vector<std::size_t> const released {0};
-    st_verify_(stores_visited(log, phase_t::release_k) == released);
+    expect_true(stores_visited(log, phase_t::release_k) == released);
 
     // Nothing was written, so the group is staged and the caller may still unwind or retry it.
-    st_verify_eq_(group.staging(), staging_t::staged_k);
+    expect_equal(group.staging(), staging_t::staged_k);
     stores[1].refusals.validate_for_commit = success_k;
     log.clear();
-    st_verify_eq_(group.commit(), success_k);
+    expect_equal(group.commit(), success_k);
     std::vector<std::size_t> const every {0, 1};
-    st_verify_(stores_visited(log, phase_t::publish_k) == every);
-    st_verify_eq_(group.staging(), staging_t::pending_k);
+    expect_true(stores_visited(log, phase_t::publish_k) == every);
+    expect_equal(group.staging(), staging_t::pending_k);
 }
 
 /** A reset reads every participant at one snapshot, however many commits land between their
  *  resets. */
-static void transaction_group_resets_every_participant_at_one_snapshot() {
+static void test_transaction_group_resets_every_participant_at_one_snapshot() {
     using values_t = partitioned_store<snapshot_avl_map<std::uint64_t, int>>;
     static_assert(
         transaction_group<store_committing_on_reset_t, store_committing_on_reset_t, values_t>::shares_one_order_k,
@@ -1066,16 +1066,16 @@ static void transaction_group_resets_every_participant_at_one_snapshot() {
     values_t values {order};
 
     auto group = make_transaction_group(first, second, values);
-    st_verify_(group);
+    if (!expect_equal(group.status(), success_k)) return;
     generation_t const drawn = order.published_stamp();
-    st_verify_eq_(group->reset(), success_k);
-    st_verify_eq_(order.published_stamp(), drawn + 2, "each committing participant landed a commit mid-reset");
+    expect_equal(group->reset(), success_k);
+    expect_equal(order.published_stamp(), drawn + 2, "each committing participant landed a commit mid-reset");
 
     // Every reset but the first follows a landed commit, whatever order the group visits them in.
     auto [first_read, second_read, values_read] = group->participants();
-    st_verify_eq_(first_read.snapshot(), drawn);
-    st_verify_eq_(second_read.snapshot(), drawn);
-    st_verify_eq_(values_read.snapshot(), drawn, "a commit landing mid-reset must not split the group");
+    expect_equal(first_read.snapshot(), drawn);
+    expect_equal(second_read.snapshot(), drawn);
+    expect_equal(values_read.snapshot(), drawn, "a commit landing mid-reset must not split the group");
 }
 
 /** A map and a set, two kinds of store a database keeps any number of, each sharded and stamped. */
@@ -1089,70 +1089,70 @@ using dynamic_group_t = dynamic_transaction_group<grouped_map_t, grouped_set_t>;
 template <typename store_type_>
 static bool holds_at(store_type_ const &store, generation_t stamp, std::uint64_t key) {
     bool found = false;
-    st_verify_eq_(store.reader_at(stamp).find(key, [&](auto const &) noexcept { found = true; }), success_k);
+    expect_equal(store.reader_at(stamp).find(key, [&](auto const &) noexcept { found = true; }), success_k);
     return found;
 }
 
 /** A map and a set joined at run time publish under one stamp, which a reader sees whole or not at
  *  all. */
-static void dynamic_transaction_group_commits_kinds_under_one_stamp() {
+static void test_dynamic_transaction_group_commits_kinds_under_one_stamp() {
     grouped_order_t order;
     grouped_map_t values {order};
     grouped_set_t edges {order};
 
     auto group = dynamic_group_t::make(order);
-    st_verify_(group);
+    if (!expect_equal(group.status(), success_k)) return;
     generation_t const before = group->snapshot();
     auto values_joined = group->join(values);
     auto edges_joined = group->join(edges);
-    st_verify_(values_joined && edges_joined);
-    st_verify_eq_((*values_joined)->upsert(grouped_member_t {1u, 100}), success_k);
-    st_verify_eq_((*edges_joined)->upsert(std::uint64_t {7}), success_k);
-    st_verify_eq_(group->stage(), success_k);
-    st_verify_eq_(group->commit(), success_k);
+    if (!expect_true(values_joined && edges_joined)) return;
+    expect_equal((*values_joined)->upsert(grouped_member_t {1u, 100}), success_k);
+    expect_equal((*edges_joined)->upsert(std::uint64_t {7}), success_k);
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
 
-    st_verify_eq_(order.published_stamp(), before + 1, "one stamp for every kind the group spans");
-    st_verify_eq_(group->commit_stamp(), before + 1);
-    st_verify_(!holds_at(values, before, 1) && !holds_at(edges, before, 7));
-    st_verify_(holds_at(values, group->commit_stamp(), 1) && holds_at(edges, group->commit_stamp(), 7));
+    expect_equal(order.published_stamp(), before + 1, "one stamp for every kind the group spans");
+    expect_equal(group->commit_stamp(), before + 1);
+    expect_true(!holds_at(values, before, 1) && !holds_at(edges, before, 7));
+    expect_true(holds_at(values, group->commit_stamp(), 1) && holds_at(edges, group->commit_stamp(), 7));
 }
 
 /** A conflict in one participant refuses the commit before any participant publishes. */
-static void dynamic_transaction_group_conflict_publishes_nothing() {
+static void test_dynamic_transaction_group_conflict_publishes_nothing() {
     grouped_order_t order;
     grouped_map_t values {order};
     grouped_set_t edges {order};
 
     auto group = dynamic_group_t::make(order);
-    st_verify_(group);
+    if (!expect_equal(group.status(), success_k)) return;
     grouped_map_t::transaction_t *const watching = *group->join(values);
     grouped_set_t::transaction_t *const writing = *group->join(edges);
-    st_verify_eq_(watching->watch(5), success_k);
-    st_verify_eq_(watching->upsert(grouped_member_t {1u, 100}), success_k);
-    st_verify_eq_(writing->upsert(std::uint64_t {7}), success_k);
-    st_verify_eq_(group->stage(), success_k);
+    expect_equal(watching->watch(5), success_k);
+    expect_equal(watching->upsert(grouped_member_t {1u, 100}), success_k);
+    expect_equal(writing->upsert(std::uint64_t {7}), success_k);
+    expect_equal(group->stage(), success_k);
 
     // The watched key moves between the stage and the commit, from outside the group.
     {
         auto interloper = values.transaction();
-        st_verify_(interloper);
-        st_verify_eq_(interloper->upsert(grouped_member_t {5u, 500}), success_k);
-        st_verify_eq_(interloper->stage(), success_k);
-        st_verify_eq_(interloper->commit(), success_k);
+        if (!expect_equal(interloper.status(), success_k)) return;
+        expect_equal(interloper->upsert(grouped_member_t {5u, 500}), success_k);
+        expect_equal(interloper->stage(), success_k);
+        expect_equal(interloper->commit(), success_k);
     }
 
     generation_t const published = order.published_stamp();
-    st_verify_eq_(group->commit(), read_conflict_k);
-    st_verify_eq_(order.published_stamp(), published, "a refused group draws no stamp");
-    st_verify_(!holds_at(values, published, 1) && !holds_at(edges, published, 7));
-    st_verify_eq_(group->staging(), staging_t::staged_k);
-    st_verify_eq_(group->participants_count(), std::size_t {2});
-    st_verify_eq_(group->rollback(), success_k);
+    expect_equal(group->commit(), read_conflict_k);
+    expect_equal(order.published_stamp(), published, "a refused group draws no stamp");
+    expect_true(!holds_at(values, published, 1) && !holds_at(edges, published, 7));
+    expect_equal(group->staging(), staging_t::staged_k);
+    expect_equal(group->participants_count(), std::size_t {2});
+    expect_equal(group->rollback(), success_k);
 }
 
 /** More stores of one kind than a type would list join one group, and their transactions stay put
  *  while the rest join. */
-static void dynamic_transaction_group_commits_many_stores_of_one_kind() {
+static void test_dynamic_transaction_group_commits_many_stores_of_one_kind() {
     constexpr std::size_t stores_count = 24;
     grouped_order_t order;
     std::vector<grouped_map_t> stores;
@@ -1160,89 +1160,89 @@ static void dynamic_transaction_group_commits_many_stores_of_one_kind() {
     for (std::size_t index = 0; index != stores_count; ++index) stores.emplace_back(order);
 
     auto group = dynamic_group_t::make(order);
-    st_verify_(group);
+    if (!expect_equal(group.status(), success_k)) return;
     std::vector<grouped_map_t::transaction_t *> joined;
     for (grouped_map_t &store : stores) {
         auto participant = group->join(store);
-        st_verify_(participant);
+        if (!expect_equal(participant.status(), success_k)) return;
         joined.push_back(*participant);
     }
-    st_verify_eq_(group->participants_count(), stores_count);
+    expect_equal(group->participants_count(), stores_count);
 
     // Written only once every store joined, through the pointers the earliest joins handed out.
     for (std::size_t index = 0; index != stores_count; ++index) {
-        st_verify_(group->participant(stores[index]) == joined[index]);
-        st_verify_eq_(joined[index]->upsert(grouped_member_t {index, static_cast<int>(index)}), success_k);
+        expect_true(group->participant(stores[index]) == joined[index]);
+        expect_equal(joined[index]->upsert(grouped_member_t {index, static_cast<int>(index)}), success_k);
     }
 
     generation_t const before = order.published_stamp();
-    st_verify_eq_(group->stage(), success_k);
-    st_verify_eq_(group->commit(), success_k);
-    st_verify_eq_(order.published_stamp(), before + 1);
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
+    expect_equal(order.published_stamp(), before + 1);
     for (std::size_t index = 0; index != stores_count; ++index)
-        st_verify_(holds_at(stores[index], group->commit_stamp(), index) && !holds_at(stores[index], before, index));
+        expect_true(holds_at(stores[index], group->commit_stamp(), index) && !holds_at(stores[index], before, index));
 }
 
 /** A store joins once, and a store it cannot stamp alongside the rest never joins. */
-static void dynamic_transaction_group_joins_each_store_once() {
+static void test_dynamic_transaction_group_joins_each_store_once() {
     grouped_order_t order;
     grouped_map_t values {order};
     grouped_set_t edges {order};
     grouped_map_t apart;
 
     auto group = dynamic_group_t::make(order);
-    st_verify_(group);
-    st_verify_(group->participant(values) == nullptr);
+    if (!expect_equal(group.status(), success_k)) return;
+    expect_true(group->participant(values) == nullptr);
     auto first = group->join(values);
     auto again = group->join(values);
-    st_verify_(first && again && *first == *again);
-    st_verify_(group->participant(values) == *first);
-    st_verify_eq_(group->participants_count(), std::size_t {1});
+    if (!expect_true(first && again && *first == *again)) return;
+    expect_true(group->participant(values) == *first);
+    expect_equal(group->participants_count(), std::size_t {1});
 
-    st_verify_eq_(group->join(apart).status(), invalid_argument_k, "a store in its own order has another stamp");
-    st_verify_eq_(group->stage(), success_k);
-    st_verify_eq_(group->join(edges).status(), operation_not_permitted_k, "a staged group takes no one new");
-    st_verify_eq_(group->participants_count(), std::size_t {1});
+    expect_equal(group->join(apart).status(), invalid_argument_k, "a store in its own order has another stamp");
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->join(edges).status(), operation_not_permitted_k, "a staged group takes no one new");
+    expect_equal(group->participants_count(), std::size_t {1});
 }
 
 /** A commit and a reset each leave the group empty, and the next join reads a newer snapshot. */
-static void dynamic_transaction_group_empties_on_commit_and_reset() {
+static void test_dynamic_transaction_group_empties_on_commit_and_reset() {
     grouped_order_t order;
     grouped_map_t values {order};
 
     auto group = dynamic_group_t::make(order);
-    st_verify_(group);
-    st_verify_eq_((*group->join(values))->upsert(grouped_member_t {1u, 100}), success_k);
-    st_verify_eq_(group->stage(), success_k);
-    st_verify_eq_(group->commit(), success_k);
-    st_verify_eq_(group->participants_count(), std::size_t {0});
-    st_verify_(group->participant(values) == nullptr);
-    st_verify_(group->snapshot() >= group->commit_stamp());
+    if (!expect_equal(group.status(), success_k)) return;
+    expect_equal((*group->join(values))->upsert(grouped_member_t {1u, 100}), success_k);
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
+    expect_equal(group->participants_count(), std::size_t {0});
+    expect_true(group->participant(values) == nullptr);
+    expect_true(group->snapshot() >= group->commit_stamp());
 
     grouped_map_t::transaction_t *const reader = *group->join(values);
-    st_verify_eq_(reader->snapshot(), group->snapshot());
-    st_verify_(reader->find_copy(std::uint64_t {1}));
+    expect_equal(reader->snapshot(), group->snapshot());
+    expect_equal(reader->find_copy(std::uint64_t {1}).status(), success_k);
 
     {
         auto interloper = values.transaction();
-        st_verify_(interloper);
-        st_verify_eq_(interloper->upsert(grouped_member_t {2u, 200}), success_k);
-        st_verify_eq_(interloper->stage(), success_k);
-        st_verify_eq_(interloper->commit(), success_k);
+        if (!expect_equal(interloper.status(), success_k)) return;
+        expect_equal(interloper->upsert(grouped_member_t {2u, 200}), success_k);
+        expect_equal(interloper->stage(), success_k);
+        expect_equal(interloper->commit(), success_k);
     }
-    st_verify_eq_(reader->find_copy(std::uint64_t {2}).status(), key_not_found_k);
+    expect_equal(reader->find_copy(std::uint64_t {2}).status(), key_not_found_k);
 
-    st_verify_eq_(group->reset(), success_k);
-    st_verify_eq_(group->participants_count(), std::size_t {0});
-    st_verify_((*group->join(values))->find_copy(std::uint64_t {2}));
+    expect_equal(group->reset(), success_k);
+    expect_equal(group->participants_count(), std::size_t {0});
+    expect_equal((*group->join(values))->find_copy(std::uint64_t {2}).status(), success_k);
 
     // Emptied once more, the group has nothing to publish and draws no stamp for it.
-    st_verify_eq_(group->reset(), success_k);
+    expect_equal(group->reset(), success_k);
     generation_t const published = order.published_stamp();
-    st_verify_eq_(group->stage(), success_k);
-    st_verify_eq_(group->commit(), success_k);
-    st_verify_eq_(order.published_stamp(), published);
-    st_verify_eq_(group->commit_stamp(), generation_t {0});
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
+    expect_equal(order.published_stamp(), published);
+    expect_equal(group->commit_stamp(), generation_t {0});
 }
 
 #pragma endregion Transaction Group Tests
@@ -1252,92 +1252,92 @@ static void dynamic_transaction_group_empties_on_commit_and_reset() {
 /** A resumed order answers its next reader at the resumed stamp and draws the stamp above it, and
  *  the mark rises past it once that reader leaves. */
 template <typename order_type_>
-static void verify_resume_continues_stamps() {
+static void check_resume_continues_stamps() {
     generation_t const durable = 1000;
     order_type_ order;
-    st_verify_eq_(order.resume(durable), success_k);
-    st_verify_eq_(order.published_stamp(), durable);
-    st_verify_eq_(order.drawn_stamp(), durable);
-    st_verify_eq_(order.low_water_mark(), durable, "a run built right after a restart packs its stamps from here");
+    expect_equal(order.resume(durable), success_k);
+    expect_equal(order.published_stamp(), durable);
+    expect_equal(order.drawn_stamp(), durable);
+    expect_equal(order.low_water_mark(), durable, "a run built right after a restart packs its stamps from here");
 
     typename order_type_::snapshot_claim_t claim;
-    st_verify_eq_(order.take_snapshot(claim), durable);
-    st_verify_gt_(order.next_generation(), durable);
+    expect_equal(order.take_snapshot(claim), durable);
+    expect_true(order.next_generation() > durable);
     typename order_type_::commit_in_flight_t landing;
     order.begin_commit(landing);
-    st_verify_eq_(static_cast<generation_t>(landing.stamp()), durable + 1);
+    expect_equal(static_cast<generation_t>(landing.stamp()), durable + 1);
     order.end_commit(landing);
-    st_verify_eq_(order.published_stamp(), durable + 1);
-    st_verify_eq_(order.low_water_mark(), durable, "the open claim still pins its snapshot");
+    expect_equal(order.published_stamp(), durable + 1);
+    expect_equal(order.low_water_mark(), durable, "the open claim still pins its snapshot");
 
     claim.retire();
-    st_verify_eq_(order.low_water_mark(), durable + 1);
+    expect_equal(order.low_water_mark(), durable + 1);
 }
 
-static void commit_order_resume_continues_stamps() {
-    verify_resume_continues_stamps<commit_order_t>();
-    verify_resume_continues_stamps<solitary_commit_order_t>();
+static void test_commit_order_resume_continues_stamps() {
+    check_resume_continues_stamps<commit_order_t>();
+    check_resume_continues_stamps<solitary_commit_order_t>();
 }
 
 /** Stores built into an order before it resumes commit above the resumed stamp, and a reader at
  *  that stamp sees none of it. */
-static void commit_order_resume_reaches_its_stores() {
+static void test_commit_order_resume_reaches_its_stores() {
     generation_t const durable = 1 << 20;
     grouped_order_t order;
     grouped_map_t values {order};
     grouped_set_t edges {order};
-    st_verify_eq_(order.resume(durable), success_k, "building a store into an order draws nothing from it");
+    expect_equal(order.resume(durable), success_k, "building a store into an order draws nothing from it");
 
     auto group = dynamic_group_t::make(order);
-    st_verify_(group);
-    st_verify_eq_(group->snapshot(), durable);
+    if (!expect_equal(group.status(), success_k)) return;
+    expect_equal(group->snapshot(), durable);
     auto values_joined = group->join(values);
     auto edges_joined = group->join(edges);
-    st_verify_(values_joined && edges_joined);
-    st_verify_eq_((*values_joined)->upsert(grouped_member_t {1u, 100}), success_k);
-    st_verify_eq_((*edges_joined)->upsert(std::uint64_t {7}), success_k);
-    st_verify_eq_(group->stage(), success_k);
-    st_verify_eq_(group->commit(), success_k);
+    if (!expect_true(values_joined && edges_joined)) return;
+    expect_equal((*values_joined)->upsert(grouped_member_t {1u, 100}), success_k);
+    expect_equal((*edges_joined)->upsert(std::uint64_t {7}), success_k);
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
 
-    st_verify_eq_(group->commit_stamp(), durable + 1);
-    st_verify_(!holds_at(values, durable, 1) && !holds_at(edges, durable, 7));
-    st_verify_(holds_at(values, durable + 1, 1) && holds_at(edges, durable + 1, 7));
+    expect_equal(group->commit_stamp(), durable + 1);
+    expect_true(!holds_at(values, durable, 1) && !holds_at(edges, durable, 7));
+    expect_true(holds_at(values, durable + 1, 1) && holds_at(edges, durable + 1, 7));
 }
 
 /** An argument leaving no stamp to draw is refused, and so is an order something has already drawn
  *  from or reads at, with nothing changed either way. */
-static void commit_order_resume_refusals() {
+static void test_commit_order_resume_refusals() {
     {
         commit_order_t order;
-        st_verify_eq_(order.resume(-1), invalid_argument_k);
-        st_verify_eq_(order.resume(latest_snapshot_k), invalid_argument_k, "the next stamp would read uncommitted");
-        st_verify_eq_(order.published_stamp(), generation_t {0});
-        st_verify_eq_(order.resume(latest_snapshot_k - 1), success_k, "one stamp is still left to draw");
-        st_verify_eq_(order.resume(7), operation_not_permitted_k, "an order resumes once");
-        st_verify_eq_(order.published_stamp(), latest_snapshot_k - 1);
+        expect_equal(order.resume(-1), invalid_argument_k);
+        expect_equal(order.resume(latest_snapshot_k), invalid_argument_k, "the next stamp would read uncommitted");
+        expect_equal(order.published_stamp(), generation_t {0});
+        expect_equal(order.resume(latest_snapshot_k - 1), success_k, "one stamp is still left to draw");
+        expect_equal(order.resume(7), operation_not_permitted_k, "an order resumes once");
+        expect_equal(order.published_stamp(), latest_snapshot_k - 1);
     }
     {
         commit_order_t order;
-        st_verify_eq_(order.next_generation(), generation_t {1});
-        st_verify_eq_(order.resume(7), operation_not_permitted_k);
-        st_verify_eq_(order.next_generation(), generation_t {2});
+        expect_equal(order.next_generation(), generation_t {1});
+        expect_equal(order.resume(7), operation_not_permitted_k);
+        expect_equal(order.next_generation(), generation_t {2});
     }
     {
         solitary_commit_order_t order;
         solitary_commit_order_t::commit_in_flight_t landing;
         order.begin_commit(landing);
         order.end_commit(landing);
-        st_verify_eq_(order.resume(7), operation_not_permitted_k);
-        st_verify_eq_(order.published_stamp(), generation_t {1});
+        expect_equal(order.resume(7), operation_not_permitted_k);
+        expect_equal(order.published_stamp(), generation_t {1});
     }
     {
         commit_order_t order;
         commit_order_t::snapshot_claim_t claim;
-        st_verify_eq_(order.take_snapshot(claim), generation_t {0});
-        st_verify_eq_(order.resume(7), operation_not_permitted_k, "an open claim reads at the stamp it would move");
+        expect_equal(order.take_snapshot(claim), generation_t {0});
+        expect_equal(order.resume(7), operation_not_permitted_k, "an open claim reads at the stamp it would move");
         claim.retire();
-        st_verify_eq_(order.resume(7), success_k, "a retired claim drew nothing");
-        st_verify_eq_(order.published_stamp(), generation_t {7});
+        expect_equal(order.resume(7), success_k, "a retired claim drew nothing");
+        expect_equal(order.published_stamp(), generation_t {7});
     }
 }
 
@@ -1350,28 +1350,28 @@ using versioned_t = versioning_t::versioned_t;
 using dated_identifier_t = versioning_t::dated_identifier_t;
 
 /** A generation breaks ties only for operands that still name a key. */
-static void versioned_comparator_orders_by_key_then_generation() {
+static void test_versioned_comparator_orders_by_key_then_generation() {
     versioning_t::versioned_comparator_t comparator;
 
     versioned_t older {std::size_t {5}}, newer {std::size_t {5}}, other {std::size_t {6}};
     older.generation = 1, newer.generation = 2, other.generation = 0;
 
-    st_verify_(comparator.less(older, newer));
-    st_verify_(!comparator.less(newer, older));
-    st_verify_(comparator.less(newer, other));
-    st_verify_(!comparator.less(other, newer));
-    st_verify_(comparator.same(older, older));
-    st_verify_(!comparator.same(older, newer));
+    expect_true(comparator.less(older, newer));
+    expect_true(!comparator.less(newer, older));
+    expect_true(comparator.less(newer, other));
+    expect_true(!comparator.less(other, newer));
+    expect_true(comparator.same(older, older));
+    expect_true(!comparator.same(older, newer));
 
     // A dated identifier orders the same way, against an entry and against itself.
     dated_identifier_t const dated {std::size_t {5}, generation_t {2}};
-    st_verify_(comparator.less(older, dated));
-    st_verify_(!comparator.less(dated, older));
-    st_verify_(comparator.same(dated, newer));
+    expect_true(comparator.less(older, dated));
+    expect_true(!comparator.less(dated, older));
+    expect_true(comparator.same(dated, newer));
 
     // A plain key carries no generation, so it orders by key alone.
-    st_verify_(comparator.less(std::size_t {4}, older));
-    st_verify_(!comparator.less(older, std::size_t {5}));
+    expect_true(comparator.less(std::size_t {4}, older));
+    expect_true(!comparator.less(older, std::size_t {5}));
 
     // A watch dates an entry without naming one, so it is never an ordering operand.
     static_assert(carries_generation<watch_t>, "a watch does carry a generation");
@@ -1385,21 +1385,21 @@ static void versioned_comparator_orders_by_key_then_generation() {
 #pragma region Optimistic Concurrency Tests
 
 /** A stamp is visible to every snapshot at or past it, and an uncommitted one to none. */
-static void commit_stamp_visibility_matrix() {
+static void test_commit_stamp_visibility_matrix() {
     constexpr generation_t stamps_k[] = {0, 1, 2, 7, 1000};
     constexpr generation_t snapshots_k[] = {0, 1, 2, 7, 1000, 1001};
 
     for (generation_t const stamp : stamps_k)
         for (generation_t const snapshot : snapshots_k)
-            st_verify_eq_(visible_at(static_cast<commit_stamp_t>(stamp), snapshot), stamp <= snapshot);
+            expect_equal(visible_at(static_cast<commit_stamp_t>(stamp), snapshot), stamp <= snapshot);
 
     // The sentinel sits past every snapshot a generation counter will ever hand out, which is the
     // whole reason it is the maximum rather than zero.
-    for (generation_t const snapshot : snapshots_k) st_verify_(!visible_at(commit_stamp_t::uncommitted_k, snapshot));
-    st_verify_(!visible_at(commit_stamp_t::uncommitted_k, (std::numeric_limits<generation_t>::max)() - 1));
+    for (generation_t const snapshot : snapshots_k) expect_true(!visible_at(commit_stamp_t::uncommitted_k, snapshot));
+    expect_true(!visible_at(commit_stamp_t::uncommitted_k, (std::numeric_limits<generation_t>::max)() - 1));
 
     // Zero as a sentinel would have read as "visible since the beginning of time".
-    st_verify_(visible_at(static_cast<commit_stamp_t>(generation_t {0}), 0));
+    expect_true(visible_at(static_cast<commit_stamp_t>(generation_t {0}), 0));
 }
 
 /**
@@ -1417,10 +1417,10 @@ static_assert(isolation_ladder_k.size() == static_cast<std::size_t>(isolation_t:
               "a rung joined or left `isolation_t` without joining the walk over it");
 
 /** Every ordered pair of isolation levels, so the enum's order is load-bearing. */
-static void isolation_levels_compare_by_strength() {
+static void test_isolation_levels_compare_by_strength() {
     for (std::size_t stronger = 0; stronger != isolation_ladder_k.size(); ++stronger)
         for (std::size_t weaker = 0; weaker != isolation_ladder_k.size(); ++weaker)
-            st_verify_eq_(at_least(isolation_ladder_k[stronger], isolation_ladder_k[weaker]), stronger >= weaker);
+            expect_equal(at_least(isolation_ladder_k[stronger], isolation_ladder_k[weaker]), stronger >= weaker);
 
     static_assert(at_least(isolation_t::serializable_k, isolation_t::read_committed_k));
     static_assert(!at_least(isolation_t::read_committed_k, isolation_t::snapshot_k));
@@ -1440,7 +1440,7 @@ struct resolved_entry_t {
 };
 
 /** Watches that still match pass, and the first that drifted reports a conflict. */
-static void validate_watches_catches_drift() {
+static void test_validate_watches_catches_drift() {
     using watched_t = watched_identifier<int>;
     std::vector<watched_t> watches;
     watches.push_back(watched_t {1, watch_t {5, presence_t::present_k}});
@@ -1461,21 +1461,21 @@ static void validate_watches_catches_drift() {
         {1, resolved_entry_t {5, presence_t::present_k}},
         {2, resolved_entry_t {8, presence_t::present_k}},
     };
-    st_verify_eq_(validate_watches(watches, resolve(unchanged)), success_k);
+    expect_equal(validate_watches(watches, resolve(unchanged)), success_k);
 
     // A watched key gained a newer version.
     std::vector<std::pair<int, resolved_entry_t>> bumped {
         {1, resolved_entry_t {5, presence_t::present_k}},
         {2, resolved_entry_t {9, presence_t::present_k}},
     };
-    st_verify_eq_(validate_watches(watches, resolve(bumped)), read_conflict_k);
+    expect_equal(validate_watches(watches, resolve(bumped)), read_conflict_k);
 
     // A watched key was erased under us, which is a different shape from never having been there.
     std::vector<std::pair<int, resolved_entry_t>> erased {
         {1, resolved_entry_t {5, presence_t::present_k}},
         {2, resolved_entry_t {8, presence_t::erased_k}},
     };
-    st_verify_eq_(validate_watches(watches, resolve(erased)), read_conflict_k);
+    expect_equal(validate_watches(watches, resolve(erased)), read_conflict_k);
 
     // A key watched as absent that has since appeared.
     std::vector<std::pair<int, resolved_entry_t>> appeared {
@@ -1483,7 +1483,7 @@ static void validate_watches_catches_drift() {
         {2, resolved_entry_t {8, presence_t::present_k}},
         {3, resolved_entry_t {11, presence_t::present_k}},
     };
-    st_verify_eq_(validate_watches(watches, resolve(appeared)), read_conflict_k);
+    expect_equal(validate_watches(watches, resolve(appeared)), read_conflict_k);
 
     // A committed tombstone resolves to missing, and the absent watch records that same shape, so
     // the two match rather than reporting a phantom conflict.
@@ -1492,19 +1492,19 @@ static void validate_watches_catches_drift() {
         {2, resolved_entry_t {8, presence_t::present_k}},
         {3, resolved_entry_t {absent_generation_k, presence_t::erased_k}},
     };
-    st_verify_eq_(validate_watches(watches, resolve(tombstoned)), success_k);
+    expect_equal(validate_watches(watches, resolve(tombstoned)), success_k);
 
     // A key that vanished entirely, resolved through the missing callback.
     std::vector<std::pair<int, resolved_entry_t>> vanished {{2, resolved_entry_t {8, presence_t::present_k}}};
-    st_verify_eq_(validate_watches(watches, resolve(vanished)), read_conflict_k);
+    expect_equal(validate_watches(watches, resolve(vanished)), read_conflict_k);
 
     // No watches at all is trivially consistent.
     std::vector<watched_t> const none;
-    st_verify_eq_(validate_watches(none, resolve(unchanged)), success_k);
+    expect_equal(validate_watches(none, resolve(unchanged)), success_k);
 }
 
 /** A bare key matches every version of it, while a dated identifier matches exactly one. */
-static void per_version_equals_separates_versions() {
+static void test_per_version_equals_separates_versions() {
     per_version_equals<std::equal_to<std::size_t>> const equals;
     per_key_hasher<std::hash<std::size_t>> const hasher;
 
@@ -1512,28 +1512,28 @@ static void per_version_equals_separates_versions() {
     older.generation = 1, newer.generation = 2, other.generation = 1;
 
     // Two versions of one key are distinct entries.
-    st_verify_(!equals(older, newer));
-    st_verify_(equals(older, older));
-    st_verify_(!equals(older, other));
+    expect_true(!equals(older, newer));
+    expect_true(equals(older, older));
+    expect_true(!equals(older, other));
 
     // A bare key names the key alone, so it matches every version of it - the visibility walk.
-    st_verify_(equals(std::size_t {5}, older));
-    st_verify_(equals(std::size_t {5}, newer));
-    st_verify_(!equals(std::size_t {5}, other));
+    expect_true(equals(std::size_t {5}, older));
+    expect_true(equals(std::size_t {5}, newer));
+    expect_true(!equals(std::size_t {5}, other));
 
     // A dated identifier names one version - the commit.
     dated_identifier_t const dated {std::size_t {5}, generation_t {2}};
-    st_verify_(!equals(dated, older));
-    st_verify_(equals(dated, newer));
+    expect_true(!equals(dated, older));
+    expect_true(equals(dated, newer));
 
     // The hasher keeps peeling to the bare key, so every version shares one probe run.
-    st_verify_eq_(hasher(older), hasher(newer));
-    st_verify_eq_(hasher(older), hasher(std::size_t {5}));
-    st_verify_eq_(hasher(dated), hasher(std::size_t {5}));
+    expect_equal(hasher(older), hasher(newer));
+    expect_equal(hasher(older), hasher(std::size_t {5}));
+    expect_equal(hasher(dated), hasher(std::size_t {5}));
 
     // Untouched by the widening: `per_key_equals` still collapses the versions of a key.
     per_key_equals<std::equal_to<std::size_t>> const collapsing;
-    st_verify_(collapsing(older, newer));
+    expect_true(collapsing(older, newer));
 }
 
 /** Both shipped stores are optimistically concurrent, and the seams they are read through exist. */
@@ -1587,7 +1587,7 @@ struct conflicting_transaction_t {
 
 /** Tests that a bounded retry restages after every conflict, gives up once its attempts run out,
  *  and returns any other failure at once. */
-static void commit_with_retries_is_bounded() {
+static void test_commit_with_retries_is_bounded() {
     std::size_t restaged = 0;
     auto const stage_changes = [&](conflicting_transaction_t &) noexcept {
         ++restaged;
@@ -1597,19 +1597,19 @@ static void commit_with_retries_is_bounded() {
     // Two conflicts and then a commit: three attempts, each restaging, with a reset between them.
     conflicting_transaction_t recovering;
     recovering.refusals_left = 2;
-    st_verify_(commit_with_retries(recovering, 3, stage_changes));
-    st_verify_eq_(restaged, 3u, "every attempt recomputes what it stages");
-    st_verify_eq_(recovering.resets, 2u, "and a refused attempt is reset before the next one");
+    expect_equal(commit_with_retries(recovering, 3, stage_changes), success_k);
+    expect_equal(restaged, 3u, "every attempt recomputes what it stages");
+    expect_equal(recovering.resets, 2u, "and a refused attempt is reset before the next one");
 
     // Every attempt conflicting is a retry that gave up, which is what the vocabulary names for it.
     conflicting_transaction_t hopeless;
     hopeless.refusals_left = 10;
     hopeless.refusal = status_t::phantom_conflict_k;
     restaged = 0;
-    st_verify_eq_(commit_with_retries(hopeless, 4, stage_changes), status_t::operation_would_block_k);
-    st_verify_eq_(hopeless.commits, 4u, "the bound is the number of attempts, not one more");
-    st_verify_eq_(hopeless.resets, 4u, "and the last refused attempt is reset too, leaving nothing staged");
-    st_verify_eq_(restaged, 4u, "every one of those attempts recomputed what it staged");
+    expect_equal(commit_with_retries(hopeless, 4, stage_changes), status_t::operation_would_block_k);
+    expect_equal(hopeless.commits, 4u, "the bound is the number of attempts, not one more");
+    expect_equal(hopeless.resets, 4u, "and the last refused attempt is reset too, leaving nothing staged");
+    expect_equal(restaged, 4u, "every one of those attempts recomputed what it staged");
 
     // A failure that is not a conflict is not retried, and still leaves the transaction reset.
     conflicting_transaction_t refusing;
@@ -1618,30 +1618,30 @@ static void commit_with_retries_is_bounded() {
         ++attempted;
         return status_t::out_of_memory_heap_k;
     });
-    st_verify_eq_(answered, status_t::out_of_memory_heap_k);
-    st_verify_eq_(attempted, 1u, "retrying cannot mend a failure no other transaction caused");
-    st_verify_eq_(refusing.stages, 0u, "a transaction whose changes would not stage never reaches its own stage");
-    st_verify_eq_(refusing.resets, 1u);
+    expect_equal(answered, status_t::out_of_memory_heap_k);
+    expect_equal(attempted, 1u, "retrying cannot mend a failure no other transaction caused");
+    expect_equal(refusing.stages, 0u, "a transaction whose changes would not stage never reaches its own stage");
+    expect_equal(refusing.resets, 1u);
 
     // A conflict the unwind cannot clear is answered with the unwind's own failure, not the conflict.
     conflicting_transaction_t unwinding;
     unwinding.refusals_left = 1;
     unwinding.reset_refusals_left = 1;
-    st_verify_eq_(commit_with_retries(unwinding, 3, stage_changes), status_t::operation_not_permitted_k);
-    st_verify_eq_(unwinding.commits, 1u, "a transaction that would not unwind is not retried over");
+    expect_equal(commit_with_retries(unwinding, 3, stage_changes), status_t::operation_not_permitted_k);
+    expect_equal(unwinding.commits, 1u, "a transaction that would not unwind is not retried over");
 
     // A failure of its own outranks the unwind's, because it is the one a caller can act on.
     conflicting_transaction_t faulted;
     faulted.reset_refusals_left = 1;
-    st_verify_eq_(commit_with_retries(
-                      faulted, 3, [&](conflicting_transaction_t &) noexcept { return status_t::invalid_argument_k; }),
-                  status_t::invalid_argument_k);
-    st_verify_eq_(faulted.resets, 1u, "and the attempt is still unwound before the failure goes back");
+    expect_equal(commit_with_retries(
+                     faulted, 3, [&](conflicting_transaction_t &) noexcept { return status_t::invalid_argument_k; }),
+                 status_t::invalid_argument_k);
+    expect_equal(faulted.resets, 1u, "and the attempt is still unwound before the failure goes back");
 
     // No attempts make no calls at all.
     conflicting_transaction_t untouched;
-    st_verify_eq_(commit_with_retries(untouched, 0, stage_changes), status_t::operation_would_block_k);
-    st_verify_eq_(untouched.stages + untouched.commits + untouched.resets, 0u);
+    expect_equal(commit_with_retries(untouched, 0, stage_changes), status_t::operation_would_block_k);
+    expect_equal(untouched.stages + untouched.commits + untouched.resets, 0u);
 }
 
 /** Every status the vocabulary names, so a new one has to be classified here rather than fall
@@ -1665,15 +1665,15 @@ constexpr status_t every_status_k[] = {
 
 /** Tests that the conflict statuses are exactly the three a retry can overcome, over the whole
  *  vocabulary, and that the I/O status names and numbers itself. */
-static void status_vocabulary_names_conflicts_and_input_output() {
+static void test_status_vocabulary_names_conflicts_and_input_output() {
     for (status_t const status : every_status_k) {
         bool const retryable = status == status_t::write_conflict_k || status == status_t::read_conflict_k ||
                                status == status_t::phantom_conflict_k;
-        st_verify_eq_(conflicted(status), retryable, name_of(status));
-        st_verify_(std::string_view {name_of(status)} != std::string_view {"unrecognized"});
+        expect_equal(conflicted(status), retryable, "{}", name_of(status));
+        expect_true(std::string_view {name_of(status)} != std::string_view {"unrecognized"});
     }
-    st_verify_eq_(static_cast<int>(status_t::input_output_k), EIO, "the status follows errno where one fits");
-    st_verify_eq_(std::string_view {name_of(status_t::input_output_k)}, std::string_view {"input_output_k"});
+    expect_equal(static_cast<int>(status_t::input_output_k), EIO, "the status follows errno where one fits");
+    expect_equal(std::string_view {name_of(status_t::input_output_k)}, std::string_view {"input_output_k"});
 }
 
 #pragma endregion Optimistic Concurrency Tests
@@ -1682,68 +1682,62 @@ static void status_vocabulary_names_conflicts_and_input_output() {
 
 using namespace ashvardanian::smashtable::test;
 
-int main(int, char **arguments) {
-    settings_t const settings = read_settings(arguments[0]);
-    install_test_signal_handlers();
-    print(probe_machine());
-    print(settings);
-    test_tally_t tally;
+int main(int argc, char **argv) {
+    start_test_run(argc, argv);
 
-    tally += run_test(settings, "expected.construction_matrix", expected_construction_matrix);
-    tally += run_test(settings, "expected.moves_stay_balanced", expected_moves_stay_balanced);
-    tally += run_test(settings, "expected.decomposes", expected_decomposes);
-    tally += run_test(settings, "expected.carries_move_only", expected_carries_move_only);
+    run_test_case("test_expected_construction_matrix", test_expected_construction_matrix);
+    run_test_case("test_expected_moves_stay_balanced", test_expected_moves_stay_balanced);
+    run_test_case("test_expected_decomposes", test_expected_decomposes);
+    run_test_case("test_expected_carries_move_only", test_expected_carries_move_only);
 
-    tally += run_test(settings, "allocator.refuses_overflowing_counts", allocator_refuses_overflowing_counts);
+    run_test_case("test_allocator_refuses_overflowing_counts", test_allocator_refuses_overflowing_counts);
 
-    tally += run_test(settings, "shared_mutex.excludes", shared_mutex_excludes);
-    tally += run_test(settings, "shared_mutex.admits_every_writer", shared_mutex_admits_every_writer);
+    run_test_case("test_shared_mutex_excludes", test_shared_mutex_excludes);
+    run_test_case("test_shared_mutex_admits_every_writer", test_shared_mutex_admits_every_writer);
 
-    tally += run_test(settings, "extended_atomics.take_the_bounded_path", extended_atomics_take_the_bounded_path);
-    tally += run_test(settings, "extended_atomics.reach_the_pinned_table", extended_atomics_reach_the_pinned_table);
-    tally += run_test(settings, "extended_atomics.claim_each_bit_once", extended_atomics_claim_each_bit_once);
-    tally += run_test(settings, "waiting_policy.substitutes_in_the_mutex", waiting_policy_substitutes_in_the_mutex);
-    tally +=
-        run_test(settings, "waiting_policy.substitutes_in_the_slot_lock", waiting_policy_substitutes_in_the_slot_lock);
+    run_test_case("test_extended_atomics_take_the_bounded_path", test_extended_atomics_take_the_bounded_path);
+    run_test_case("test_extended_atomics_reach_the_pinned_table", test_extended_atomics_reach_the_pinned_table);
+    run_test_case("test_extended_atomics_claim_each_bit_once", test_extended_atomics_claim_each_bit_once);
+    run_test_case("test_waiting_policy_substitutes_in_the_mutex", test_waiting_policy_substitutes_in_the_mutex);
+    run_test_case("test_waiting_policy_substitutes_in_the_slot_lock", test_waiting_policy_substitutes_in_the_slot_lock);
 
-    tally += run_test(settings, "transaction_group.walks_one_order", transaction_group_walks_one_order);
-    tally +=
-        run_test(settings, "transaction_group.rollback_stops_at_refusal", transaction_group_rollback_stops_at_refusal);
-    tally +=
-        run_test(settings, "transaction_group.refuses_a_duplicate_store", transaction_group_refuses_a_duplicate_store);
-    tally += run_test(settings, "transaction_group.reports_what_refused_to_open",
-                      transaction_group_reports_what_refused_to_open);
-    tally += run_test(settings, "transaction_group.failed_unwind_resets", transaction_group_failed_unwind_resets);
-    tally += run_test(settings, "transaction_group.torn_commit_stops_claiming_staged",
-                      transaction_group_torn_commit_stops_claiming_staged);
-    tally += run_test(settings, "transaction_group.split_commit_publishes_nothing",
-                      transaction_group_split_commit_publishes_nothing_on_refusal);
-    tally += run_test(settings, "transaction_group.resets_every_participant_at_one_snapshot",
-                      transaction_group_resets_every_participant_at_one_snapshot);
-    tally += run_test(settings, "dynamic_transaction_group.commits_kinds_under_one_stamp",
-                      dynamic_transaction_group_commits_kinds_under_one_stamp);
-    tally += run_test(settings, "dynamic_transaction_group.conflict_publishes_nothing",
-                      dynamic_transaction_group_conflict_publishes_nothing);
-    tally += run_test(settings, "dynamic_transaction_group.commits_many_stores_of_one_kind",
-                      dynamic_transaction_group_commits_many_stores_of_one_kind);
-    tally += run_test(settings, "dynamic_transaction_group.joins_each_store_once",
-                      dynamic_transaction_group_joins_each_store_once);
-    tally += run_test(settings, "dynamic_transaction_group.empties_on_commit_and_reset",
-                      dynamic_transaction_group_empties_on_commit_and_reset);
+    run_test_case("test_transaction_group_walks_one_order", test_transaction_group_walks_one_order);
+    run_test_case("test_transaction_group_rollback_stops_at_refusal", test_transaction_group_rollback_stops_at_refusal);
+    run_test_case("test_transaction_group_refuses_a_duplicate_store", test_transaction_group_refuses_a_duplicate_store);
+    run_test_case("test_transaction_group_reports_what_refused_to_open",
+                  test_transaction_group_reports_what_refused_to_open);
+    run_test_case("test_transaction_group_failed_unwind_resets", test_transaction_group_failed_unwind_resets);
+    run_test_case("test_transaction_group_torn_commit_stops_claiming_staged",
+                  test_transaction_group_torn_commit_stops_claiming_staged);
+    run_test_case("test_transaction_group_split_commit_publishes_nothing_on_refusal",
+                  test_transaction_group_split_commit_publishes_nothing_on_refusal);
+    run_test_case("test_transaction_group_resets_every_participant_at_one_snapshot",
+                  test_transaction_group_resets_every_participant_at_one_snapshot);
+    run_test_case("test_dynamic_transaction_group_commits_kinds_under_one_stamp",
+                  test_dynamic_transaction_group_commits_kinds_under_one_stamp);
+    run_test_case("test_dynamic_transaction_group_conflict_publishes_nothing",
+                  test_dynamic_transaction_group_conflict_publishes_nothing);
+    run_test_case("test_dynamic_transaction_group_commits_many_stores_of_one_kind",
+                  test_dynamic_transaction_group_commits_many_stores_of_one_kind);
+    run_test_case("test_dynamic_transaction_group_joins_each_store_once",
+                  test_dynamic_transaction_group_joins_each_store_once);
+    run_test_case("test_dynamic_transaction_group_empties_on_commit_and_reset",
+                  test_dynamic_transaction_group_empties_on_commit_and_reset);
 
-    tally += run_test(settings, "commit_order.resume_continues_stamps", commit_order_resume_continues_stamps);
-    tally += run_test(settings, "commit_order.resume_reaches_its_stores", commit_order_resume_reaches_its_stores);
-    tally += run_test(settings, "commit_order.resume_refusals", commit_order_resume_refusals);
+    run_test_case("test_commit_order_resume_continues_stamps", test_commit_order_resume_continues_stamps);
+    run_test_case("test_commit_order_resume_reaches_its_stores", test_commit_order_resume_reaches_its_stores);
+    run_test_case("test_commit_order_resume_refusals", test_commit_order_resume_refusals);
 
-    tally += run_test(settings, "ordering.key_then_generation", versioned_comparator_orders_by_key_then_generation);
+    run_test_case("test_versioned_comparator_orders_by_key_then_generation",
+                  test_versioned_comparator_orders_by_key_then_generation);
 
-    tally += run_test(settings, "occ.commit_stamp_visibility", commit_stamp_visibility_matrix);
-    tally += run_test(settings, "occ.isolation_strength", isolation_levels_compare_by_strength);
-    tally += run_test(settings, "occ.validate_watches", validate_watches_catches_drift);
-    tally += run_test(settings, "occ.per_version_equals", per_version_equals_separates_versions);
-    tally += run_test(settings, "occ.commit_with_retries_is_bounded", commit_with_retries_is_bounded);
-    tally += run_test(settings, "status.names_conflicts_and_input_output",
-                      status_vocabulary_names_conflicts_and_input_output);
+    run_test_case("test_commit_stamp_visibility_matrix", test_commit_stamp_visibility_matrix);
+    run_test_case("test_isolation_levels_compare_by_strength", test_isolation_levels_compare_by_strength);
+    run_test_case("test_validate_watches_catches_drift", test_validate_watches_catches_drift);
+    run_test_case("test_per_version_equals_separates_versions", test_per_version_equals_separates_versions);
+    run_test_case("test_commit_with_retries_is_bounded", test_commit_with_retries_is_bounded);
+    run_test_case("test_status_vocabulary_names_conflicts_and_input_output",
+                  test_status_vocabulary_names_conflicts_and_input_output);
 
-    return report_test_failures(settings, tally);
+    return finish_test_run();
 }
