@@ -2,8 +2,8 @@
  *  @file verification/atomic_intrusive_stack.cpp
  *  @author Ash Vardanian
  *  @date November 2, 2026
- *  @brief GenMC client for @c atomic_intrusive_stack, two pushers and one taker, spelled over
- *      @c std::atomic with an explicit order at every site.
+ *  @brief GenMC client for @c atomic_intrusive_stack, two pushers and one taker, against its real
+ *      header, and each mutant spelled over @c std::atomic with the one order it changes.
  *
  *  One pusher links two records itself and pushes them as a chain, the other pushes one record, and
  *  each writes its records' payloads and links as plain stores before the push. The taker drains
@@ -16,9 +16,11 @@
  *  @verify fail rc11,imm atomic_intrusive_stack_acquire_take_false: with a relaxed exchange the
  *      taker meets a record whose payload and link it is not ordered after
  */
-#include <atomic> // `std::atomic` - the top of the stack
+#include <atomic> // `std::atomic` - the top of a mutant's stack
 
 #include <genmc.hpp>
+
+#include "smashtable/atomic_intrusive_stack.hpp" // `atomic_intrusive_stack` - the stack under test
 
 /** The header's choices; each mutant entry changes one. */
 struct knobs_t {
@@ -37,23 +39,32 @@ struct record_t {
 };
 
 record_t records[3];
+ashvardanian::smashtable::atomic_intrusive_stack<record_t> stack;
 std::atomic<record_t *> newest {nullptr};
 
-/** Links the chain's oldest to the observed top and exchanges the top for the chain's newest.
- *  Models @c atomic_intrusive_stack::push_chain. */
+/** The header's @c atomic_intrusive_stack::push_chain, or a mutant's, which links the chain's
+ *  oldest to the observed top and exchanges the top for the chain's newest. */
 template <knobs_t const &knobs_>
 void push_chain(record_t &chain_newest, record_t &chain_oldest) noexcept {
-    constexpr std::memory_order success_k = knobs_.release_push ? std::memory_order_release : std::memory_order_relaxed;
-    record_t *observed = newest.load(std::memory_order_relaxed);
-    do chain_oldest.next = observed;
-    while (!newest.compare_exchange_weak(observed, &chain_newest, success_k, std::memory_order_relaxed));
+    if constexpr (&knobs_ == &header_k) stack.push_chain(chain_newest, chain_oldest);
+    else {
+        constexpr std::memory_order success_k =
+            knobs_.release_push ? std::memory_order_release : std::memory_order_relaxed;
+        record_t *observed = newest.load(std::memory_order_relaxed);
+        do chain_oldest.next = observed;
+        while (!newest.compare_exchange_weak(observed, &chain_newest, success_k, std::memory_order_relaxed));
+    }
 }
 
-/** Takes every record pushed so far. Models @c atomic_intrusive_stack::take_all. */
+/** The header's @c atomic_intrusive_stack::take_all, or a mutant's: every record pushed so far. */
 template <knobs_t const &knobs_>
 record_t *take_all() noexcept {
-    constexpr std::memory_order order_k = knobs_.acquire_take ? std::memory_order_acquire : std::memory_order_relaxed;
-    return newest.exchange(nullptr, order_k);
+    if constexpr (&knobs_ == &header_k) return stack.take_all();
+    else {
+        constexpr std::memory_order order_k =
+            knobs_.acquire_take ? std::memory_order_acquire : std::memory_order_relaxed;
+        return newest.exchange(nullptr, order_k);
+    }
 }
 
 /** Pushes the first two records as one chain, the second above the first. */
