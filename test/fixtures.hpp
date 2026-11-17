@@ -24,9 +24,11 @@
 #include <atomic>      // `std::atomic`
 #include <compare>     // `std::strong_ordering`
 #include <exception>   // `std::exception`
+#include <format>      // `std::format_to_n` - the heavy keys' hex digits
 #include <functional>  // `std::less`, `std::equal_to`
 #include <limits>      // `std::numeric_limits`
 #include <new>         // `std::nothrow`
+#include <span>        // `std::span`
 #include <string_view> // `std::string_view`
 #include <type_traits> // `std::remove_cvref_t`
 #include <vector>      // `std::vector`
@@ -120,16 +122,10 @@ struct heavy_key_t {
      */
     static expected<heavy_key_t> make(trivial_id_t integer_to_encode) noexcept {
         heavy_key_t result;
-        char buffer[32];
-        int length =
-            std::snprintf(buffer, sizeof(buffer), "%016llx", static_cast<unsigned long long>(integer_to_encode));
-        if (length <= 0 || length >= static_cast<int>(sizeof(buffer)))
-            return expected<heavy_key_t>(heavy_key_t {}, status_t::unknown_k);
-
-        for (int i = 0; i < length; ++i) {
-            auto status = result.text.push_back(char(buffer[i]));
-            if (failed(status)) return expected<heavy_key_t>(heavy_key_t {}, status);
-        }
+        char digits[16];
+        std::format_to_n(digits, sizeof(digits), "{:016x}", integer_to_encode);
+        auto status = result.text.assign(std::span<char const>(digits));
+        if (failed(status)) return expected<heavy_key_t>(heavy_key_t {}, status);
         return result;
     }
 

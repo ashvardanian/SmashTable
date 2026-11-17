@@ -122,9 +122,8 @@ def test_watching_the_same_key_twice_is_idempotent(container, keygen):
 @pytest.mark.parametrize("key_type", KEY_TYPES)
 def test_watch_rejects_a_foreign_key_type(container):
     """A watch on a key this container cannot hold is refused like any other key use."""
-    with st.transaction(container) as (view,):
-        with pytest.raises(TypeError):
-            view.watch(1.5)
+    with st.transaction(container) as (view,), pytest.raises(TypeError):
+        view.watch(1.5)
 
 
 @pytest.mark.parametrize("container_class", MAP_CLASSES)

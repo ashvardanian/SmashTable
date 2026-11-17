@@ -468,21 +468,19 @@ static PyObject *View_scan(PyObject *self, PyObject *const *args, Py_ssize_t cou
         return nullptr;
     }
 
-    PyObject *start_object = nullptr;
-    PyObject *stop_object = nullptr;
-    std::size_t limit = 0;
-    if (!window_from_python("scan", args, count, keywords, start_object, stop_object, limit)) return nullptr;
+    window_bounds_t bounds;
+    if (!window_from_python("scan", args, count, keywords, bounds)) return nullptr;
 
     key_variant_t lower;
     key_variant_t upper;
-    bool const has_stop = stop_object && stop_object != Py_None;
-    bool has_start = start_object && start_object != Py_None;
-    if (has_start && !key_from_python(start_object, part->ops, lower)) return nullptr;
-    if (has_stop && !key_from_python(stop_object, part->ops, upper)) return nullptr;
+    bool const has_stop = bounds.stop && bounds.stop != Py_None;
+    bool has_start = bounds.start && bounds.start != Py_None;
+    if (has_start && !key_from_python(bounds.start, part->ops, lower)) return nullptr;
+    if (has_stop && !key_from_python(bounds.stop, part->ops, upper)) return nullptr;
     basic_vector<entry_t> collected;
     status_t status = success_k;
     if (run_over_participant(view, state, [&](participant_t &part) noexcept {
-            status = part.scan(has_start ? &lower : nullptr, has_stop ? &upper : nullptr, limit, collected);
+            status = part.scan(has_start ? &lower : nullptr, has_stop ? &upper : nullptr, bounds.limit, collected);
         }) != 0)
         return nullptr;
     if (raise_for(state, status) != 0) return nullptr;

@@ -346,12 +346,12 @@ def test_a_random_lifecycle_never_crashes_and_never_half_applies(isolation, keyg
             match phase:
                 case Phase.write:
                     key, value = rng.choice(keys), rng.randrange(100)
-                    if _permitted(lambda: view.__setitem__(key, value)):
+                    if _permitted(lambda view=view, key=key, value=value: view.__setitem__(key, value)):
                         shadow[key] = value
                 case Phase.read:
-                    _permitted(lambda: view[rng.choice(keys)])
+                    _permitted(lambda view=view: view[rng.choice(keys)])
                 case Phase.watch:
-                    _permitted(lambda: view.watch(rng.choice(keys)))
+                    _permitted(lambda view=view: view.watch(rng.choice(keys)))
                 case Phase.stage:
                     _permitted(group.stage)
                 # A commit publishes and returns the group to open, so the model moves and the

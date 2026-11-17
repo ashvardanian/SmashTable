@@ -227,7 +227,7 @@ def test_popmin_on_empty_raises(container):
 def test_popmin_takes_the_smallest(populated):
     """A sorted map pops its smallest key, which is where it diverges from dict deliberately."""
     container, model = populated
-    smallest = sorted(model)[0]
+    smallest = min(model)
     key, _ = container.popmin()
     assert key == smallest
 
@@ -386,7 +386,7 @@ def test_an_unordered_container_reprs_its_shape(populated, count):
     """A container that cannot walk itself reports how much it holds rather than what."""
     container, _ = populated
     wanted = f"{type(container).__name__}(key={container.key_type!r}, {count} entries)"
-    assert repr(container) == wanted, f"{repr(container)} vs {wanted}"
+    assert repr(container) == wanted, f"{container!r} vs {wanted}"
 
 
 @pytest.mark.parametrize("container_class", ENUMERABLE_MAP_CLASSES)
@@ -438,7 +438,7 @@ def test_equality_against_the_stdlib_model(populated):
     """A container equals the stdlib model holding the same elements, and `!=` is its negation."""
     container, model = populated
     assert container == model
-    assert not (container != model)
+    assert (container != model) is False
 
 
 @pytest.mark.parametrize("container_class", ALL_CLASSES)
@@ -449,7 +449,7 @@ def test_comparison_with_a_foreign_type_is_false(populated):
     """Comparing against an unrelated object answers False rather than raising."""
     container, _ = populated
     assert container != object()
-    assert not (container == object())
+    assert (container == object()) is False
 
 
 @pytest.mark.parametrize("container_class", ENUMERABLE_SET_CLASSES)

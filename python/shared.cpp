@@ -640,14 +640,12 @@ PyObject *mapping_view_new(module_state_t *state, PyObject *container, cursor_yi
 #pragma region Windowed Arguments
 
 bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
-                        PyObject *&start, PyObject *&stop, std::size_t &limit) noexcept {
+                        window_bounds_t &bounds) noexcept {
     if (count > 2) {
         PyErr_Format(PyExc_TypeError, "%s() takes at most two positional arguments", called);
         return false;
     }
-    start = count > 0 ? args[0] : nullptr;
-    stop = count > 1 ? args[1] : nullptr;
-    limit = (std::numeric_limits<std::size_t>::max)();
+    bounds = {count > 0 ? args[0] : nullptr, count > 1 ? args[1] : nullptr};
     if (!keywords) return true;
 
     Py_ssize_t const named = PyTuple_GET_SIZE(keywords);
@@ -655,18 +653,18 @@ bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t co
         PyObject *name = PyTuple_GET_ITEM(keywords, index);
         PyObject *value = args[count + index];
         if (PyUnicode_CompareWithASCIIString(name, "start") == 0) {
-            if (start) {
+            if (bounds.start) {
                 PyErr_Format(PyExc_TypeError, "%s() got multiple values for 'start'", called);
                 return false;
             }
-            start = value;
+            bounds.start = value;
         }
         else if (PyUnicode_CompareWithASCIIString(name, "stop") == 0) {
-            if (stop) {
+            if (bounds.stop) {
                 PyErr_Format(PyExc_TypeError, "%s() got multiple values for 'stop'", called);
                 return false;
             }
-            stop = value;
+            bounds.stop = value;
         }
         else if (PyUnicode_CompareWithASCIIString(name, "limit") == 0) {
             if (value == Py_None) continue;
@@ -678,7 +676,7 @@ bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t co
                 PyErr_SetString(PyExc_ValueError, "limit cannot be negative");
                 return false;
             }
-            limit = static_cast<std::size_t>(wanted);
+            bounds.limit = static_cast<std::size_t>(wanted);
         }
         else {
             PyErr_Format(PyExc_TypeError, "%s() got an unexpected keyword argument '%U'", called, name);

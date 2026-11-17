@@ -29,6 +29,7 @@
 #include <cstdint> // `std::int64_t`
 
 #include <atomic>   // `std::atomic`
+#include <limits>   // `std::numeric_limits`
 #include <optional> // `std::optional`
 #include <string>   // `std::string`
 #include <utility>  // `std::exchange`, `std::swap`
@@ -1138,16 +1139,27 @@ bool value_from_python(PyObject *object, value_mode_t mode, releases_t *releases
  */
 bool key_from_python(PyObject *object, key_ops_t const *ops, key_variant_t &result) noexcept;
 
+/** The bounds a windowed call takes. */
+struct window_bounds_t {
+
+    /** Borrowed lower bound object, or null; @c Py_None counts as null. */
+    PyObject *start = nullptr;
+
+    /** The same for the upper end. */
+    PyObject *stop = nullptr;
+
+    /** How many elements at most, or the maximum for uncounted. */
+    std::size_t limit = (std::numeric_limits<std::size_t>::max)();
+};
+
 /**
  *  @brief Reads the @b (start,stop,limit) a windowed call takes, in both spellings.
  *  @param[in] called The method's name, which every message here quotes.
- *  @param[out] start Borrowed bound object, or null; @c Py_None counts as null.
- *  @param[out] stop The same for the upper end.
- *  @param[out] limit How many elements at most, or the maximum for uncounted.
+ *  @param[out] bounds The bounds read, untouched past the first error.
  *  @return True on success; false with a @c TypeError or @c ValueError set.
  */
 bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
-                        PyObject *&start, PyObject *&stop, std::size_t &limit) noexcept;
+                        window_bounds_t &bounds) noexcept;
 
 /**
  *  @brief Builds a new Python object from a stored key.

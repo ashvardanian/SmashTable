@@ -1036,24 +1036,22 @@ static PyObject *container_scan(PyObject *self, PyObject *const *args, Py_ssize_
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
 
-    PyObject *start_object = nullptr;
-    PyObject *stop_object = nullptr;
-    std::size_t limit = 0;
-    if (!window_from_python("scan", args, count, keywords, start_object, stop_object, limit)) return nullptr;
+    window_bounds_t bounds;
+    if (!window_from_python("scan", args, count, keywords, bounds)) return nullptr;
 
     key_variant_t start_key;
     key_variant_t stop_key;
-    bool has_start = start_object && start_object != Py_None;
-    bool has_stop = stop_object && stop_object != Py_None;
-    if (has_start && !key_from_python(start_object, container->ops, start_key)) return nullptr;
-    if (has_stop && !key_from_python(stop_object, container->ops, stop_key)) return nullptr;
+    bool has_start = bounds.start && bounds.start != Py_None;
+    bool has_stop = bounds.stop && bounds.stop != Py_None;
+    if (has_start && !key_from_python(bounds.start, container->ops, start_key)) return nullptr;
+    if (has_stop && !key_from_python(bounds.stop, container->ops, stop_key)) return nullptr;
 
     basic_vector<entry_t> collected;
     status_t status = success_k;
     run_over_values(container->mode, [&]() noexcept {
         status =
             container->store_ops->store_scan(container->releases, container->store, has_start ? &start_key : nullptr,
-                                             has_stop ? &stop_key : nullptr, limit, collected);
+                                             has_stop ? &stop_key : nullptr, bounds.limit, collected);
     });
     if (raise_for(state, status) != 0) return nullptr;
     return entries_to_python(collected, yields);

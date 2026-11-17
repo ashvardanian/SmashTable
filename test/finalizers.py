@@ -131,6 +131,7 @@ def test_no_release_path_deadlocks():
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         pytest.fail("deadlocked: a finalizer reaching into its own container hung on a store lock")

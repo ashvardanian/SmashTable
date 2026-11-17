@@ -267,9 +267,8 @@ def test_a_view_deletes_a_slice(container, keygen, window, kept):
 @pytest.mark.parametrize(("bounds", "failure"), SLICE_REFUSALS)
 def test_a_view_slice_is_held_to_the_layout(container, bounds, failure):
     """A staged window is held to the same rules the store's own slice is."""
-    with st.transaction(container) as (view,):
-        with pytest.raises(failure):
-            del view[bounds]
+    with st.transaction(container) as (view,), pytest.raises(failure):
+        del view[bounds]
 
 
 @pytest.mark.parametrize("container_class", HASH_MAP_CLASSES)

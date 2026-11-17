@@ -1017,31 +1017,29 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
             return spine;
         }
 
-        // Build perfectly balanced tree recursively from spine
-        auto build_tree = [](node_t *&current, std::size_t n, auto &build_ref) -> node_t * {
-            if (n == 0) return nullptr;
-
-            // Build left subtree with n/2 nodes
-            node_t *left = build_ref(current, n / 2, build_ref);
-
-            // Current node becomes root
-            node_t *root = current;
-            current = current->right;
-
-            // Build right subtree with remaining nodes
-            node_t *right = build_ref(current, n - n / 2 - 1, build_ref);
-
-            root->left = left;
-            if (left) left->parent = root;
-            root->right = right;
-            if (right) right->parent = root;
-            root->height = 1 + max_of(get_height(left), get_height(right));
-            return root;
-        };
-
-        auto root = build_tree(spine, count, build_tree);
+        node_t *root = spine_to_subtree(spine, count).root;
         if (root) root->parent = nullptr;
         return root;
+    }
+
+    /** A subtree built from the front of a spine, and the spine left after it. */
+    struct spine_subtree_t {
+        node_t *root = nullptr;
+        node_t *rest = nullptr;
+    };
+
+    /** Builds a perfectly balanced subtree from the first @p count nodes of @p spine. */
+    static spine_subtree_t spine_to_subtree(node_t *spine, std::size_t count) noexcept {
+        if (count == 0) return {nullptr, spine};
+        spine_subtree_t const left = spine_to_subtree(spine, count / 2);
+        node_t *root = left.rest;
+        spine_subtree_t const right = spine_to_subtree(root->right, count - count / 2 - 1);
+        root->left = left.root;
+        if (left.root) left.root->parent = root;
+        root->right = right.root;
+        if (right.root) right.root->parent = root;
+        root->height = 1 + max_of(get_height(left.root), get_height(right.root));
+        return {root, right.rest};
     }
 
     /**

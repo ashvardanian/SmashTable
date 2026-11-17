@@ -19,15 +19,14 @@
  *  unwinds the stack for them.
  */
 #pragma once
-#include <cctype>    // `std::tolower`
-#include <cinttypes> // `PRIu64`, `PRIuLEAST32`
-#include <cmath>     // `std::llround`, `std::isfinite`
-#include <csignal>   // `std::signal`, `std::raise`, `SIGSEGV`, `SIGABRT`, `SIGTRAP`
-#include <cstddef>   // `std::size_t`
-#include <cstdint>   // `std::uint64_t`, `std::uint_least32_t`
-#include <cstdio>    // `std::fprintf`, `std::setvbuf`
-#include <cstdlib>   // `std::exit`, `std::getenv`
-#include <cstring>   // `std::strcmp`, `std::strncmp`
+#include <cctype>  // `std::tolower`
+#include <cmath>   // `std::llround`, `std::isfinite`
+#include <csignal> // `std::signal`, `std::raise`, `SIGSEGV`, `SIGABRT`, `SIGTRAP`
+#include <cstddef> // `std::size_t`
+#include <cstdint> // `std::uint64_t`, `std::uint_least32_t`
+#include <cstdio>  // `std::fputc`, `std::setvbuf`
+#include <cstdlib> // `std::exit`, `std::getenv`
+#include <cstring> // `std::strcmp`, `std::strncmp`
 
 #include <algorithm>       // `std::max`
 #include <atomic>          // `std::atomic`
@@ -36,15 +35,13 @@
 #include <format>          // `std::format_to`, `std::format_string`
 #include <functional>      // `std::invoke`
 #include <iterator>        // `std::output_iterator`
-#include <optional>        // `std::optional`
 #include <random>          // `std::random_device`
 #include <regex>           // `std::regex`, `std::regex_search`
 #include <source_location> // `std::source_location`
-#include <string>          // `std::string`
 #include <string_view>     // `std::string_view`
 #include <system_error>    // `std::errc`
 #include <thread>          // `std::this_thread::yield`
-#include <type_traits>     // `std::is_void_v`, `std::invoke_result_t`
+#include <type_traits>     // `std::is_void_v`, `std::invoke_result_t`, `std::type_identity_t`
 #include <utility>         // `std::cmp_equal`, `std::exchange`
 
 #include "smashtable/row_search.hpp" // `every_row_kit_k`, `row_kit_compiled`, `row_kit_supported`
@@ -161,7 +158,7 @@ inline void install_test_signal_handlers() noexcept;
 
 /** Exits with one line naming a setting that does not parse, so a bad value never runs anything. */
 [[noreturn]] inline void exit_unparsed(char const *variable, char const *text, char const *expected) noexcept {
-    std::fprintf(stderr, "%s=\"%s\" does not parse, expected %s\n", variable, text, expected);
+    print_line(stderr, "{}=\"{}\" does not parse, expected {}", variable, text, expected);
     std::exit(1);
 }
 
@@ -195,8 +192,8 @@ inline std::size_t read_count_setting(int argc, char **argv, char const *variabl
     if (!text) return fallback;
     std::string_view const spelled {text};
     std::size_t count = 0;
-    auto const [end, error] = std::from_chars(spelled.data(), spelled.data() + spelled.size(), count);
-    if (error != std::errc {} || end != spelled.data() + spelled.size())
+    auto const [end, parse_status] = std::from_chars(spelled.data(), spelled.data() + spelled.size(), count);
+    if (parse_status != std::errc {} || end != spelled.data() + spelled.size())
         exit_unparsed(variable, text, "a whole number");
     return count;
 }
@@ -221,9 +218,9 @@ inline std::chrono::milliseconds read_duration_setting(int argc, char **argv, ch
     if (!text) return fallback;
     std::string_view const spelled {text};
     std::uint32_t count = 0;
-    auto const [end, error] = std::from_chars(spelled.data(), spelled.data() + spelled.size(), count);
+    auto const [end, parse_status] = std::from_chars(spelled.data(), spelled.data() + spelled.size(), count);
     std::string_view const unit = spelled.substr(static_cast<std::size_t>(end - spelled.data()));
-    if (error == std::errc {} && count != 0) {
+    if (parse_status == std::errc {} && count != 0) {
         if (unit == "ms") return std::chrono::milliseconds(count);
         if (unit == "s") return std::chrono::seconds(count);
         if (unit == "m") return std::chrono::minutes(count);
@@ -241,20 +238,21 @@ inline std::uint64_t read_seed_setting(int argc, char **argv, char const *variab
         return (static_cast<std::uint64_t>(device()) << 32) ^ device();
     }
     std::uint64_t seed = 0;
-    auto const [end, error] = std::from_chars(spelled.data(), spelled.data() + spelled.size(), seed);
-    if (error != std::errc {} || end != spelled.data() + spelled.size())
+    auto const [end, parse_status] = std::from_chars(spelled.data(), spelled.data() + spelled.size(), seed);
+    if (parse_status != std::errc {} || end != spelled.data() + spelled.size())
         exit_unparsed(variable, text, "an unsigned integer or random");
     return seed;
 }
 
 /** Which labels a run selects: a regex search when the pattern compiles, else a substring. */
 struct filter_t {
-    std::string pattern;
-    std::optional<std::regex> regex;
+    std::string_view pattern;
+    std::regex regex;
+    bool is_regex = false;
 
     bool selects(std::string_view label) const noexcept {
         if (pattern.empty()) return true;
-        if (regex) return std::regex_search(label.begin(), label.end(), *regex);
+        if (is_regex) return std::regex_search(label.begin(), label.end(), regex);
         return label.find(pattern) != std::string_view::npos;
     }
 };
@@ -267,12 +265,14 @@ inline filter_t read_filter_setting(int argc, char **argv, char const *variable,
     filter.pattern = text;
 #if defined(__cpp_exceptions) && __cpp_exceptions
     try {
-        filter.regex.emplace(filter.pattern);
+        filter.regex.assign(filter.pattern.begin(), filter.pattern.end());
+        filter.is_regex = true;
     }
     catch (std::regex_error const &) {
     }
 #else
-    filter.regex.emplace(filter.pattern);
+    filter.regex.assign(filter.pattern.begin(), filter.pattern.end());
+    filter.is_regex = true;
 #endif
     return filter;
 }
@@ -299,7 +299,7 @@ constexpr std::uint64_t stream_key(std::uint64_t seed, std::string_view name, st
 }
 
 /**
- *  @brief SplitMix64 over one 64-bit state, seeded by a @ref stream_key , bit-identical to the
+ *  @brief SplitMix64 over one 64-bit counter, seeded by a @ref stream_key , bit-identical to the
  *      JavaScript generator NumKong ships.
  *
  *  Distributions are not specified to draw the same sequence on every standard library, so a
@@ -308,12 +308,12 @@ constexpr std::uint64_t stream_key(std::uint64_t seed, std::string_view name, st
  */
 struct split_mix_generator_t {
     using result_type = std::uint64_t;
-    std::uint64_t state = 0;
+    std::uint64_t counter = 0;
 
-    explicit split_mix_generator_t(std::uint64_t key) noexcept : state(key) {}
+    explicit split_mix_generator_t(std::uint64_t key) noexcept : counter(key) {}
     static constexpr result_type(min)() noexcept { return 0; }
     static constexpr result_type(max)() noexcept { return ~result_type {0}; }
-    result_type operator()() noexcept { return split_mix_bits(state += 0x9E3779B97F4A7C15ull); }
+    result_type operator()() noexcept { return split_mix_bits(counter += 0x9E3779B97F4A7C15ull); }
 
     /** A uniform draw below @p bound , zero for an empty bound, without the bias of a modulo. */
     std::uint64_t below(std::uint64_t bound) noexcept {
@@ -415,46 +415,65 @@ inline void start_test_run(int argc, char **argv) noexcept {
     print(probe_machine());
     test_run.settings = read_test_settings(argc, argv);
     install_test_signal_handlers();
-    std::printf("- Seed: %" PRIu64 ", scale: %g, filter: %s\n", test_run.settings.seed, test_run.settings.scale,
-                test_run.settings.filter.pattern.empty() ? "none" : test_run.settings.filter.pattern.c_str());
+    print_line(stdout, "- Seed: {}, scale: {}, filter: {}", test_run.settings.seed, test_run.settings.scale,
+               test_run.settings.filter.pattern.empty() ? "none" : test_run.settings.filter.pattern);
 }
 
 /** Counts one failed check at @p where , and traps when the run asked to stop at the first. */
 inline void record_failed_check(std::source_location where) noexcept {
     std::fflush(stdout); // so a log that merges both streams keeps the failure under its case
-    std::fprintf(stderr, "  check failed at %s:%" PRIuLEAST32 "\n", where.file_name(), where.line());
+    print_line(stderr, "  check failed at {}:{}", where.file_name(), where.line());
     test_run.last_failed_file.store(where.file_name(), std::memory_order_relaxed);
     test_run.last_failed_line.store(where.line(), std::memory_order_relaxed);
     test_run.failed_checks.fetch_add(1, std::memory_order_relaxed);
     if (test_run.settings.trap_on_failure) trap_into_debugger();
 }
 
-/** Holds when @p is_met does; otherwise counts a failed check at the caller's line. */
-inline bool expect_true(bool is_met, std::source_location where = std::source_location::current()) noexcept {
-    if (!is_met) record_failed_check(where);
-    return is_met;
+/** Holds when @p is_satisfied does; otherwise counts a failed check at the caller's line. */
+inline bool expect_true(bool is_satisfied, std::source_location where = std::source_location::current()) noexcept {
+    if (!is_satisfied) record_failed_check(where);
+    return is_satisfied;
 }
+
+/** A case label spelled as a regex that matches only itself, every metacharacter escaped. */
+struct regex_escaped_t {
+    std::string_view label;
+};
+
+} // namespace ashvardanian::smashtable::test
+
+/** Writes a @ref regex_escaped_t straight to the output, a backslash before each metacharacter. */
+template <>
+struct std::formatter<ashvardanian::smashtable::test::regex_escaped_t> {
+    constexpr auto parse(std::format_parse_context &context) { return context.begin(); }
+    template <typename context_type_>
+    auto format(ashvardanian::smashtable::test::regex_escaped_t const &escaped, context_type_ &context) const {
+        auto output = context.out();
+        for (char const character : escaped.label) {
+            if (std::string_view {"\\^$.|?*+()[]{}"}.find(character) != std::string_view::npos) *output++ = '\\';
+            *output++ = character;
+        }
+        return output;
+    }
+};
+
+namespace ashvardanian::smashtable::test {
 
 /** Prints one case's verdict, and the line that reruns it alone when it failed. */
 inline void report_test_case(char const *label, std::size_t failed_checks, char const *skip_reason,
                              double seconds) noexcept {
     if (skip_reason) {
-        std::printf("- %s ... skipped: %s\n", label, skip_reason);
+        print_line(stdout, "- {} ... skipped: {}", label, skip_reason);
         return;
     }
     if (failed_checks == 0) {
-        std::printf("- %s ... ok (%.2f s)\n", label, seconds);
+        print_line(stdout, "- {} ... ok ({:.2f} s)", label, seconds);
         return;
     }
     std::fflush(stdout);
-    std::fprintf(stderr, "- %s ... FAILED: %zu failed check(s)\n", label, failed_checks);
-    std::fprintf(stderr, "  rerun: %s --seed %" PRIu64 " --filter '^", test_run.settings.program,
-                 test_run.settings.seed);
-    for (char const *character = label; *character; ++character) {
-        if (std::strchr("\\^$.|?*+()[]{}", *character)) std::fputc('\\', stderr); // labels are code, the filter a regex
-        std::fputc(*character, stderr);
-    }
-    std::fputs("$'\n", stderr);
+    print_line(stderr, "- {} ... FAILED: {} failed check(s)", label, failed_checks);
+    print_line(stderr, "  rerun: {} --seed {} --filter '^{}$'", test_run.settings.program, test_run.settings.seed,
+               regex_escaped_t {label});
 }
 
 /** Runs one case unless the filter leaves it out, and records whether it passed or skipped. */
@@ -481,8 +500,8 @@ void run_test_case(char const *label, case_function_type_ &&case_function, argum
 /** The exit code: 1 when a case or a check outside any case failed, or nothing ran; 3 when
  *  skips are refused and one happened; else 0. */
 inline int finish_test_run() noexcept {
-    std::printf("%zu passed, %zu failed, %zu skipped, seed %" PRIu64 "\n", test_run.passed_cases, test_run.failed_cases,
-                test_run.skipped_cases, test_run.settings.seed);
+    print_line(stdout, "{} passed, {} failed, {} skipped, seed {}", test_run.passed_cases, test_run.failed_cases,
+               test_run.skipped_cases, test_run.settings.seed);
     bool const failed = test_run.failed_cases != 0 || test_run.failed_checks.load() != 0;
     if (failed || test_run.passed_cases + test_run.skipped_cases == 0) return 1;
     if (test_run.skipped_cases != 0 && test_run.settings.refuse_skips) return 3;
@@ -615,35 +634,39 @@ void print_unequal_([[maybe_unused]] actual_type_ const &actual, [[maybe_unused]
 }
 
 /**
- *  @brief A format string bundled with the @c std::source_location of the call site spelling it.
+ *  @brief A format string bundled with the @c std::source_location of the call that spelled it.
  *
  *  The implicit conversion from a string literal captures the caller's line behind the variadic
- *  arguments of a check's context, where a defaulted trailing parameter cannot go, and it works
- *  without a macro.
+ *  arguments of a check's context, where a defaulted trailing parameter cannot go, and checks the
+ *  pattern against those arguments at compile time, as @c std::format_string does.
  */
-struct format_at_t {
-    char const *format = nullptr;
-    std::source_location location {};
+template <typename... args_types_>
+struct located_format {
+    std::format_string<args_types_...> format;
+    std::source_location location;
 
-    format_at_t(char const *format, std::source_location location = std::source_location::current()) noexcept
-        : format(format), location(location) {}
+    template <typename text_type_>
+    consteval located_format(text_type_ const &text,
+                             std::source_location location = std::source_location::current()) noexcept
+        : format(text), location(location) {}
 };
 
-/** Prints @p context formatted with @p args , indented under the location line of a failure. */
+/** Prints @p context formatted with @p args , indented under a failed check's location line. */
 template <typename... args_types_>
-void print_context_(format_at_t context, args_types_ const &...args) noexcept {
+void print_context_(located_format<std::type_identity_t<args_types_>...> context, args_types_ const &...args) noexcept {
     std::fputs("    ", stderr);
-    std::vformat_to(file_output_iterator_t {stderr}, context.format, std::make_format_args(args...));
+    std::vformat_to(file_output_iterator_t {stderr}, context.format.get(), std::make_format_args(args...));
     std::fputc('\n', stderr);
 }
 
-/** Holds when @p held does; otherwise counts a failed check at the caller's line and prints
+/** Holds when @p is_satisfied does; otherwise counts a failed check at the caller's line and prints
  *  @p context formatted with @p args beneath it. */
 template <typename... args_types_>
-bool expect_true(bool is_met, format_at_t context, args_types_ const &...args) noexcept {
-    if (is_met) return true;
+bool expect_true(bool is_satisfied, located_format<std::type_identity_t<args_types_>...> context,
+                 args_types_ const &...args) noexcept {
+    if (is_satisfied) return true;
     record_failed_check(context.location);
-    print_context_(context, args...);
+    print_context_<args_types_...>(context, args...);
     return false;
 }
 
@@ -660,12 +683,12 @@ bool expect_equal(actual_type_ const &actual, wanted_type_ const &wanted,
 
 /** The same, printing @p context formatted with @p args beneath both sides on failure. */
 template <typename actual_type_, typename wanted_type_, typename... args_types_>
-bool expect_equal(actual_type_ const &actual, wanted_type_ const &wanted, format_at_t context,
-                  args_types_ const &...args) noexcept {
+bool expect_equal(actual_type_ const &actual, wanted_type_ const &wanted,
+                  located_format<std::type_identity_t<args_types_>...> context, args_types_ const &...args) noexcept {
     if (equal_(actual, wanted)) return true;
     record_failed_check(context.location);
     print_unequal_(actual, wanted);
-    print_context_(context, args...);
+    print_context_<args_types_...>(context, args...);
     return false;
 }
 
