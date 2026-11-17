@@ -22,10 +22,11 @@
 #include <format>       // `std::format_to`, `std::format_string`
 #include <random>       // `std::random_device`
 #include <regex>        // `std::regex`, `std::regex_search`
-#include <string>       // `std::string`, `std::to_string`
 #include <string_view>  // `std::string_view`
 #include <system_error> // `std::errc`
+#include <thread>       // `std::thread`
 #include <utility>      // `std::exchange`, `std::forward`, `std::move`
+#include <vector>       // `std::vector`
 
 #include <smashtable/row_search.hpp> // `every_row_kit_k`, `row_kit_t`, `name_of`
 
@@ -146,35 +147,30 @@ inline std::uint64_t read_seed_setting(int argc, char **argv, char const *variab
     return seed;
 }
 
-/** Which labels a run selects: a regex search when the pattern compiles, else a substring. */
-struct filter_t {
-    std::string_view pattern;
-    std::regex regex;
-    bool is_regex = false;
+/** Which labels a run selects: those its regex matches somewhere, every label while unset. */
+struct regex_filter_t {
+    std::string_view text;
+    std::regex regex {""};
 
-    bool selects(std::string_view label) const noexcept {
-        if (pattern.empty()) return true;
-        if (is_regex) return std::regex_search(label.begin(), label.end(), regex);
-        return label.find(pattern) != std::string_view::npos;
-    }
+    bool selects(std::string_view label) const noexcept { return std::regex_search(label.begin(), label.end(), regex); }
 };
 
-/** The filter a setting spells, compiled once; empty, selecting everything, when unset. */
-inline filter_t read_filter_setting(int argc, char **argv, char const *variable, std::string_view flag) noexcept {
-    filter_t filter;
+/** The filter a setting spells, compiled once; one that does not compile exits as a bad setting. */
+inline regex_filter_t read_regex_filter_setting(int argc, char **argv, char const *variable,
+                                                std::string_view flag) noexcept {
+    regex_filter_t filter;
     char const *text = setting_text(argc, argv, variable, flag);
     if (!text) return filter;
-    filter.pattern = text;
+    filter.text = text;
 #if defined(__cpp_exceptions) && __cpp_exceptions
     try {
-        filter.regex.assign(filter.pattern.begin(), filter.pattern.end());
-        filter.is_regex = true;
+        filter.regex.assign(filter.text.begin(), filter.text.end());
     }
     catch (std::regex_error const &) {
+        exit_unparsed(variable, text, "a regular expression");
     }
 #else
-    filter.regex.assign(filter.pattern.begin(), filter.pattern.end());
-    filter.is_regex = true;
+    filter.regex.assign(filter.text.begin(), filter.text.end());
 #endif
     return filter;
 }
@@ -182,7 +178,7 @@ inline filter_t read_filter_setting(int argc, char **argv, char const *variable,
 /** What every suite and bench reads before its own settings; @c program starts the rerun lines. */
 struct common_settings_t {
     std::uint64_t seed = 42;
-    filter_t filter;
+    regex_filter_t regex_filter;
     char const *program = "";
 };
 
@@ -229,12 +225,6 @@ struct split_mix_generator_t {
 
 #pragma endregion Shared Settings
 
-/** Spells @p duration as a user types it: whole seconds as "10s", anything else as "1500ms". */
-inline std::string spell_duration(std::chrono::milliseconds duration) {
-    auto const count = duration.count();
-    return count % 1000 ? std::to_string(count) + "ms" : std::to_string(count / 1000) + "s";
-}
-
 /** Keeps @p value, and every write before it, from being optimized away. */
 template <typename value_type_>
 inline void do_not_optimize(value_type_ &&value) noexcept {
@@ -248,10 +238,11 @@ inline void do_not_optimize(value_type_ &&value) noexcept {
 #endif
 }
 
-/** A named amount a benchmark reports next to its rate, printed as it is. */
+/** A named amount reported beside the rate, per second when @c is_rate and else as it is. */
 struct counter_t {
     char const *name = nullptr;
     double value = 0;
+    bool is_rate = false;
 };
 
 /** A finished benchmark: its name, calls per second and counters, or why it was skipped. */
@@ -265,14 +256,17 @@ struct row_t {
 /** Prints @p row on one line, with its speed-up over @p baseline calls per second when known. */
 inline void print(row_t const &row, double baseline = 0) noexcept {
     if (row.skipped) return print_line(stdout, "{:<64} skipped: {}", row.name, row.skipped);
-    double per_second = row.calls_per_second;
-    char const *prefix = "";
-    for (char const *next : {"k", "M", "G", "T", "P"})
-        if (per_second >= 1000) per_second /= 1000, prefix = next;
-    file_output_iterator_t output =
-        std::format_to(file_output_iterator_t {stdout}, "{:<64}  calls {:.3f} {}/s", row.name, per_second, prefix);
+    file_output_iterator_t output = std::format_to(file_output_iterator_t {stdout}, "{:<64}", row.name);
+    auto const print_rate = [&](char const *name, double per_second) noexcept {
+        char const *prefix = "";
+        for (char const *next : {"k", "M", "G", "T", "P"})
+            if (per_second >= 1000) per_second /= 1000, prefix = next;
+        output = std::format_to(output, "  {} {:.3f} {}/s", name, per_second, prefix);
+    };
+    print_rate("calls", row.calls_per_second);
     for (counter_t const &counter : row.counters)
-        if (counter.name) output = std::format_to(output, "  {} {:.3f}", counter.name, counter.value);
+        if (counter.is_rate) print_rate(counter.name, counter.value);
+        else if (counter.name) output = std::format_to(output, "  {} {:.3f}", counter.name, counter.value);
     if (baseline > 0) output = std::format_to(output, "  {:.2f}x", row.calls_per_second / baseline);
     std::fputc('\n', stdout);
 }
@@ -286,6 +280,7 @@ inline void print(row_t const &row, double baseline = 0) noexcept {
  */
 class loop_t {
     std::chrono::milliseconds warmup_, time_limit_;
+    std::size_t thread_ = 0;
     time_point_t start_ {};
     steady_clock_t::duration elapsed_ {};
     std::size_t calls_ = 0, next_check_ = 0;
@@ -313,8 +308,11 @@ class loop_t {
         void operator++() noexcept { ++loop->calls_; }
     };
 
-    loop_t(std::chrono::milliseconds warmup, std::chrono::milliseconds time_limit) noexcept
-        : warmup_(warmup), time_limit_(time_limit) {}
+    loop_t(std::chrono::milliseconds warmup, std::chrono::milliseconds time_limit, std::size_t thread = 0) noexcept
+        : warmup_(warmup), time_limit_(time_limit), thread_(thread) {}
+
+    /** Which of the threads timing this row at once runs this loop, counted from zero. */
+    std::size_t thread() const noexcept { return thread_; }
 
     iterator_t begin() noexcept { return start_ = steady_clock_t::now(), iterator_t {this}; }
     end_t end() const noexcept { return {}; }
@@ -328,10 +326,19 @@ class loop_t {
             if (!slot.name) return void(slot = {name, value});
     }
 
-    /** The finished benchmark under @p name. */
+    /** Reports @p per_call of @p name per second. */
+    void rate(char const *name, double per_call) noexcept {
+        for (counter_t &slot : counters_)
+            if (!slot.name) return void(slot = {name, per_call, true});
+    }
+
+    /** The finished benchmark under @p name, its rates per second. */
     row_t row(std::string_view name) const noexcept {
         if (skipped_) return {name, 0, {}, skipped_};
-        return {name, calls_ / std::chrono::duration<double>(elapsed_).count(), counters_, nullptr};
+        row_t finished {name, calls_ / std::chrono::duration<double>(elapsed_).count(), counters_, nullptr};
+        for (counter_t &counter : finished.counters)
+            if (counter.is_rate) counter.value *= finished.calls_per_second;
+        return finished;
     }
 };
 
@@ -352,6 +359,9 @@ struct bench_settings_t : common_settings_t {
 
     /** Queries drawn from the keys, searched in turn by every benchmark. */
     std::size_t queries = std::size_t {1} << 20;
+
+    /** Threads timing each benchmark at once, each on a loop of its own. */
+    std::size_t threads = 1;
 };
 
 /** Reads every @c bench_settings_t field, rejecting a zero count, which every benchmark divides
@@ -359,7 +369,7 @@ struct bench_settings_t : common_settings_t {
 inline bench_settings_t read_bench_settings(int argc, char **argv) noexcept {
     bench_settings_t settings;
     settings.seed = read_seed_setting(argc, argv, "SMASHTABLE_SEED", "--seed");
-    settings.filter = read_filter_setting(argc, argv, "SMASHTABLE_FILTER", "--filter");
+    settings.regex_filter = read_regex_filter_setting(argc, argv, "SMASHTABLE_FILTER", "--filter");
     auto const read_positive = [&](char const *variable, std::string_view flag, std::size_t fallback) noexcept {
         std::size_t const count = read_count_setting(argc, argv, variable, flag, fallback);
         if (count == 0) exit_unparsed(variable, "0", "a positive whole number");
@@ -371,6 +381,8 @@ inline bench_settings_t read_bench_settings(int argc, char **argv) noexcept {
     settings.rows = read_positive("SMASHTABLE_ROWS", "--rows", settings.rows);
     settings.keys = read_positive("SMASHTABLE_KEYS", "--keys", settings.keys);
     settings.queries = read_positive("SMASHTABLE_QUERIES", "--queries", settings.queries);
+    settings.threads = read_count_setting(argc, argv, "SMASHTABLE_THREADS", "--threads", settings.threads);
+    if (settings.threads == 0) settings.threads = std::thread::hardware_concurrency();
     return settings;
 }
 
@@ -378,12 +390,13 @@ inline bench_settings_t read_bench_settings(int argc, char **argv) noexcept {
 inline void print(bench_settings_t const &settings) noexcept {
     print_line(stdout, "- Seed: {}", settings.seed);
     print_line(stdout, "- Filter: {}",
-               settings.filter.pattern.empty() ? std::string_view("none") : settings.filter.pattern);
-    print_line(stdout, "- Warm-up: {}", spell_duration(settings.warmup));
-    print_line(stdout, "- Time limit: {}", spell_duration(settings.time_limit));
+               settings.regex_filter.text.empty() ? std::string_view("none") : settings.regex_filter.text);
+    print_line(stdout, "- Warm-up: {}", settings.warmup);
+    print_line(stdout, "- Time limit: {}", settings.time_limit);
     print_line(stdout, "- Rows: {}", settings.rows);
     print_line(stdout, "- Keys: {}", settings.keys);
     print_line(stdout, "- Queries: {}", settings.queries);
+    print_line(stdout, "- Threads: {}", settings.threads);
 }
 
 /** The facts this binary and this machine report: the processor, the compiler, and the kit
@@ -443,16 +456,38 @@ struct environment_t {
     machine_t machine;
 };
 
-/** Runs @p measure on a fresh loop when the filter selects @p name, then prints its row against
- *  @p baseline. Returns the row's calls per second, or 0 when it was filtered out or skipped. */
+/**
+ *  @brief Runs @p measure on a fresh loop per thread when the filter selects @p name, then prints
+ *      one row against @p baseline, its calls and rates summed over the threads.
+ *  @return The row's calls per second, or 0 when it was filtered out or skipped.
+ *
+ *  The calling thread is the first of @c threads, and every other one is spawned for this row
+ *  alone, so @p measure runs concurrently with itself whenever more than one is asked for.
+ */
 template <typename measure_type_>
 double run(environment_t const &env, std::string_view name, double baseline, measure_type_ &&measure) noexcept {
-    if (!env.settings.filter.selects(name)) return 0;
-    loop_t loop(env.settings.warmup, env.settings.time_limit);
-    measure(loop);
-    row_t const row = loop.row(name);
+    if (!env.settings.regex_filter.selects(name)) return 0;
+    std::vector<loop_t> loops;
+    loops.reserve(env.settings.threads);
+    for (std::size_t thread = 0; thread != env.settings.threads; ++thread)
+        loops.emplace_back(env.settings.warmup, env.settings.time_limit, thread);
+    std::vector<std::thread> spawned;
+    spawned.reserve(loops.size() - 1);
+    for (std::size_t thread = 1; thread != loops.size(); ++thread)
+        spawned.emplace_back([&measure, &loop = loops[thread]] { measure(loop); });
+    measure(loops[0]);
+    for (std::thread &joined : spawned) joined.join();
+
+    row_t row = loops[0].row(name);
+    for (std::size_t thread = 1; thread != loops.size() && !row.skipped; ++thread) {
+        row_t const other = loops[thread].row(name);
+        if (other.skipped) row = other;
+        row.calls_per_second += other.calls_per_second;
+        for (std::size_t index = 0; index != row.counters.size(); ++index)
+            if (row.counters[index].is_rate) row.counters[index].value += other.counters[index].value;
+    }
     print(row, baseline);
-    return row.calls_per_second;
+    return row.skipped ? 0 : row.calls_per_second;
 }
 
 } // namespace ashvardanian::smashtable::bench

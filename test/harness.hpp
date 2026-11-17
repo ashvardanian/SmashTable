@@ -244,35 +244,30 @@ inline std::uint64_t read_seed_setting(int argc, char **argv, char const *variab
     return seed;
 }
 
-/** Which labels a run selects: a regex search when the pattern compiles, else a substring. */
-struct filter_t {
-    std::string_view pattern;
-    std::regex regex;
-    bool is_regex = false;
+/** Which labels a run selects: those its regex matches somewhere, every label while unset. */
+struct regex_filter_t {
+    std::string_view text;
+    std::regex regex {""};
 
-    bool selects(std::string_view label) const noexcept {
-        if (pattern.empty()) return true;
-        if (is_regex) return std::regex_search(label.begin(), label.end(), regex);
-        return label.find(pattern) != std::string_view::npos;
-    }
+    bool selects(std::string_view label) const noexcept { return std::regex_search(label.begin(), label.end(), regex); }
 };
 
-/** The filter a setting spells, compiled once; empty, selecting everything, when unset. */
-inline filter_t read_filter_setting(int argc, char **argv, char const *variable, std::string_view flag) noexcept {
-    filter_t filter;
+/** The filter a setting spells, compiled once; one that does not compile exits as a bad setting. */
+inline regex_filter_t read_regex_filter_setting(int argc, char **argv, char const *variable,
+                                                std::string_view flag) noexcept {
+    regex_filter_t filter;
     char const *text = setting_text(argc, argv, variable, flag);
     if (!text) return filter;
-    filter.pattern = text;
+    filter.text = text;
 #if defined(__cpp_exceptions) && __cpp_exceptions
     try {
-        filter.regex.assign(filter.pattern.begin(), filter.pattern.end());
-        filter.is_regex = true;
+        filter.regex.assign(filter.text.begin(), filter.text.end());
     }
     catch (std::regex_error const &) {
+        exit_unparsed(variable, text, "a regular expression");
     }
 #else
-    filter.regex.assign(filter.pattern.begin(), filter.pattern.end());
-    filter.is_regex = true;
+    filter.regex.assign(filter.text.begin(), filter.text.end());
 #endif
     return filter;
 }
@@ -280,7 +275,7 @@ inline filter_t read_filter_setting(int argc, char **argv, char const *variable,
 /** What every suite and bench reads before its own settings; @c program starts the rerun lines. */
 struct common_settings_t {
     std::uint64_t seed = 42;
-    filter_t filter;
+    regex_filter_t regex_filter;
     char const *program = "";
 };
 
@@ -338,7 +333,7 @@ struct test_settings_t : common_settings_t {
 inline test_settings_t read_test_settings(int argc, char **argv) noexcept {
     test_settings_t settings;
     settings.seed = read_seed_setting(argc, argv, "SMASHTABLE_SEED", "--seed");
-    settings.filter = read_filter_setting(argc, argv, "SMASHTABLE_FILTER", "--filter");
+    settings.regex_filter = read_regex_filter_setting(argc, argv, "SMASHTABLE_FILTER", "--filter");
     settings.scale = read_real_setting(argc, argv, "SMASHTABLE_SCALE", "--scale", 1.0);
     settings.trap_on_failure = read_flag_setting(argc, argv, "SMASHTABLE_TRAP_ON_FAILURE", "--trap-on-failure");
     settings.refuse_skips = read_flag_setting(argc, argv, "SMASHTABLE_NO_SKIPS", "--no-skips");
@@ -415,8 +410,10 @@ inline void start_test_run(int argc, char **argv) noexcept {
     print(probe_machine());
     test_run.settings = read_test_settings(argc, argv);
     install_test_signal_handlers();
-    print_line(stdout, "- Seed: {}, scale: {}, filter: {}", test_run.settings.seed, test_run.settings.scale,
-               test_run.settings.filter.pattern.empty() ? "none" : test_run.settings.filter.pattern);
+    print_line(stdout, "- Seed: {}, scale: {}", test_run.settings.seed, test_run.settings.scale);
+    print_line(
+        stdout, "- Filter: {}",
+        test_run.settings.regex_filter.text.empty() ? std::string_view("none") : test_run.settings.regex_filter.text);
 }
 
 /** Counts one failed check at @p where , and traps when the run asked to stop at the first. */
@@ -479,7 +476,7 @@ inline void report_test_case(char const *label, std::size_t failed_checks, char 
 /** Runs one case unless the filter leaves it out, and records whether it passed or skipped. */
 template <typename case_function_type_, typename... argument_types_>
 void run_test_case(char const *label, case_function_type_ &&case_function, argument_types_ &&...arguments) noexcept {
-    if (!test_run.settings.filter.selects(label)) return;
+    if (!test_run.settings.regex_filter.selects(label)) return;
     test_run.current_case = label;
     std::size_t const failed_before = test_run.failed_checks.load();
     auto const started = std::chrono::steady_clock::now();

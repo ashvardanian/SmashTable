@@ -36,9 +36,10 @@
 #   * smashtable_test_row_search, _flat_set, _ring, _elias_fano - the ordered kits: every compiled row kit the
 #     processor runs against the serial kit, the static B-tree and S+ tree against a sorted array, the micro-set
 #     through each kit, the ring, and the Elias-Fano sequence and packed array against their source arrays.
-#   * smashtable_bench_row_search - row kits per row width, and both immutable layouts against a binary
-#     search, printing a machine block. Needs `-D SMASHTABLE_BUILD_BENCH=ON` and is never registered
-#     with CTest, so no suite pays for compiling it.
+#   * smashtable_bench_commits, _isolation, _ranking - one update across two stores per commit against
+#     two maps behind a mutex, a read-modify-write at each isolation level, and the row kits and both
+#     immutable layouts against a binary search. Need `-D SMASHTABLE_BUILD_BENCH=ON` and are never
+#     registered with CTest, so no suite pays for compiling them.
 #   * smashtable_test_concurrent_cuda - the pinned lock-free table driven from kernels and from the
 #     host over one managed allocation. Built only where `nvcc` is visible, and skipping at runtime
 #     when no device is, so a GPU-less machine still configures and tests green.
@@ -152,7 +153,7 @@ if (SMASHTABLE_BUILD_TEST)
 
     # No benchmark is registered with CTest, so no suite pays for one.
     if (SMASHTABLE_BUILD_BENCH)
-        foreach (subject_ IN ITEMS row_search)
+        foreach (subject_ IN ITEMS commits isolation ranking)
             add_executable(smashtable_bench_${subject_} bench/${subject_}.cpp)
             target_include_directories(smashtable_bench_${subject_} PRIVATE bench/)
             target_link_libraries(smashtable_bench_${subject_} PRIVATE smashtable::header smashtable_warnings)

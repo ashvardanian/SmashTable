@@ -1,9 +1,9 @@
 /**
- *  @file bench/row_search.cpp
+ *  @file bench/ranking.cpp
  *  @author Ash Vardanian
  *  @date September 15, 2026
- *  @brief Benchmark of the row kits per medium width, and of the static B-tree against the S+ tree
- *      and a binary search.
+ *  @brief Benchmark of ranking a key among sorted ones: by the row kits within one row of each
+ *      medium width, and by the static B-tree, the S+ tree and a binary search among all of them.
  *
  *  Prints the machine and the settings, then one row per benchmark in two phases: the kits over
  *  single rows of each medium width, and both layouts over the same sorted keys. The settings it
@@ -82,7 +82,7 @@ template <typename key_type_, std::size_t keys_per_row_>
 void bench_rows_of(environment_t const &env, char const *label, key_draw_t draw, char const *row_layout) {
     bench_settings_t const &settings = env.settings;
     std::string const prefix =
-        std::format("row_search.rows.{}b.{}.{}.", sizeof(key_type_) * keys_per_row_, label, row_layout);
+        std::format("ranking.rows.{}b.{}.{}.", sizeof(key_type_) * keys_per_row_, label, row_layout);
     split_mix_generator_t generator {stream_key(settings.seed, prefix)};
     std::size_t const keys_count = settings.rows * keys_per_row_;
     basic_vector<key_type_> rows;
@@ -175,7 +175,7 @@ void bench_layout(environment_t const &env, std::string const &prefix, char cons
     std::string const name =
         std::format("{}{}b.{}.{}", prefix, layout_type_::keys_per_row_k * sizeof(typename layout_type_::key_t),
                     layout_name, name_of(layout_type_::kit_t::kit_k));
-    if (!env.settings.filter.selects(name)) return;
+    if (!env.settings.regex_filter.selects(name)) return;
     auto const built_at = steady_clock_t::now();
     auto layout = layout_type_::make(sorted);
     double const build_seconds = std::chrono::duration<double>(steady_clock_t::now() - built_at).count();
@@ -198,7 +198,7 @@ void bench_layouts_with(environment_t const &env, std::string const &prefix, std
 template <typename key_type_>
 void bench_layouts_of(environment_t const &env, char const *label, key_draw_t draw) {
     bench_settings_t const &settings = env.settings;
-    std::string const prefix = std::format("row_search.layouts.{}.", label);
+    std::string const prefix = std::format("ranking.layouts.{}.", label);
     // Two copies of the keys plus the largest tree, which stays under a tenth of the keys again.
     split_mix_generator_t generator {stream_key(settings.seed, prefix)};
     basic_vector<key_type_> sorted;

@@ -150,20 +150,21 @@ The header pytest prints names the module it imported, `SmashTable <version> fro
 
 ### Environment
 
-Each setting is an environment variable, and in the C++ runners and the benchmark a `--name` flag of the same name overrides it, as `--seed 7` or `--filter='^avl_tree\.'`:
+Each setting is an environment variable, and in the C++ runners and the benchmarks a `--name` flag of the same name overrides it, as `--seed 7` or `--filter='^avl_tree\.'`:
 
 | Variable                     | Flag                | Default    | Meaning                                                                                |
 | :--------------------------- | :------------------ | :--------- | :------------------------------------------------------------------------------------- |
 | `SMASHTABLE_SEED`            | `--seed`            | `42`       | Any unsigned 64-bit seed, or `random` to draw one, which a run prints                  |
-| `SMASHTABLE_FILTER`          | `--filter`          | unset      | Regex searched in C++ case labels, benchmark rows or pytest node ids, else a substring |
+| `SMASHTABLE_FILTER`          | `--filter`          | unset      | Regex searched in C++ case labels or benchmark rows                                    |
 | `SMASHTABLE_SCALE`           | `--scale`           | `1`        | C++ only: multiplier for the rounds of the randomized and threaded suites, like `0.1`  |
 | `SMASHTABLE_TRAP_ON_FAILURE` | `--trap-on-failure` | `0`        | C++ only: raises `SIGTRAP` at the first failed check, to stop there under a debugger   |
 | `SMASHTABLE_NO_SKIPS`        | `--no-skips`        | `0`        | C++ only: exits with 3 when any case skipped, for runners that must cover everything   |
 | `SMASHTABLE_WARMUP`          | `--warmup`          | `1s`       | Benchmark only: untimed run ahead of each row, like `200ms`, `10s` or `2m`             |
 | `SMASHTABLE_TIME_LIMIT`      | `--time-limit`      | `10s`      | Benchmark only: timed run of each row, like `200ms`, `10s` or `2m`                     |
 | `SMASHTABLE_ROWS`            | `--rows`            | `4096`     | Benchmark only: sorted rows per row-kit benchmark                                      |
-| `SMASHTABLE_KEYS`            | `--keys`            | `16777216` | Benchmark only: sorted keys per layout benchmark                                       |
+| `SMASHTABLE_KEYS`            | `--keys`            | `16777216` | Benchmark only: keys per layout or store benchmark                                     |
 | `SMASHTABLE_QUERIES`         | `--queries`         | `1048576`  | Benchmark only: queries drawn per benchmark, searched in turn                          |
+| `SMASHTABLE_THREADS`         | `--threads`         | `1`        | Benchmark only: threads timing each row at once, `0` for every hardware thread         |
 
 A switch is off when unset, empty or `0`, and on otherwise, and a count of zero is refused.
 Python reads only the variables, beside `pytest -k` and pytest's own options, and prints the scale it read without sizing anything by it yet.
@@ -175,7 +176,7 @@ A case's inputs therefore never depend on which cases ran before it, so `SMASHTA
 SMASHTABLE_SEED=random build_debug/smashtable_test_avl_tree                          # A fresh seed, which the run prints
 SMASHTABLE_SCALE=10 build_debug/smashtable_test_snapshot_store --filter='^test_random_'  # Ten times the fuzz rounds
 for seed in $(seq 1 64); do build_debug/smashtable_test_snapshot_store --seed $seed || break; done
-SMASHTABLE_FILTER="SortedMap.*str" python -X faulthandler -m pytest -x                # A filter over pytest node ids
+python -X faulthandler -m pytest -x -k "SortedMap and str"                             # pytest selects by keyword
 ```
 
 ### Writing a Test
@@ -217,15 +218,22 @@ A test that needs a free-threaded interpreter takes the `@requires_free_threadin
 ### Benchmarks
 
 `bench/harness.hpp` carries the same pinned settings readers as `test/harness.hpp`, so its variables parse, refuse and take `--name` flags the same way, under the same `SMASHTABLE_` prefix.
-It is built on request and never run by CTest:
+Each workload is its own target over that harness, built on request and never run by CTest:
+
+- `smashtable_bench_commits`: one update across two containers per commit, two `std::map`s behind one `std::mutex` against two partitioned snapshot stores joined by a `transaction_group`.
+- `smashtable_bench_isolation`: a read-modify-write transaction at each isolation level over one partitioned AVL core, retried until it lands, reporting the aborts it met.
+- `smashtable_bench_ranking`: the row kits within one row of each width, and the immutable B-tree and S+ tree against a binary search among all the keys.
 
 ```bash
-cmake -B build_release -D CMAKE_BUILD_TYPE=Release -D SMASHTABLE_BUILD_TEST=ON -D SMASHTABLE_BUILD_BENCH=ON
-cmake --build build_release
-build_release/smashtable_bench_row_search --filter='layouts\.u64\.' --time-limit=200ms
+cmake --preset release -D SMASHTABLE_BUILD_BENCH=ON
+cmake --build --preset release --target smashtable_bench_commits smashtable_bench_isolation smashtable_bench_ranking
+build_release/smashtable_bench_commits --keys=1048576 --threads=16
+build_release/smashtable_bench_isolation --keys=1048576 --threads=16 --filter=snapshot
+build_release/smashtable_bench_ranking --filter='layouts\.u64\.' --time-limit=200ms
 ```
 
-A run prints the same machine header as the tests, its `- Name: value` settings, and one row per benchmark, named in the label grammar as `row_search.rows.<bytes>b.<keys>.<row layout>.<kit>` and `row_search.layouts.<keys>.<bytes>b.<tree>.<kit>`, which is what `SMASHTABLE_FILTER` matches.
+A run prints the same machine header as the tests, its `- Name: value` settings, and one row per benchmark, named in the label grammar as `commits.<container>`, `isolation.<store>`, `ranking.rows.<bytes>b.<keys>.<row layout>.<kit>` and `ranking.layouts.<keys>.<bytes>b.<tree>.<kit>`, which is what `SMASHTABLE_FILTER` matches.
+Above one thread, each thread times the row on a loop of its own and draws from a stream of its own, `stream_key(seed, label, thread)`, and the row sums their calls and rates.
 
 ### Devices
 

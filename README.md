@@ -75,6 +75,43 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 
 The ladder runs from [Read Committed](https://jepsen.io/consistency/models/read-committed) through [Monotonic Atomic View](https://jepsen.io/consistency/models/monotonic-atomic-view) and [Snapshot Isolation](https://jepsen.io/consistency/models/snapshot-isolation) to the two serializable rungs, and every level from Monotonic Atomic View upward is delivered by [multi-version concurrency control](https://en.wikipedia.org/wiki/Multiversion_concurrency_control): a key keeps one version per commit that touched it, a reader is answered from the newest version its own snapshot can name, and versions below the oldest live reader are reclaimed.
 
+## Performance
+
+Rates are calls per second summed over every thread, each drawing keys uniformly from a million distinct `u64`s.
+Each commit updates one key in both containers, and both sides keep the pair whole for a reader: the mutex by shutting it out, the group by publishing both stores under one stamp.
+
+| Threads | Two `std::map`s, one `std::mutex` | Two stores, one `transaction_group` |
+| ------: | --------------------------------: | ----------------------------------: |
+|       1 |                          1.21 M/s |                            0.28 M/s |
+|       8 |                          0.92 M/s |                            0.97 M/s |
+|      16 |                          0.42 M/s |                            1.07 M/s |
+
+Each transaction reads a key, writes it back incremented and commits, retrying on conflict so only landed commits count, and `monotonic` alone lets two concurrent increments overwrite each other.
+
+| Isolation             | 1 thread | 16 threads |
+| :-------------------- | -------: | ---------: |
+| `monotonic`           | 1.37 M/s |   7.24 M/s |
+| `snapshot`            | 0.84 M/s |   1.72 M/s |
+| `serializable`        | 0.79 M/s |   0.38 M/s |
+| `strict_serializable` | 0.80 M/s |   0.37 M/s |
+
+The S+ tree ranks one thread's queries among 16 million sorted keys through the row kit of the CPU's SIMD family, in 64-byte rows for `u64` keys and 512-byte rows for `u128` ones.
+
+| Rank among 16M | `std::lower_bound` | `immutable_splus_tree` |
+| :------------- | -----------------: | ---------------------: |
+| `u64` keys     |           3.74 M/s |               11.4 M/s |
+| `u128` keys    |           2.09 M/s |               6.53 M/s |
+
+```sh
+cmake --preset release -D SMASHTABLE_BUILD_BENCH=ON
+cmake --build --preset release --target smashtable_bench_commits smashtable_bench_isolation smashtable_bench_ranking
+for threads in 1 8 16; do build_release/smashtable_bench_commits --keys=1048576 --threads=$threads; done
+for threads in 1 16; do build_release/smashtable_bench_isolation --keys=1048576 --threads=$threads; done
+build_release/smashtable_bench_ranking --filter='layouts\.(u64|key128\.uniform)\.'
+```
+
+Measured on an Intel Core i9-13950HX with Clang 22.
+
 ## Quickstart
 
 ```bash
