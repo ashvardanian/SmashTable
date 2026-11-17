@@ -10,6 +10,9 @@
       "binaryDir": "${sourceDir}/build_${presetName}",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "$env{CMAKE_CXX_COMPILER_LAUNCHER}",
+        "CMAKE_CUDA_COMPILER_LAUNCHER": "$env{CMAKE_CUDA_COMPILER_LAUNCHER}",
         "SMASHTABLE_BUILD_TEST": "ON",
         "SMASHTABLE_WERROR": "ON"
       }
@@ -18,9 +21,9 @@
       "name": "clang",
       "hidden": true,
       "description": "Clang is the default for its diagnostics on template-heavy code, not for speed - on this tree the two compilers trade wins.",
-      "cacheVariables": { "CMAKE_C_COMPILER": "clang", "CMAKE_CXX_COMPILER": "clang++" }
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++" }
     },
-    { "name": "gcc", "hidden": true, "cacheVariables": { "CMAKE_C_COMPILER": "gcc", "CMAKE_CXX_COMPILER": "g++" } },
+    { "name": "gcc", "hidden": true, "cacheVariables": { "CMAKE_CXX_COMPILER": "g++" } },
     {
       "name": "windows",
       "hidden": true,
@@ -38,16 +41,13 @@
       "inherits": ["base", "clang"],
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O0 -g0 -DNDEBUG",
-        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O0 -g0 -DNDEBUG",
-        "SMASHTABLE_WERROR": "ON"
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O0 -g0 -DNDEBUG"
       },
       "displayName": "Clang with warnings as errors"
     },
     {
       "name": "release",
       "inherits": ["base", "clang"],
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
       "displayName": "Release"
     },
     {
@@ -67,7 +67,6 @@
       "inherits": ["base", "gcc"],
       "description": "32-bit x86 through -m32, run on the 64-bit host; the CUDA test has no 32-bit toolkit.",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_FLAGS": "-m32",
         "CMAKE_CXX_FLAGS": "-m32"
       }
@@ -77,7 +76,6 @@
       "inherits": ["base", "clang"],
       "description": "Compiles the scoped-atomics test for every device family; it skips at run time without a device.",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CUDA_HOST_COMPILER": "clang++",
         "SMASHTABLE_CUDA_ARCH": "all"
       },
@@ -102,14 +100,14 @@
       "inherits": "base",
       "displayName": "Android ARM64 through the NDK's own toolchain, compile only",
       "toolchainFile": "$env{ANDROID_NDK_ROOT}/build/cmake/android.toolchain.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "ANDROID_ABI": "arm64-v8a", "ANDROID_PLATFORM": "android-28" }
+      "cacheVariables": { "ANDROID_ABI": "arm64-v8a", "ANDROID_PLATFORM": "android-28" }
     },
     {
       "name": "wasm32_emscripten",
       "inherits": "base",
       "displayName": "WebAssembly through Emscripten, one thread, compile only",
       "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "EMSCRIPTEN_SYSTEM_PROCESSOR": "wasm32" }
+      "cacheVariables": { "EMSCRIPTEN_SYSTEM_PROCESSOR": "wasm32" }
     },
     {
       "name": "wasm64_emscripten",
@@ -118,7 +116,6 @@
       "description": "Emscripten's toolchain reads the width off the C flags as it loads, so both languages carry them.",
       "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
         "EMSCRIPTEN_SYSTEM_PROCESSOR": "wasm64",
         "CMAKE_C_FLAGS": "-pthread --target=wasm64",
         "CMAKE_CXX_FLAGS": "-pthread --target=wasm64",
@@ -132,7 +129,6 @@
       "description": "Libraries for one machine: its CPU floor, every kernel-library capability spelled as 1 or 0, and its one GPU code.",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CUDA_HOST_COMPILER": "clang++"
       }
     },

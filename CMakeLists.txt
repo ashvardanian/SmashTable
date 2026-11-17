@@ -47,20 +47,8 @@
 cmake_minimum_required(VERSION 3.28)
 
 # Embedded debug information avoids depending on a running MSVC PDB server during probes.
-if (POLICY CMP0141)
-    cmake_policy(SET CMP0141 NEW)
-    if (NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
-        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
-    endif ()
-endif ()
-
-# Leverage `ccache` where it is installed, which turns a rebuild of an unchanged translation unit into a
-# lookup. This tree compiles 16 of them, several taking tens of seconds, so the cache earns its keep.
-find_program(SMASHTABLE_CCACHE_PROGRAM ccache)
-if (SMASHTABLE_CCACHE_PROGRAM AND NOT CMAKE_C_COMPILER_LAUNCHER)
-    set(CMAKE_C_COMPILER_LAUNCHER "${SMASHTABLE_CCACHE_PROGRAM}")
-    set(CMAKE_CXX_COMPILER_LAUNCHER "${SMASHTABLE_CCACHE_PROGRAM}")
-    message(STATUS "Using ccache: ${SMASHTABLE_CCACHE_PROGRAM}")
+if (NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
 endif ()
 project(
     smashtable
