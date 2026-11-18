@@ -220,9 +220,9 @@ A test that needs a free-threaded interpreter takes the `@requires_free_threadin
 `bench/harness.hpp` carries the same pinned settings readers as `test/harness.hpp`, so its variables parse, refuse and take `--name` flags the same way, under the same `SMASHTABLE_` prefix.
 Each workload is its own target over that harness, built on request and never run by CTest:
 
-- `smashtable_bench_commits`: one update across two containers per commit, two `std::map`s behind one `std::mutex` against two partitioned snapshot stores joined by a `transaction_group`.
+- `smashtable_bench_commits`: one update across two containers per commit, two `std::map`s behind one `std::mutex` against two partitioned snapshot stores joined by a `transaction_group`, then a `std::unordered_map` and a `std::map` behind one `std::mutex` against a partitioned snapshot hash map and AVL map joined the same way.
 - `smashtable_bench_isolation`: a read-modify-write transaction at each isolation level over one partitioned AVL core, retried until it lands, reporting the aborts it met.
-- `smashtable_bench_ranking`: the row kits within one row of each width, and the immutable B-tree and S+ tree against a binary search among all the keys.
+- `smashtable_bench_ranking`: the row kits within one row of each width, and the immutable B-tree and S+ tree against a binary search among all the keys, for `u32`, `u64` and both `key128` draws.
 
 ```bash
 cmake --preset release -D SMASHTABLE_BUILD_BENCH=ON
@@ -234,6 +234,7 @@ build_release/smashtable_bench_ranking --filter='layouts\.u64\.' --time-limit=20
 
 A run prints the same machine header as the tests, its `- Name: value` settings, and one row per benchmark, named in the label grammar as `commits.<container>`, `isolation.<store>`, `ranking.rows.<bytes>b.<keys>.<row layout>.<kit>` and `ranking.layouts.<keys>.<bytes>b.<tree>.<kit>`, which is what `SMASHTABLE_FILTER` matches.
 Above one thread, each thread times the row on a loop of its own and draws from a stream of its own, `stream_key(seed, label, thread)`, and the row sums their calls and rates.
+Every store and standard container in `commits` and `isolation` allocates through the harness's `counting_allocator`, so their rows end in `loaded bytes/key`, the bytes held once the keys are in, and `timed bytes/key`, the bytes held as the first thread's timed loop ends, with its open transaction and any versions not yet reclaimed.
 
 ### Devices
 

@@ -130,23 +130,23 @@ void test_bulk_push_and_pop() {
 void test_element_lifetimes() {
     counted_key_t::reset();
     {
-        expected<basic_ring<counted_key_t>> ring = basic_ring<counted_key_t>::make(8);
-        if (!expect_equal(ring.status(), success_k)) return;
-        for (trivial_id_t value = 0; value < 6; ++value) expect_equal(ring->push(counted_key_t {value}), success_k);
+        auto [ring, status] = basic_ring<counted_key_t>::make(8);
+        if (!expect_equal(status, success_k)) return;
+        for (trivial_id_t value = 0; value < 6; ++value) expect_equal(ring.push(counted_key_t {value}), success_k);
         expect_equal(counted_key_t::alive(), std::ptrdiff_t {6});
-        ring->pop();
+        ring.pop();
         counted_key_t destination;
-        expect_equal(ring->pop_into(destination), success_k);
+        expect_equal(ring.pop_into(destination), success_k);
         expect_equal(destination.unique_id, trivial_id_t {1});
         expect_equal(counted_key_t::alive(), std::ptrdiff_t {5});
-        ring->clear();
+        ring.clear();
         expect_equal(counted_key_t::alive(), std::ptrdiff_t {1});
-        for (trivial_id_t value = 0; value < 8; ++value) expect_equal(ring->push(counted_key_t {value}), success_k);
+        for (trivial_id_t value = 0; value < 8; ++value) expect_equal(ring.push(counted_key_t {value}), success_k);
 
-        basic_ring<counted_key_t> moved = std::move(*ring);
+        basic_ring<counted_key_t> moved = std::move(ring);
         expect_equal(moved.size(), 8u);
-        expect_equal(ring->size(), 0u);
-        expect_equal(ring->capacity(), 0u);
+        expect_equal(ring.size(), 0u);
+        expect_equal(ring.capacity(), 0u);
         basic_ring<counted_key_t> swapped;
         std::swap(moved, swapped);
         expect_equal(swapped.oldest().unique_id, trivial_id_t {0});

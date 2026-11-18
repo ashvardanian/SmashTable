@@ -106,25 +106,25 @@ void check_ordered_readonly_mapping(std::size_t size = 300) {
         expect_equal(keys.push_back(key_t {key}), success_k);
     }
 
-    expected<map_type_> made_map = map_type_::make({pairs.data(), pairs.size()});
-    expected<set_type_> made_set = set_type_::make({keys.data(), keys.size()});
-    if (!expect_equal(made_map.status(), success_k)) return;
-    if (!expect_equal(made_set.status(), success_k)) return;
-    expect_equal(made_map->size(), made_set->size());
-    expect_true(made_map->size_bytes() > made_set->size_bytes());
+    auto [map, map_status] = map_type_::make({pairs.data(), pairs.size()});
+    auto [set, set_status] = set_type_::make({keys.data(), keys.size()});
+    if (!expect_equal(map_status, success_k)) return;
+    if (!expect_equal(set_status, success_k)) return;
+    expect_equal(map.size(), set.size());
+    expect_true(map.size_bytes() > set.size_bytes());
 
-    for (std::size_t rank = 0; rank < made_map->size(); ++rank) {
-        expect_true(made_map->select(rank) == made_set->select(rank));
-        expect_equal(made_map->mapped_at(rank), static_cast<mapped_t>(rank));
+    for (std::size_t rank = 0; rank < map.size(); ++rank) {
+        expect_true(map.select(rank) == set.select(rank));
+        expect_equal(map.mapped_at(rank), static_cast<mapped_t>(rank));
     }
     for (std::size_t index = 0; index < size / 2; ++index) {
         key_t const key = static_cast<key_t>(index);
-        expected<std::size_t> const in_map = made_map->find(key);
-        expected<std::size_t> const in_set = made_set->find(key);
-        if (!expect_equal(in_map.status(), success_k)) return;
-        if (!expect_equal(in_set.status(), success_k)) return;
-        expect_equal(*in_map, *in_set);
-        expect_equal(made_map->mapped_at(*in_map), static_cast<mapped_t>(index * 2));
+        auto [in_map, in_map_status] = map.find(key);
+        auto [in_set, in_set_status] = set.find(key);
+        if (!expect_equal(in_map_status, success_k)) return;
+        if (!expect_equal(in_set_status, success_k)) return;
+        expect_equal(in_map, in_set);
+        expect_equal(map.mapped_at(in_map), static_cast<mapped_t>(index * 2));
     }
 }
 

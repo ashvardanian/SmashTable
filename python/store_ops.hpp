@@ -248,11 +248,11 @@ struct store_bridge {
         requires ordered_k
     {
         shared_lock deferral {releases};
-        expected<value_t> taken = store_of(store).pop_smallest_copy();
-        if (!taken) return expected<entry_t> {taken.status()};
+        auto [taken, status] = store_of(store).pop_smallest_copy();
+        if (failed(status)) return expected<entry_t> {status};
         // A map's element already is the pair this hands back; a set has only the key half to fill.
-        if constexpr (associative_k) return expected<entry_t> {std::move(*taken), success_k};
-        else return expected<entry_t> {entry_t {std::move(*taken)}, success_k};
+        if constexpr (associative_k) return expected<entry_t> {std::move(taken), success_k};
+        else return expected<entry_t> {entry_t {std::move(taken)}, success_k};
     }
 
     /** Runs one algebra, dispatching the compile-time parameter from the runtime request. */

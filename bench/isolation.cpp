@@ -46,9 +46,15 @@ static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::
 template <typename store_type_>
 using forkunion_partitioned_map = partitioned_map<store_type_, hash<key_t>, forkunion_mutex_t, 16, forkunion_order_t>;
 
+using counted_allocator_t = counting_allocator<mapping<key_t, key_t>>;
+using monotonic_map_t = monotonic_avl_map<key_t, key_t, less_t, counted_allocator_t>;
+using snapshot_map_t = snapshot_avl_map<key_t, key_t, less_t, counted_allocator_t>;
+using serializable_map_t = serializable_avl_map<key_t, key_t, less_t, counted_allocator_t>;
+using strict_serializable_map_t = strict_serializable_avl_map<key_t, key_t, less_t, counted_allocator_t>;
+
 /** The monotonic store drawing its generations and stamps through ForkUnion's reference as well. */
-using forkunion_monotonic_avl_map_t =
-    monotonic_avl_map<key_t, key_t, less_t, std::allocator<mapping<key_t, key_t>>, fu::preferred_atomic_ref>;
+using forkunion_monotonic_map_t =
+    monotonic_avl_map<key_t, key_t, less_t, counted_allocator_t, fu::preferred_atomic_ref>;
 
 template <typename store_type_>
 double bench_increments(environment_t const &env, std::string const &name, std::span<key_t const> keys,
@@ -60,6 +66,7 @@ double bench_increments(environment_t const &env, std::string const &name, std::
             print_line(stdout, "{:<64} skipped: needs memory for {} keys", name, keys.size());
             return 0;
         }
+    double const loaded_bytes_per_key = live_bytes_per_key(keys.size());
     return run(env, name, baseline, [&](loop_t &loop) noexcept {
         split_mix_generator_t generator {stream_key(env.settings.seed, name, loop.thread())};
         auto transaction = store.transaction();
@@ -80,6 +87,8 @@ double bench_increments(environment_t const &env, std::string const &name, std::
             aborts += attempts - 1;
         }
         loop.rate("aborts", calls ? static_cast<double>(aborts) / calls : 0);
+        loop.counter("loaded bytes/key", loaded_bytes_per_key);
+        loop.counter("timed bytes/key", live_bytes_per_key(keys.size()));
     });
 }
 
@@ -95,21 +104,21 @@ void bench_isolation(environment_t const &env) {
 
     print_line(stdout, "\nRead, increment and commit one of {} keys, the speed-up against monotonic last",
                env.settings.keys);
-    double const monotonic = bench_increments<partitioned_map<monotonic_avl_map<key_t, key_t>>>(
+    double const monotonic = bench_increments<partitioned_map<monotonic_map_t>>(
         env, "isolation.partitioned_map<monotonic_avl_map>", key_span, 0);
-    bench_increments<forkunion_partitioned_map<forkunion_monotonic_avl_map_t>>(
+    bench_increments<forkunion_partitioned_map<forkunion_monotonic_map_t>>(
         env, "isolation.partitioned_map<monotonic_avl_map,forkunion>", key_span, monotonic);
-    bench_increments<partitioned_map<snapshot_avl_map<key_t, key_t>>>(
-        env, "isolation.partitioned_map<snapshot_avl_map>", key_span, monotonic);
-    bench_increments<forkunion_partitioned_map<snapshot_avl_map<key_t, key_t>>>(
+    bench_increments<partitioned_map<snapshot_map_t>>(env, "isolation.partitioned_map<snapshot_avl_map>", key_span,
+                                                      monotonic);
+    bench_increments<forkunion_partitioned_map<snapshot_map_t>>(
         env, "isolation.partitioned_map<snapshot_avl_map,forkunion>", key_span, monotonic);
-    bench_increments<partitioned_map<serializable_avl_map<key_t, key_t>>>(
-        env, "isolation.partitioned_map<serializable_avl_map>", key_span, monotonic);
-    bench_increments<forkunion_partitioned_map<serializable_avl_map<key_t, key_t>>>(
+    bench_increments<partitioned_map<serializable_map_t>>(env, "isolation.partitioned_map<serializable_avl_map>",
+                                                          key_span, monotonic);
+    bench_increments<forkunion_partitioned_map<serializable_map_t>>(
         env, "isolation.partitioned_map<serializable_avl_map,forkunion>", key_span, monotonic);
-    bench_increments<partitioned_map<strict_serializable_avl_map<key_t, key_t>>>(
+    bench_increments<partitioned_map<strict_serializable_map_t>>(
         env, "isolation.partitioned_map<strict_serializable_avl_map>", key_span, monotonic);
-    bench_increments<forkunion_partitioned_map<strict_serializable_avl_map<key_t, key_t>>>(
+    bench_increments<forkunion_partitioned_map<strict_serializable_map_t>>(
         env, "isolation.partitioned_map<strict_serializable_avl_map,forkunion>", key_span, monotonic);
 }
 

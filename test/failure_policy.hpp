@@ -144,16 +144,16 @@ class refusing_store : public store_type_ {
     explicit refusing_store(base_t &&base) noexcept : base_t(std::move(base)) {}
 
     [[nodiscard]] static expected<refusing_store> make(allocator_t const &allocator = {}) noexcept {
-        expected<base_t> inner = base_t::make(allocator);
-        if (!inner) return inner.status();
-        return refusing_store {*std::move(inner)};
+        auto [inner, status] = base_t::make(allocator);
+        if (failed(status)) return status;
+        return refusing_store {std::move(inner)};
     }
 
     [[nodiscard]] static expected<refusing_store> make(comparator_t const &comparator,
                                                        allocator_t const &allocator) noexcept {
-        expected<base_t> inner = base_t::make(comparator, allocator);
-        if (!inner) return inner.status();
-        return refusing_store {*std::move(inner)};
+        auto [inner, status] = base_t::make(comparator, allocator);
+        if (failed(status)) return status;
+        return refusing_store {std::move(inner)};
     }
 
     [[nodiscard]] status_t clear() noexcept {

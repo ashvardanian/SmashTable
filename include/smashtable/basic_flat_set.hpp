@@ -90,9 +90,9 @@ class basic_flat_set {
     /** An empty set with room for @p capacity elements. */
     static expected<basic_flat_set> make(std::size_t capacity, comparator_t comparator = {},
                                          allocator_t allocator = {}) noexcept {
-        expected<elements_t> made = elements_t::make(capacity, elements_allocator_t(allocator));
-        if (!made) return made.status();
-        return expected<basic_flat_set>(basic_flat_set(std::move(*made), std::move(comparator)), success_k);
+        auto [elements, status] = elements_t::make(capacity, elements_allocator_t(allocator));
+        if (failed(status)) return status;
+        return expected<basic_flat_set>(basic_flat_set(std::move(elements), std::move(comparator)), success_k);
     }
 
     /**

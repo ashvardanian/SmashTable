@@ -884,22 +884,22 @@ template <typename callback_type_>
     store_ops_t const *table = container->store_ops;
     assert(table->cursor_make && "ordered walk over an unordered core");
 
-    expected<void *> opened = table->cursor_make(container->store, nullptr, nullptr);
-    if (!opened) return opened.status();
+    auto const [cursor, status] = table->cursor_make(container->store, nullptr, nullptr);
+    if (failed(status)) return status;
 
     key_variant_t found_key;
     value_variant_t found_value;
     status_t stepping = success_k;
     while (true) {
-        expected<cursor_step_t> const stepped = table->cursor_next(*opened, found_key, &found_value);
-        if (!stepped) {
-            stepping = stepped.status();
+        auto [step, step_status] = table->cursor_next(cursor, found_key, &found_value);
+        if (failed(step_status)) {
+            stepping = step_status;
             break;
         }
-        if (*stepped == cursor_step_t::exhausted_k) break;
+        if (step == cursor_step_t::exhausted_k) break;
         callback(found_key, found_value);
     }
-    table->cursor_destroy(container->releases, *opened);
+    table->cursor_destroy(container->releases, cursor);
     return stepping;
 }
 

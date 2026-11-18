@@ -1543,7 +1543,8 @@ class reference_store {
 #pragma region Constructors and Assignment
 
   public:
-    reference_store() noexcept(false) {}
+    /** Empty and nothrow where the set's sentinel allocates nothing, so a failed @c make binds. */
+    reference_store() noexcept(std::is_nothrow_default_constructible_v<entry_set_t>) {}
 
     /** Seeds the comparator, which an instance carrying state or a dispatch pointer needs. */
     explicit reference_store(comparator_t const &comparator) noexcept(false)

@@ -22,11 +22,16 @@
 #include <format>       // `std::format_to`, `std::format_string`
 #include <random>       // `std::random_device`
 #include <regex>        // `std::regex`, `std::regex_search`
+#include <atomic>       // `std::memory_order_relaxed`
+#include <memory>       // `std::allocator`
 #include <string_view>  // `std::string_view`
 #include <system_error> // `std::errc`
 #include <thread>       // `std::thread`
+#include <type_traits>  // `std::true_type`
 #include <utility>      // `std::exchange`, `std::forward`, `std::move`
 #include <vector>       // `std::vector`
+
+#include <forkunion.hpp> // `preferred_atomic_ref`
 
 #include <smashtable/row_search.hpp> // `every_row_kit_k`, `row_kit_t`, `name_of`
 
@@ -238,6 +243,55 @@ inline void do_not_optimize(value_type_ &&value) noexcept {
 #endif
 }
 
+/** Every block the containers have asked their allocator for, and the bytes of those still held,
+ *  from any thread. */
+inline std::uint64_t allocations_tally = 0;
+inline std::uint64_t live_bytes_tally = 0;
+
+/** @c std::allocator that counts each request into the tallies, and stateless, so every rebind of
+ *  it inside a container counts into the same words. */
+template <typename value_type_>
+struct counting_allocator {
+    using value_type = value_type_;
+    using propagate_on_container_move_assignment = std::true_type;
+    using propagate_on_container_swap = std::true_type;
+
+    counting_allocator() noexcept = default;
+    template <typename other_type_>
+    counting_allocator(counting_allocator<other_type_> const &) noexcept {}
+
+    value_type_ *allocate(std::size_t count) noexcept {
+        namespace fu = ashvardanian::forkunion;
+        fu::preferred_atomic_ref<std::uint64_t>(allocations_tally).fetch_add(1, std::memory_order_relaxed);
+        fu::preferred_atomic_ref<std::uint64_t>(live_bytes_tally)
+            .fetch_add(count * sizeof(value_type_), std::memory_order_relaxed);
+        return std::allocator<value_type_> {}.allocate(count);
+    }
+    void deallocate(value_type_ *block, std::size_t count) noexcept {
+        namespace fu = ashvardanian::forkunion;
+        fu::preferred_atomic_ref<std::uint64_t>(live_bytes_tally)
+            .fetch_sub(count * sizeof(value_type_), std::memory_order_relaxed);
+        std::allocator<value_type_> {}.deallocate(block, count);
+    }
+    template <typename other_type_>
+    bool operator==(counting_allocator<other_type_> const &) const noexcept {
+        return true;
+    }
+};
+
+/** Blocks asked of @ref counting_allocator so far. */
+inline std::uint64_t allocations_so_far() noexcept {
+    return ashvardanian::forkunion::preferred_atomic_ref<std::uint64_t>(allocations_tally)
+        .load(std::memory_order_relaxed);
+}
+
+/** Bytes @ref counting_allocator holds now, over each of @p keys_count keys. */
+inline double live_bytes_per_key(std::size_t keys_count) noexcept {
+    std::uint64_t const live_bytes =
+        ashvardanian::forkunion::preferred_atomic_ref<std::uint64_t>(live_bytes_tally).load(std::memory_order_relaxed);
+    return static_cast<double>(live_bytes) / static_cast<double>(keys_count);
+}
+
 /** A named amount reported beside the rate, per second when @c is_rate and else as it is. */
 struct counter_t {
     char const *name = nullptr;
@@ -249,7 +303,7 @@ struct counter_t {
 struct row_t {
     std::string_view name;
     double calls_per_second = 0;
-    std::array<counter_t, 2> counters {};
+    std::array<counter_t, 4> counters {};
     char const *skipped = nullptr;
 };
 
@@ -286,7 +340,7 @@ class loop_t {
     std::size_t calls_ = 0, next_check_ = 0;
     bool warming_up_ = true;
     char const *skipped_ = nullptr;
-    std::array<counter_t, 2> counters_ {};
+    std::array<counter_t, 4> counters_ {};
 
     bool keep_running() noexcept {
         if (skipped_) return false;

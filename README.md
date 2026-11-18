@@ -80,37 +80,45 @@ The ladder runs from [Read Committed](https://jepsen.io/consistency/models/read-
 Rates are calls per second summed over every thread, each drawing keys uniformly from a million distinct `u64`s.
 Each commit updates one key in both containers, and both sides keep the pair whole for a reader: the mutex by shutting it out, the group by publishing both stores under one stamp.
 
-| Threads | Two `std::map`s, one `std::mutex` | Two stores, one `transaction_group` |
-| ------: | --------------------------------: | ----------------------------------: |
-|       1 |                          1.21 M/s |                            0.28 M/s |
-|       8 |                          0.92 M/s |                            0.97 M/s |
-|      16 |                          0.42 M/s |                            1.07 M/s |
+| Commits                                          | 1 thread | 2 threads | 4 threads | 8 threads | Bytes per key |
+| :----------------------------------------------- | -------: | --------: | --------: | --------: | ------------: |
+| Two `std::map`s, one `std::mutex`                | 0.77 M/s |  0.53 M/s |  0.37 M/s |  0.33 M/s |            96 |
+| Two AVL stores, one `transaction_group`          | 0.60 M/s |  0.79 M/s |  1.39 M/s |  1.73 M/s |           144 |
+| `std::unordered_map` and `std::map`, one mutex   | 1.57 M/s |  0.93 M/s |  0.53 M/s |  0.61 M/s |            93 |
+| A hash and an AVL store, one `transaction_group` | 0.61 M/s |  0.87 M/s |  1.49 M/s |  1.89 M/s |           153 |
+
+The versioned stores spend more memory than `std::map`: 72 against 48 bytes per `u64` pair here.
+Every entry carries the generation of the transaction that wrote it and the stamp of the commit that published it, and a superseded version stays until the oldest open snapshot has moved past it.
+That is what lets many long-lived transactions stay open at once, each reading one consistent snapshot while others commit beside it.
+Where transactions are short and only a thread or two writes, one mutex over plain containers is the cheaper choice, as the single-thread column shows.
+Passing ForkUnion's atomic references and waiters into the stores, as the bench's second rows do, adds up to 12% at 8 threads.
 
 Each transaction reads a key, writes it back incremented and commits, retrying on conflict so only landed commits count, and `monotonic` alone lets two concurrent increments overwrite each other.
 
-| Isolation             | 1 thread | 16 threads |
-| :-------------------- | -------: | ---------: |
-| `monotonic`           | 1.37 M/s |   7.24 M/s |
-| `snapshot`            | 0.84 M/s |   1.72 M/s |
-| `serializable`        | 0.79 M/s |   0.38 M/s |
-| `strict_serializable` | 0.80 M/s |   0.37 M/s |
+| Isolation             | 1 thread | 2 threads | 4 threads | 8 threads |
+| :-------------------- | -------: | --------: | --------: | --------: |
+| `monotonic`           | 1.11 M/s |  1.88 M/s |  4.24 M/s |  5.80 M/s |
+| `snapshot`            | 0.74 M/s |  1.10 M/s |  1.86 M/s |  2.59 M/s |
+| `serializable`        | 0.76 M/s |  1.07 M/s |  1.91 M/s |  2.56 M/s |
+| `strict_serializable` | 0.70 M/s |  1.09 M/s |  1.81 M/s |  2.58 M/s |
 
-The S+ tree ranks one thread's queries among 16 million sorted keys through the row kit of the CPU's SIMD family, in 64-byte rows for `u64` keys and 512-byte rows for `u128` ones.
+The trees rank one thread's queries among 16 million sorted keys through the "row kit" of the CPU's SIMD family, in rows of one cache line, the default.
 
-| Rank among 16M | `std::lower_bound` | `immutable_splus_tree` |
-| :------------- | -----------------: | ---------------------: |
-| `u64` keys     |           3.74 M/s |               11.4 M/s |
-| `u128` keys    |           2.09 M/s |               6.53 M/s |
+| Rank among 16M | `std::lower_bound` | `immutable_b_tree` | `immutable_splus_tree` |
+| :------------- | -----------------: | -----------------: | ---------------------: |
+| `u32` keys     |           3.19 M/s |           31.2 M/s |               30.1 M/s |
+| `u64` keys     |           2.76 M/s |           22.9 M/s |               23.8 M/s |
+| `u128` keys    |           1.68 M/s |           10.7 M/s |               11.1 M/s |
 
 ```sh
 cmake --preset release -D SMASHTABLE_BUILD_BENCH=ON
 cmake --build --preset release --target smashtable_bench_commits smashtable_bench_isolation smashtable_bench_ranking
-for threads in 1 8 16; do build_release/smashtable_bench_commits --keys=1048576 --threads=$threads; done
-for threads in 1 16; do build_release/smashtable_bench_isolation --keys=1048576 --threads=$threads; done
-build_release/smashtable_bench_ranking --filter='layouts\.(u64|key128\.uniform)\.'
+for threads in 1 2 4 8; do build_release/smashtable_bench_commits --keys=1048576 --threads=$threads; done
+for threads in 1 2 4 8; do build_release/smashtable_bench_isolation --keys=1048576 --threads=$threads; done
+build_release/smashtable_bench_ranking --filter='layouts\.(u32|u64|key128\.uniform)\.(binary|128b)'
 ```
 
-Measured on an Intel Core i9-13950HX with Clang 22.
+Measured on an Apple M5 Pro with Apple Clang 21, the median of three 3-second runs per row.
 
 ## Quickstart
 

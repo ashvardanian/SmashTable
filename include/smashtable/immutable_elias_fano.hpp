@@ -125,9 +125,8 @@ class immutable_elias_fano {
         std::uint64_t const low_mask = (std::uint64_t {1} << low_bits) - 1;
         value_t previous = 0;
         for (std::size_t position = 0; position < count;) {
-            expected<std::span<value_t const>> pulled = fill(position);
-            if (failed(pulled)) return pulled.status();
-            std::span<value_t const> const values = *pulled;
+            auto const [values, status] = fill(position);
+            if (failed(status)) return status;
             if (values.empty() || values.size() > count - position) return invalid_argument_k;
             for (value_t const value : values) {
                 if (value < previous || value > universe) return invalid_argument_k;

@@ -49,9 +49,8 @@ void check_sequence_order(std::size_t size = 64) {
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
 
-    expected<container_t> made = container_t::make(size);
-    if (!expect_equal(made.status(), success_k)) return;
-    container_t &container = *made;
+    auto [container, status] = container_t::make(size);
+    if (!expect_equal(status, success_k)) return;
     expect_true(container.empty());
     expect_true(container.capacity() >= size);
 
@@ -78,15 +77,15 @@ void check_sequence_element_lifetimes(std::size_t size = 32) {
 
     counted_key_t::reset();
     {
-        expected<container_t> made = container_t::make(size);
-        if (!expect_equal(made.status(), success_k)) return;
+        auto [made, status] = container_t::make(size);
+        if (!expect_equal(status, success_k)) return;
         for (std::size_t index = 0; index < size; ++index)
-            expect_equal(append_to(*made, member_t(static_cast<trivial_id_t>(index))), success_k);
-        made->clear();
+            expect_equal(append_to(made, member_t(static_cast<trivial_id_t>(index))), success_k);
+        made.clear();
         expect_equal(counted_key_t::alive(), std::ptrdiff_t {0});
 
         for (std::size_t index = 0; index < size; ++index)
-            expect_equal(append_to(*made, member_t(static_cast<trivial_id_t>(index))), success_k);
+            expect_equal(append_to(made, member_t(static_cast<trivial_id_t>(index))), success_k);
     }
     counted_key_t::check_balanced();
 }
@@ -98,14 +97,14 @@ void check_sequence_move_semantics(std::size_t size = 16) {
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
 
-    expected<container_t> made = container_t::make(size);
-    if (!expect_equal(made.status(), success_k)) return;
+    auto [made, status] = container_t::make(size);
+    if (!expect_equal(status, success_k)) return;
     for (std::size_t index = 0; index < size; ++index)
-        expect_equal(append_to(*made, member_t(static_cast<trivial_id_t>(index))), success_k);
+        expect_equal(append_to(made, member_t(static_cast<trivial_id_t>(index))), success_k);
 
-    container_t moved_into(std::move(*made));
+    container_t moved_into(std::move(made));
     if (!expect_equal(moved_into.size(), size)) return;
-    expect_true(made->empty());
+    expect_true(made.empty());
     for (std::size_t index = 0; index < size; ++index)
         expect_equal(moved_into[index].unique_id, static_cast<trivial_id_t>(index));
 
@@ -126,15 +125,15 @@ void check_sequence_allocator_ledger(std::size_t size = 16) {
 
     allocation_ledger_t ledger;
     {
-        expected<container_t> made = container_t::make(size, typename container_t::allocator_t(1, ledger));
-        if (!expect_equal(made.status(), success_k)) return;
+        auto [made, status] = container_t::make(size, typename container_t::allocator_t(1, ledger));
+        if (!expect_equal(status, success_k)) return;
         expect_equal(ledger.live_allocations(), std::ptrdiff_t {1});
         for (std::size_t index = 0; index < size; ++index)
-            expect_equal(append_to(*made, member_t(static_cast<trivial_id_t>(index))), success_k);
+            expect_equal(append_to(made, member_t(static_cast<trivial_id_t>(index))), success_k);
 
         // A move assignment carries the allocator, so the destination frees what the source was granted.
         container_t assigned_into;
-        assigned_into = std::move(*made);
+        assigned_into = std::move(made);
         expect_equal(assigned_into.size(), size);
     }
     ledger.check_balanced();

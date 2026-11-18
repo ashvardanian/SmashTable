@@ -44,15 +44,15 @@ PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t cons
     // `tp_alloc` hands back zeroed storage, which is not the same as a constructed member.
     std::construct_at(&self->releases);
 
-    expected<void *> made = store_ops->make(ops);
-    if (!made) {
+    auto const [store, status] = store_ops->make(ops);
+    if (failed(status)) {
         Py_DECREF(self);
-        [[maybe_unused]] int const raised = raise_for(state, made.status());
+        [[maybe_unused]] int const raised = raise_for(state, status);
         return nullptr;
     }
     self->ops = ops;
     self->store_ops = store_ops;
-    self->store = *made;
+    self->store = store;
     self->ordinal = state->next_ordinal.fetch_add(1, std::memory_order_relaxed);
     self->mode = mode;
     return reinterpret_cast<PyObject *>(self);

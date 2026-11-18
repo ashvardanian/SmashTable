@@ -1077,9 +1077,9 @@ class basic_hash_table {
 
         // A key repeated inside the range collides exactly as one already here does, and an open
         // table cannot see the repeat without counting the distinct keys against the range length.
-        expected<basic_hash_table> distinct = make(begin, end, hasher_, equals_, get_allocator());
-        if (!distinct) return distinct.status();
-        if (distinct->size() != static_cast<std::size_t>(distance_between(begin, end))) return key_already_exists_k;
+        auto [distinct, status] = make(begin, end, hasher_, equals_, get_allocator());
+        if (failed(status)) return status;
+        if (distinct.size() != static_cast<std::size_t>(distance_between(begin, end))) return key_already_exists_k;
 
         return absorb_range_<incumbent_policy_t::keeps_the_incumbent_k>(begin, end, tags...);
     }

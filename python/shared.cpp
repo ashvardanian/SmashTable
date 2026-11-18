@@ -508,15 +508,15 @@ PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t
 
     // Opened before the object is built, so a store that cannot open a walk raises rather than
     // handing back a cursor that would end on its first step.
-    expected<void *> opened = header->store_ops->cursor_make(header->store, start, stop);
-    if (!opened) {
-        [[maybe_unused]] int const raised = raise_for(state, opened.status());
+    auto const [cursor, status] = header->store_ops->cursor_make(header->store, start, stop);
+    if (failed(status)) {
+        [[maybe_unused]] int const raised = raise_for(state, status);
         return nullptr;
     }
 
     auto *walk = PyObject_GC_New(cursor_object_t, state->cursor_type);
     if (!walk) {
-        header->store_ops->cursor_destroy(header->releases, *opened);
+        header->store_ops->cursor_destroy(header->releases, cursor);
         return nullptr;
     }
     // No incref of the type here: `PyObject_GC_New` already took one, and the matching decref in
@@ -527,7 +527,7 @@ PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t
 
     walk->owner = Py_NewRef(container);
     walk->yields = yields;
-    walk->walk = *opened;
+    walk->walk = cursor;
     walk->remaining = limit;
 
     PyObject_GC_Track(walk);

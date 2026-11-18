@@ -3,7 +3,8 @@
  *  @author Ash Vardanian
  *  @date November 17, 2026
  *  @brief Benchmark of one update spanning two containers per commit, from every thread asked
- *      for: two maps behind one mutex against two partitioned stores joined by a group.
+ *      for: two maps behind one mutex against two partitioned stores joined by a group, as two
+ *      ordered maps and as a hash map beside an ordered one.
  *
  *  Both sides keep the pair consistent for a reader, the mutex by excluding it and the group by
  *  publishing both stores under one stamp of the order they share. Every thread updates keys
@@ -13,13 +14,13 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
 
-#include <atomic>      // `std::memory_order_relaxed`
-#include <map>         // `std::map`
-#include <memory>      // `std::allocator`
-#include <mutex>       // `std::mutex`, `std::lock_guard`
-#include <span>        // `std::span`
-#include <string>      // `std::string`
-#include <type_traits> // `std::true_type`
+#include <functional>    // `std::less`, `std::hash`, `std::equal_to`
+#include <map>           // `std::map`
+#include <mutex>         // `std::mutex`, `std::lock_guard`
+#include <span>          // `std::span`
+#include <string>        // `std::string`
+#include <unordered_map> // `std::unordered_map`
+#include <utility>       // `std::pair`
 
 #include <forkunion.hpp>
 
@@ -35,36 +36,15 @@ namespace ashvardanian::smashtable::bench {
 
 using key_t = std::uint64_t;
 
-/** Every block the stores have asked their allocator for, from any thread. */
-std::uint64_t allocations_tally = 0;
-
-/** @c std::allocator that counts each request into @c allocations_tally, and stateless, so every
- *  rebind of it inside a store counts into the same word. */
-template <typename value_type_>
-struct counting_allocator {
-    using value_type = value_type_;
-    using propagate_on_container_move_assignment = std::true_type;
-    using propagate_on_container_swap = std::true_type;
-
-    counting_allocator() noexcept = default;
-    template <typename other_type_>
-    counting_allocator(counting_allocator<other_type_> const &) noexcept {}
-
-    value_type_ *allocate(std::size_t count) noexcept {
-        fu::preferred_atomic_ref<std::uint64_t>(allocations_tally).fetch_add(1, std::memory_order_relaxed);
-        return std::allocator<value_type_> {}.allocate(count);
-    }
-    void deallocate(value_type_ *block, std::size_t count) noexcept {
-        std::allocator<value_type_> {}.deallocate(block, count);
-    }
-    template <typename other_type_>
-    bool operator==(counting_allocator<other_type_> const &) const noexcept {
-        return true;
-    }
-};
-
 using counted_map_t = snapshot_avl_map<key_t, key_t, less_t, counting_allocator<mapping<key_t, key_t>>>;
+using counted_hash_map_t = snapshot_hash_map<key_t, key_t, default_hash_t, equal_to_t, counting_allocator<std::byte>>;
 using store_t = partitioned_map<counted_map_t>;
+using hash_store_t = partitioned_map<counted_hash_map_t>;
+
+using counted_std_allocator_t = counting_allocator<std::pair<key_t const, key_t>>;
+using std_map_t = std::map<key_t, key_t, std::less<key_t>, counted_std_allocator_t>;
+using std_unordered_map_t =
+    std::unordered_map<key_t, key_t, std::hash<key_t>, std::equal_to<key_t>, counted_std_allocator_t>;
 
 /** The mutex and the commit order with every shared word owned through ForkUnion's reference for
  *  this build, and every wait handed to its waiter. */
@@ -79,13 +59,17 @@ static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::
 
 /** Two partitioned stores locked, ordered and waited on through ForkUnion. */
 using forkunion_store_t = partitioned_map<counted_map_t, hash<key_t>, forkunion_mutex_t, 16, forkunion_order_t>;
+using forkunion_hash_store_t =
+    partitioned_map<counted_hash_map_t, hash<key_t>, forkunion_mutex_t, 16, forkunion_order_t>;
 
-double bench_std_maps(environment_t const &env, std::span<key_t const> keys) {
-    std::string const name = "commits.std_maps";
+template <typename forward_type_, typename backward_type_>
+double bench_std_maps(environment_t const &env, std::string const &name, std::span<key_t const> keys) {
     if (!env.settings.regex_filter.selects(name)) return 0;
-    std::map<key_t, key_t> forward, backward;
+    forward_type_ forward;
+    backward_type_ backward;
     std::mutex mutex;
     for (key_t const key : keys) forward[key] = 0, backward[key] = 0;
+    double const loaded_bytes_per_key = live_bytes_per_key(keys.size());
     return run(env, name, 0, [&](loop_t &loop) noexcept {
         split_mix_generator_t generator {stream_key(env.settings.seed, name, loop.thread())};
         for (std::size_t call : loop) {
@@ -93,18 +77,22 @@ double bench_std_maps(environment_t const &env, std::span<key_t const> keys) {
             std::lock_guard<std::mutex> lock {mutex};
             forward.find(key)->second = call, backward.find(key)->second = call;
         }
+        loop.counter("loaded bytes/key", loaded_bytes_per_key);
+        loop.counter("timed bytes/key", live_bytes_per_key(keys.size()));
     });
 }
 
-template <typename store_type_>
+template <typename forward_type_, typename backward_type_>
 void bench_transaction_group(environment_t const &env, std::string const &name, std::span<key_t const> keys,
                              double std_maps) {
     if (!env.settings.regex_filter.selects(name)) return;
-    typename store_type_::order_t order;
-    store_type_ forward {order}, backward {order};
+    typename forward_type_::order_t order;
+    forward_type_ forward {order};
+    backward_type_ backward {order};
     for (key_t const key : keys)
         if (failed(forward.upsert({key, 0})) || failed(backward.upsert({key, 0})))
             return print_line(stdout, "{:<64} skipped: needs memory for {} keys", name, keys.size());
+    double const loaded_bytes_per_key = live_bytes_per_key(keys.size());
     run(env, name, std_maps, [&](loop_t &loop) noexcept {
         split_mix_generator_t generator {stream_key(env.settings.seed, name, loop.thread())};
         auto group = make_transaction_group(forward, backward);
@@ -112,10 +100,7 @@ void bench_transaction_group(environment_t const &env, std::string const &name, 
         std::size_t aborts = 0, calls = 0;
         std::uint64_t allocated_before = 0;
         for (std::size_t call : loop) {
-            if (call == 0)
-                aborts = 0,
-                allocated_before =
-                    fu::preferred_atomic_ref<std::uint64_t>(allocations_tally).load(std::memory_order_relaxed);
+            if (call == 0) aborts = 0, allocated_before = allocations_so_far();
             calls = call + 1;
             key_t const key = keys[generator.below(keys.size())];
             status_t committed = success_k;
@@ -127,9 +112,9 @@ void bench_transaction_group(environment_t const &env, std::string const &name, 
             if (failed(committed)) return loop.skip(name_of(committed));
         }
         loop.rate("aborts", calls ? static_cast<double>(aborts) / calls : 0);
-        std::uint64_t const allocated =
-            fu::preferred_atomic_ref<std::uint64_t>(allocations_tally).load(std::memory_order_relaxed);
-        loop.counter("allocations", static_cast<double>(allocated - allocated_before));
+        loop.counter("allocations", static_cast<double>(allocations_so_far() - allocated_before));
+        loop.counter("loaded bytes/key", loaded_bytes_per_key);
+        loop.counter("timed bytes/key", live_bytes_per_key(keys.size()));
     });
 }
 
@@ -144,13 +129,22 @@ void bench_commits(environment_t const &env) {
     std::span<key_t const> const key_span(keys.data(), keys.size());
 
     print_line(stdout,
-               "\nOne update across two containers per commit over {} keys, the speed-up against std::maps last",
+               "\nOne update across two containers per commit over {} keys, the speed-up against the std pair last",
                env.settings.keys);
-    double const std_maps = bench_std_maps(env, key_span);
-    bench_transaction_group<store_t>(env, "commits.transaction_group<partitioned_map<snapshot_avl_map>>", key_span,
-                                     std_maps);
-    bench_transaction_group<forkunion_store_t>(
+    double const std_maps = bench_std_maps<std_map_t, std_map_t>(env, "commits.std_maps", key_span);
+    bench_transaction_group<store_t, store_t>(env, "commits.transaction_group<partitioned_map<snapshot_avl_map>>",
+                                              key_span, std_maps);
+    bench_transaction_group<forkunion_store_t, forkunion_store_t>(
         env, "commits.transaction_group<partitioned_map<snapshot_avl_map>,forkunion>", key_span, std_maps);
+    double const std_mixed_maps =
+        bench_std_maps<std_unordered_map_t, std_map_t>(env, "commits.std_unordered_map_and_map", key_span);
+    bench_transaction_group<hash_store_t, store_t>(
+        env, "commits.transaction_group<partitioned_map<snapshot_hash_map>,partitioned_map<snapshot_avl_map>>",
+        key_span, std_mixed_maps);
+    bench_transaction_group<forkunion_hash_store_t, forkunion_store_t>(
+        env,
+        "commits.transaction_group<partitioned_map<snapshot_hash_map>,partitioned_map<snapshot_avl_map>,forkunion>",
+        key_span, std_mixed_maps);
 }
 
 } // namespace ashvardanian::smashtable::bench

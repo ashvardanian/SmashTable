@@ -239,9 +239,9 @@ expected<typename tree_type_::view_t> save_and_view(tree_type_ const &tree, basi
     expect_equal(words.resize(tree.saved_bytes() / sizeof(std::uint64_t) + 1), success_k);
     std::span<std::byte> const bytes(reinterpret_cast<std::byte *>(words.data()), tree.saved_bytes());
     expect_equal(tree.save(bytes), success_k);
-    expected<typename tree_type_::view_t> view = tree_type_::view_t::make(std::span<std::byte const>(bytes));
-    if (view) expect_equal(view->saved_bytes(), tree.saved_bytes());
-    return view;
+    auto [view, status] = tree_type_::view_t::make(std::span<std::byte const>(bytes));
+    if (succeeded(status)) expect_equal(view.saved_bytes(), tree.saved_bytes());
+    return {std::move(view), status};
 }
 
 template <typename kit_type_, typename key_type_, std::size_t keys_per_row_>
@@ -278,15 +278,15 @@ void check_layouts_of(split_mix_generator_t &generator) {
             collect_wanted(sorted, generator, wanted);
             std::span<key_type_ const> const asked(wanted.data(), wanted.size());
 
-            expected<btree_t> btree = btree_t::make(sorted);
-            if (!expect_equal(btree.status(), success_k)) return;
-            check_ordered_readonly(*btree, sorted, asked);
-            expected<splus_t> splus = splus_t::make(sorted);
-            if (!expect_equal(splus.status(), success_k)) return;
-            check_ordered_readonly(*splus, sorted, asked);
-            expected<typename splus_t::view_t> view = save_and_view(*splus, saved);
-            if (!expect_equal(view.status(), success_k)) return;
-            check_ordered_readonly(*view, sorted, asked);
+            auto [btree, btree_status] = btree_t::make(sorted);
+            if (!expect_equal(btree_status, success_k)) return;
+            check_ordered_readonly(btree, sorted, asked);
+            auto [splus, splus_status] = splus_t::make(sorted);
+            if (!expect_equal(splus_status, success_k)) return;
+            check_ordered_readonly(splus, sorted, asked);
+            auto [view, save_status] = save_and_view(splus, saved);
+            if (!expect_equal(save_status, success_k)) return;
+            check_ordered_readonly(view, sorted, asked);
         }
 
     // Out-of-order input is refused rather than built into a tree that answers wrongly.
@@ -399,19 +399,19 @@ void test_saved_views() {
     basic_vector<pair_t> pairs;
     for (std::uint64_t index = 0; index != 1000; ++index)
         expect_equal(pairs.push_back(pair_t {index * 3, index * 7}), success_k);
-    expected<map_t> map = map_t::make({pairs.data(), pairs.size()});
-    if (!expect_equal(map.status(), success_k)) return;
+    auto [map, map_status] = map_t::make({pairs.data(), pairs.size()});
+    if (!expect_equal(map_status, success_k)) return;
     basic_vector<std::uint64_t> words;
-    expected<map_t::view_t> view = save_and_view(*map, words);
-    if (!expect_equal(view.status(), success_k)) return;
+    auto [view, save_status] = save_and_view(map, words);
+    if (!expect_equal(save_status, success_k)) return;
     for (std::size_t rank = 0; rank != pairs.size(); ++rank) {
-        expect_equal(view->select(rank), pairs[rank].key);
-        expect_equal(view->mapped_at(rank), pairs[rank].mapped);
+        expect_equal(view.select(rank), pairs[rank].key);
+        expect_equal(view.mapped_at(rank), pairs[rank].mapped);
     }
-    expect_equal(view->find(pairs[500].key), 500u);
-    expect_equal(view->find(1).status(), status_t::key_not_found_k);
+    expect_equal(view.find(pairs[500].key), 500u);
+    expect_equal(view.find(1).status(), status_t::key_not_found_k);
 
-    std::span<std::byte const> const bytes(reinterpret_cast<std::byte const *>(words.data()), map->saved_bytes());
+    std::span<std::byte const> const bytes(reinterpret_cast<std::byte const *>(words.data()), map.saved_bytes());
     expect_equal(map_t::view_t::make(bytes.first(bytes.size() - 1)).status(), status_t::invalid_argument_k);
     expect_equal(map_t::view_t::make(bytes.first(sizeof(splus_tree_header_t) - 1)).status(),
                  status_t::invalid_argument_k);
@@ -420,15 +420,15 @@ void test_saved_views() {
                  "a set over a map's bytes");
     expect_equal((immutable_splus_tree_view<pair_t, map_t::keys_per_row_k + 1>::make(bytes).status()),
                  status_t::invalid_argument_k, "another row width");
-    std::span<std::byte> const short_bytes(reinterpret_cast<std::byte *>(words.data()), map->saved_bytes() - 1);
-    expect_equal(map->save(short_bytes), status_t::invalid_argument_k);
+    std::span<std::byte> const short_bytes(reinterpret_cast<std::byte *>(words.data()), map.saved_bytes() - 1);
+    expect_equal(map.save(short_bytes), status_t::invalid_argument_k);
 
-    expected<immutable_splus_set<std::uint32_t>> empty = immutable_splus_set<std::uint32_t>::make({});
-    if (!expect_equal(empty.status(), success_k)) return;
-    expected<immutable_splus_set<std::uint32_t>::view_t> empty_view = save_and_view(*empty, words);
-    if (!expect_equal(empty_view.status(), success_k)) return;
-    expect_true(empty_view->empty());
-    expect_equal(empty_view->rank(7u), 0u);
+    auto [empty, empty_status] = immutable_splus_set<std::uint32_t>::make({});
+    if (!expect_equal(empty_status, success_k)) return;
+    auto [empty_view, empty_save_status] = save_and_view(empty, words);
+    if (!expect_equal(empty_save_status, success_k)) return;
+    expect_true(empty_view.empty());
+    expect_equal(empty_view.rank(7u), 0u);
 }
 
 #pragma endregion Tests

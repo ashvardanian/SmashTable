@@ -220,9 +220,8 @@ class immutable_packed_array {
         if (status_t const status = array.reset_(count, base, bits); failed(status)) return status;
 
         for (std::size_t position = 0; position < count;) {
-            expected<std::span<value_t const>> pulled = fill(position);
-            if (failed(pulled)) return pulled.status();
-            std::span<value_t const> const values = *pulled;
+            auto const [values, status] = fill(position);
+            if (failed(status)) return status;
             if (values.empty() || values.size() > count - position) return invalid_argument_k;
             for (value_t const value : values) {
                 if (value < base || value > maximum) return invalid_argument_k;

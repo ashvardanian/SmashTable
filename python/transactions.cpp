@@ -956,15 +956,15 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
     for (Py_ssize_t position = 0; position != count; ++position) {
         PyObject *container = PyTuple_GET_ITEM(containers, order[static_cast<std::size_t>(position)]);
         auto const *header = object_as<container_object_t>(container);
-        expected<void *> transaction = header->store_ops->transaction_make(header->store);
-        if (!transaction) {
+        auto const [transaction, status] = header->store_ops->transaction_make(header->store);
+        if (failed(status)) {
             Py_DECREF(group);
-            [[maybe_unused]] int const raised = raise_for(state, transaction.status());
+            [[maybe_unused]] int const raised = raise_for(state, status);
             return nullptr;
         }
         [[maybe_unused]] status_t const appended = group->parts.push_back(
             assume_reserved,
-            participant_t {header->store_ops, *transaction, header->ops, &header->releases, header->mode});
+            participant_t {header->store_ops, transaction, header->ops, &header->releases, header->mode});
     }
 
     // Views are handed back in the caller's order, whatever order the participants stage in.
