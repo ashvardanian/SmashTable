@@ -22,6 +22,8 @@
 #include <thread>    // `std::thread`
 #include <vector>    // `std::vector`
 
+#include <forkunion.hpp>
+
 #include <smashtable/locked_store.hpp>
 #include <smashtable/snapshot_store.hpp>
 #include <smashtable/monotonic_store.hpp>
@@ -35,6 +37,8 @@
 #include "fuzz.hpp"
 #include "sharded_concurrency.hpp"
 #include "surface_parity.hpp"
+
+namespace fu = ashvardanian::forkunion;
 
 namespace ashvardanian::smashtable::test {
 
@@ -106,6 +110,26 @@ using snapshot_heavy_set_t = snapshot_hash_set<heavy_key_t>;
  *  Memory: Stack.
  */
 using sharded_snapshot_map_t = partitioned_store<snapshot_avl_map_t>;
+
+/** The mutex and the commit order with every shared word owned through ForkUnion's reference for
+ *  this build, and every wait handed to its waiter, which no sanitizer sees into. */
+using forkunion_mutex_t = spin_shared_mutex<fu::preferred_yield_t, fu::preferred_atomic_ref>;
+using forkunion_order_t =
+    basic_commit_order<16, 4, order_sharing_t::shared_k, fu::preferred_yield_t, fu::preferred_atomic_ref>;
+
+static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
+              "a reference short of the concept would pass as a ForkUnion case over the fallback loops");
+static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
+              "the mutex word is narrower than a stamp, and must reach the same verbs");
+
+/**
+ *  Tests: Sixteen stamped partitions locked, ordered and waited on through ForkUnion.
+ *  Ordering: ✓.
+ *  Copy: Trivial, over key and value.
+ *  Memory: Stack.
+ */
+using sharded_snapshot_map_forkunion_t =
+    partitioned_map<snapshot_avl_map_t, hash<trivial_key_t>, forkunion_mutex_t, 16, forkunion_order_t>;
 
 /** The same map behind one mutex, which is what a group of stores on one order is made of. */
 using locked_snapshot_map_t = locked_store<snapshot_avl_map_t>;
@@ -4007,6 +4031,8 @@ int main(int argc, char **argv) {
                   test_sharded_mark_pins_every_partition<sharded_snapshot_map_t>);
     run_test_case("test_refused_commit_publishes_nothing<sharded_snapshot_map_t>",
                   test_refused_commit_publishes_nothing<sharded_snapshot_map_t>);
+    run_test_case("test_refused_commit_publishes_nothing<sharded_snapshot_map_forkunion_t>",
+                  test_refused_commit_publishes_nothing<sharded_snapshot_map_forkunion_t>);
     run_test_case("test_commit_spans_partitions_matches_isolation", test_commit_spans_partitions_matches_isolation);
     run_test_case("test_group_publishes_under_one_stamp<locked_snapshot_map_t>",
                   test_group_publishes_under_one_stamp<locked_snapshot_map_t>);
@@ -4020,6 +4046,8 @@ int main(int argc, char **argv) {
                   test_group_commit_with_runs_the_body<sharded_snapshot_map_t>);
     run_test_case("test_group_commit_is_read_whole_across_stores<sharded_snapshot_map_t>",
                   test_group_commit_is_read_whole_across_stores<sharded_snapshot_map_t>);
+    run_test_case("test_group_commit_is_read_whole_across_stores<sharded_snapshot_map_forkunion_t>",
+                  test_group_commit_is_read_whole_across_stores<sharded_snapshot_map_forkunion_t>);
 
     run_test_case("test_random_writes_match_the_oracle<snapshot_avl_map_t>",
                   test_random_writes_match_the_oracle<snapshot_avl_map_t>);
@@ -4059,6 +4087,8 @@ int main(int argc, char **argv) {
                   test_commit_stamp_follows_commit_order<strict_serializable_avl_map_t>);
     run_test_case("test_commit_stamp_follows_commit_order<sharded_snapshot_map_t>",
                   test_commit_stamp_follows_commit_order<sharded_snapshot_map_t>);
+    run_test_case("test_commit_stamp_follows_commit_order<sharded_snapshot_map_forkunion_t>",
+                  test_commit_stamp_follows_commit_order<sharded_snapshot_map_forkunion_t>);
     run_test_case("test_commit_stamp_follows_commit_order<sharded_strict_map_t>",
                   test_commit_stamp_follows_commit_order<sharded_strict_map_t>);
 
@@ -4073,6 +4103,8 @@ int main(int argc, char **argv) {
                   test_reader_walks_from_a_bound_to_the_end<sharded_snapshot_map_t>);
     run_test_case("test_reader_serves_threads_without_a_lock<sharded_snapshot_map_t>",
                   test_reader_serves_threads_without_a_lock<sharded_snapshot_map_t>);
+    run_test_case("test_reader_serves_threads_without_a_lock<sharded_snapshot_map_forkunion_t>",
+                  test_reader_serves_threads_without_a_lock<sharded_snapshot_map_forkunion_t>);
     run_test_case("test_reader_serves_threads_without_a_lock<sharded_strict_map_t>",
                   test_reader_serves_threads_without_a_lock<sharded_strict_map_t>);
 
@@ -4142,11 +4174,15 @@ int main(int argc, char **argv) {
                   test_window_writes_publish_under_one_stamp<sharded_strict_map_t>);
     run_test_case("test_window_writes_are_never_seen_half_applied<sharded_snapshot_map_t>",
                   test_window_writes_are_never_seen_half_applied<sharded_snapshot_map_t>);
+    run_test_case("test_window_writes_are_never_seen_half_applied<sharded_snapshot_map_forkunion_t>",
+                  test_window_writes_are_never_seen_half_applied<sharded_snapshot_map_forkunion_t>);
     run_test_case("test_window_writes_are_never_seen_half_applied<sharded_strict_map_t>",
                   test_window_writes_are_never_seen_half_applied<sharded_strict_map_t>);
 
     run_test_case("test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_t>",
                   test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_t>);
+    run_test_case("test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_forkunion_t>",
+                  test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_forkunion_t>);
     run_test_case("test_staged_transaction_unwinds_under_partition_locks<sharded_strict_map_t>",
                   test_staged_transaction_unwinds_under_partition_locks<sharded_strict_map_t>);
     run_test_case("test_a_dropped_staged_transaction_is_unwound_under_the_lock<locked_snapshot_map_t>",

@@ -120,6 +120,8 @@ option(SMASHTABLE_BUILD_BENCH "Compile the native benchmarks, which CTest never 
 option(SMASHTABLE_BUILD_PYTHON "Compile the CPython extension; `scikit-build-core` switches it on" OFF)
 
 if (SMASHTABLE_BUILD_TEST)
+    include(cmake/forkunion.cmake)
+
     add_executable(smashtable_example example.cpp)
     target_link_libraries(smashtable_example PRIVATE smashtable::header smashtable_warnings)
 
@@ -147,7 +149,9 @@ if (SMASHTABLE_BUILD_TEST)
     )
         add_executable(smashtable_test_${subject_} test/${subject_}.cpp)
         target_include_directories(smashtable_test_${subject_} PRIVATE test/)
-        target_link_libraries(smashtable_test_${subject_} PRIVATE smashtable::header smashtable_warnings)
+        target_link_libraries(
+            smashtable_test_${subject_} PRIVATE smashtable::header forkunion::header smashtable_warnings
+        )
         add_test(NAME test_${subject_} COMMAND smashtable_test_${subject_})
     endforeach ()
 
@@ -156,7 +160,9 @@ if (SMASHTABLE_BUILD_TEST)
         foreach (subject_ IN ITEMS commits isolation ranking)
             add_executable(smashtable_bench_${subject_} bench/${subject_}.cpp)
             target_include_directories(smashtable_bench_${subject_} PRIVATE bench/)
-            target_link_libraries(smashtable_bench_${subject_} PRIVATE smashtable::header smashtable_warnings)
+            target_link_libraries(
+                smashtable_bench_${subject_} PRIVATE smashtable::header forkunion::header smashtable_warnings
+            )
         endforeach ()
     endif ()
 

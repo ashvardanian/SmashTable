@@ -2066,9 +2066,9 @@ inline constexpr std::size_t atomic_alignment = atomic_ref<integral_type_>::requ
  *  identity and recency - because one location has a total modification order. It publishes
  *  nothing: a caller needing the data a counter describes to be visible must order that itself.
  */
-template <std::integral integral_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_>
 constexpr integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type_ addend) noexcept {
-    return atomic_ref<integral_type_>(counter).fetch_add(addend, memory_order_relaxed_k) + addend;
+    return atomic_reference_<integral_type_>(counter).fetch_add(addend, memory_order_relaxed_k) + addend;
 }
 
 /**
@@ -2078,18 +2078,18 @@ constexpr integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type
  *      @c atomic_ref over one is undefined. Every caller reaches a mutable member of a mutable
  *      container through a @c const member function, which is what makes the cast below sound.
  */
-template <std::integral integral_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_>
 constexpr integral_type_ atomic_load(integral_type_ const &counter,
                                      memory_order_t order = memory_order_relaxed_k) noexcept {
-    return atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).load(order);
+    return atomic_reference_<integral_type_>(const_cast<integral_type_ &>(counter)).load(order);
 }
 
 /** Relaxed atomic write of a counter other threads may be reading. The mirror of @c atomic_load,
  *  and just as unordered: a caller needing the data a counter describes to be visible alongside it
  *  must order that itself. */
-template <std::integral integral_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_>
 constexpr void atomic_store(integral_type_ &counter, integral_type_ value) noexcept {
-    atomic_ref<integral_type_>(counter).store(value, memory_order_relaxed_k);
+    atomic_reference_<integral_type_>(counter).store(value, memory_order_relaxed_k);
 }
 
 /**
@@ -2099,15 +2099,15 @@ constexpr void atomic_store(integral_type_ &counter, integral_type_ value) noexc
  *  sequence, so a store made before this call is visible to whoever reads the word afterwards. That
  *  is what an announce-then-re-read protocol needs and what a load cannot give it.
  */
-template <std::integral integral_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_>
 constexpr integral_type_ atomic_load_newest(integral_type_ &word) noexcept {
-    return atomic_ref<integral_type_>(word).fetch_add(integral_type_ {0}, memory_order_acq_rel_k);
+    return atomic_reference_<integral_type_>(word).fetch_add(integral_type_ {0}, memory_order_acq_rel_k);
 }
 
 /** Relaxed atomic decrement of a plain counter, returning the post-decrement value. */
-template <std::integral integral_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_>
 constexpr integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type_ subtrahend) noexcept {
-    return atomic_ref<integral_type_>(counter).fetch_sub(subtrahend, memory_order_relaxed_k) - subtrahend;
+    return atomic_reference_<integral_type_>(counter).fetch_sub(subtrahend, memory_order_relaxed_k) - subtrahend;
 }
 
 /**
@@ -2160,6 +2160,8 @@ concept extended_atomic_ref = requires(reference_type_ reference, value_type_ va
     reference.fetch_sub_if_at_least(value, value, memory_order_relaxed_k);
     reference.fetch_max(value, memory_order_relaxed_k);
     reference.fetch_min(value, memory_order_relaxed_k);
+    reference.store_max(value, memory_order_relaxed_k);
+    reference.store_min(value, memory_order_relaxed_k);
     reference.fetch_test_and_set_bit(0u, memory_order_relaxed_k);
     reference.fetch_test_and_reset_bit(0u, memory_order_relaxed_k);
 };
@@ -2209,9 +2211,8 @@ constexpr void atomic_post_clear_bits(integral_type_ &word, integral_type_ bits,
 template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_>
 constexpr void atomic_max_fetch(integral_type_ &word, integral_type_ floor) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>) {
-        [[maybe_unused]] integral_type_ const before = reference.fetch_max(floor, memory_order_release_k);
-    }
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        reference.store_max(floor, memory_order_release_k);
     else {
         integral_type_ observed = reference.load(memory_order_relaxed_k);
         while (observed < floor &&
@@ -2243,7 +2244,9 @@ template <template <typename> class atomic_reference_ = atomic_ref, std::integra
 /** Raises @p word to @p floor without reading what was there, which Arm spells @c stumax. */
 template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_max(integral_type_ &word, integral_type_ floor, order_type_ order) noexcept {
-    [[maybe_unused]] integral_type_ const before = atomic_fetch_max<atomic_reference_>(word, floor, order);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        atomic_reference_<integral_type_>(word).store_max(floor, order);
+    else { [[maybe_unused]] integral_type_ const before = atomic_fetch_max<atomic_reference_>(word, floor, order); }
 }
 
 /** Posts @p bits flipped in @p word without reading what was there. */
@@ -4528,13 +4531,19 @@ enum class order_sharing_t : bool {
  *      of the low-water mark against the memory and the scan.
  *  @tparam sharing_ Whether several threads reach this order, deciding its atomics and padding.
  *  @tparam waiting_policy_type_ What a waiting committer does with its core.
+ *  @tparam atomic_reference_ The reference every shared word of this order is owned through.
  */
 template <std::size_t commits_in_flight_ = 16, std::size_t reader_buckets_ = 4,
           order_sharing_t sharing_ = order_sharing_t::shared_k,
-          parking_waiting_policy<generation_t *, generation_t> waiting_policy_type_ = standard_waiting_policy_t>
+          parking_waiting_policy<generation_t *, generation_t> waiting_policy_type_ = standard_waiting_policy_t,
+          template <typename> class atomic_reference_ = atomic_ref>
 class basic_commit_order {
 
   public:
+    /** The reference every shared word of this order is owned through. */
+    template <typename value_type_>
+    using atomic_reference = atomic_reference_<value_type_>;
+
     /** Commits that may be in flight past the watermark before a landing one waits. */
     static constexpr std::size_t ring_k = commits_in_flight_;
 
@@ -4610,14 +4619,15 @@ class basic_commit_order {
     /** Reads @p word: atomically where threads share this order, plainly where one owns it. */
     template <std::integral integral_type_>
     static integral_type_ read_(integral_type_ const &word) noexcept {
-        if constexpr (sharing_ == order_sharing_t::shared_k) return atomic_load(word);
+        if constexpr (sharing_ == order_sharing_t::shared_k) return atomic_load<atomic_reference_>(word);
         else return word;
     }
 
     /** Writes @p value into @p word, atomically only where it must be. */
     template <std::integral integral_type_>
     static void write_(integral_type_ &word, integral_type_ value) noexcept {
-        if constexpr (sharing_ == order_sharing_t::shared_k) atomic_store<integral_type_>(word, value);
+        if constexpr (sharing_ == order_sharing_t::shared_k)
+            atomic_store<atomic_reference_, integral_type_>(word, value);
         else word = value;
     }
 
@@ -4625,14 +4635,15 @@ class basic_commit_order {
      *  sharing. */
     template <std::integral integral_type_>
     static integral_type_ read_newest_(integral_type_ &word) noexcept {
-        if constexpr (sharing_ == order_sharing_t::shared_k) return atomic_load_newest(word);
+        if constexpr (sharing_ == order_sharing_t::shared_k) return atomic_load_newest<atomic_reference_>(word);
         else return word;
     }
 
     /** Raises @p word to @p floor, never lowering it. */
     template <std::integral integral_type_>
     static void raise_(integral_type_ &word, integral_type_ floor) noexcept {
-        if constexpr (sharing_ == order_sharing_t::shared_k) atomic_max_fetch<atomic_ref, integral_type_>(word, floor);
+        if constexpr (sharing_ == order_sharing_t::shared_k)
+            atomic_max_fetch<atomic_reference_, integral_type_>(word, floor);
         else if (word < floor) word = floor;
     }
 
@@ -4763,7 +4774,7 @@ class basic_commit_order {
             // of this thread carries. A value below it is a bucket this snapshot shares, whose floor is
             // older and therefore still bounds it.
             bucket_snapshots_t const ceiling = bucket_snapshots_t::admitting(opened);
-            bucket_word_t const before = atomic_fetch_add_if_at_most<atomic_ref>(
+            bucket_word_t const before = atomic_fetch_add_if_at_most<atomic_reference_>(
                 snapshots_[bucket].bits, bucket_word_t {1}, ceiling.bits, memory_order_acq_rel_k);
             // Strictly below, because the add lands only where the sum still fits: at the ceiling itself
             // nothing is written, and reporting success would hand back a claim with nothing to retire.
@@ -4794,7 +4805,7 @@ class basic_commit_order {
             if (head_ < next) head_ = next;
         }
         else {
-            atomic_ref<bucket_word_t> holding(snapshots_[bucket].bits);
+            atomic_reference_<bucket_word_t> holding(snapshots_[bucket].bits);
             bucket_word_t observed = holding.load(memory_order_acquire_k);
             if (bucket_snapshots_t {observed}.open_snapshots() != 0) return;
             // Another opener got here from the same head value: its floor store and this one would race
@@ -4805,8 +4816,8 @@ class basic_commit_order {
             if (!holding.compare_exchange_strong(observed, bucket_snapshots_t::opened_by(next).bits,
                                                  memory_order_acq_rel_k, memory_order_relaxed_k))
                 return;
-            atomic_store<generation_t>(floors_[bucket], opened_at);
-            atomic_max_fetch<atomic_ref, bucket_word_t>(head_, next);
+            atomic_store<atomic_reference_, generation_t>(floors_[bucket], opened_at);
+            atomic_max_fetch<atomic_reference_, bucket_word_t>(head_, next);
         }
     }
 
@@ -4837,7 +4848,8 @@ class basic_commit_order {
         else
             // Released, and every scan above acquires: whoever sees a bucket drain sees every claim its
             // members made first, so a snapshot adopted from one cannot be missed by the mark that follows.
-            before = atomic_ref<bucket_word_t>(snapshots_[claim.bucket_].bits).fetch_sub(1, memory_order_release_k);
+            before =
+                atomic_reference_<bucket_word_t>(snapshots_[claim.bucket_].bits).fetch_sub(1, memory_order_release_k);
         // Only a bucket that just drained can raise the mark, so the scan is spent on that departure alone.
         if (bucket_snapshots_t {before}.open_snapshots() == 1) republish_mark_();
     }
@@ -4851,14 +4863,14 @@ class basic_commit_order {
      *  which a shard set draws once so every one of its parts keys its private versions alike. */
     generation_t next_generation() noexcept {
         if constexpr (sharing_ == order_sharing_t::solitary_k) return ++generation_;
-        else return atomic_add_fetch<generation_t>(generation_, 1);
+        else return atomic_add_fetch<atomic_reference_, generation_t>(generation_, 1);
     }
 
     /** The newest stamp every part of which is written, which is what a fresh read answers at;
      *  acquired, so the versions it covers are visible to a reader that takes no lock. */
     [[nodiscard]] generation_t published_stamp() const noexcept {
         if constexpr (sharing_ == order_sharing_t::shared_k)
-            return atomic_load(published_stamp_, memory_order_acquire_k);
+            return atomic_load<atomic_reference_>(published_stamp_, memory_order_acquire_k);
         else return published_stamp_;
     }
 
@@ -4899,7 +4911,9 @@ class basic_commit_order {
         assert(held.order_ == this && &held != &claim && "a shared snapshot is copied from another live claim");
         if (claim.order_) retire_snapshot_(claim);
         if constexpr (sharing_ == order_sharing_t::solitary_k) ++snapshots_[held.bucket_].bits;
-        else atomic_post_add<atomic_ref>(snapshots_[held.bucket_].bits, bucket_word_t {1}, memory_order_release_k);
+        else
+            atomic_post_add<atomic_reference_>(snapshots_[held.bucket_].bits, bucket_word_t {1},
+                                               memory_order_release_k);
         claim.order_ = this;
         claim.bucket_ = held.bucket_;
         claim.snapshot_ = held.snapshot_;
@@ -4911,7 +4925,7 @@ class basic_commit_order {
         if constexpr (sharing_ == order_sharing_t::solitary_k) node.stamp_ = ++commits_;
         // Relaxed: `commits_` is a dense counter compared by value, and it publishes nothing that a
         // `drawn_stamp` reader could depend on beyond the acquire that reader does for itself.
-        else node.stamp_ = atomic_ref<generation_t>(commits_).fetch_add(1, memory_order_relaxed_k) + 1;
+        else node.stamp_ = atomic_reference_<generation_t>(commits_).fetch_add(1, memory_order_relaxed_k) + 1;
         assert(node.stamp_ != static_cast<generation_t>(commit_stamp_t::uncommitted_k) &&
                "the drawn stamp would mark every version it commits as never committed");
     }
@@ -4931,7 +4945,7 @@ class basic_commit_order {
             return;
         }
         else {
-            atomic_ref<generation_t> published(published_stamp_);
+            atomic_reference_<generation_t> published(published_stamp_);
 
             // This slot still holds `stamp - ring_k`, and overwriting a mark the watermark has not
             // consumed would lose it for good. Waited here rather than at the draw, so the write already
@@ -4940,15 +4954,16 @@ class basic_commit_order {
                  stamp - seen > static_cast<generation_t>(ring_k); seen = published.load(memory_order_acquire_k))
                 waiting_.wait_until_changed(&published_stamp_, seen);
 
-            atomic_ref<generation_t>(landed_[ring_slot_(stamp)]).store(stamp, memory_order_release_k);
+            atomic_reference_<generation_t>(landed_[ring_slot_(stamp)]).store(stamp, memory_order_release_k);
 
             // Reading the newest, not merely loading: a plain load could miss a neighbour's mark and leave
             // ours for the next commit to publish, which the strict rung would wait on for good.
-            generation_t seen = atomic_load_newest(published_stamp_);
+            generation_t seen = atomic_load_newest<atomic_reference_>(published_stamp_);
             bool moved = false;
-            while (atomic_ref<generation_t>(landed_[ring_slot_(seen + 1)]).load(memory_order_acquire_k) == seen + 1) {
+            while (atomic_reference_<generation_t>(landed_[ring_slot_(seen + 1)]).load(memory_order_acquire_k) ==
+                   seen + 1) {
                 generation_t const before =
-                    atomic_fetch_max<atomic_ref>(published_stamp_, seen + 1, memory_order_acq_rel_k);
+                    atomic_fetch_max<atomic_reference_>(published_stamp_, seen + 1, memory_order_acq_rel_k);
                 moved = moved || before < seen + 1;
                 seen = before < seen + 1 ? seen + 1 : before;
             }
@@ -4971,7 +4986,7 @@ class basic_commit_order {
             return;
         }
         else {
-            atomic_ref<generation_t> published(published_stamp_);
+            atomic_reference_<generation_t> published(published_stamp_);
             for (generation_t seen = published.load(memory_order_acquire_k); seen < wanted;
                  seen = published.load(memory_order_acquire_k))
                 waiting_.wait_until_changed(&published_stamp_, seen);

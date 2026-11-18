@@ -116,9 +116,11 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
  *  @tparam value_type_ Type of the elements stored in the set.
  *  @tparam comparator_type_ Ideally heterogeneous comparator for @c value_type_.
  *  @tparam allocator_type_ Arbitrary "rebindable" allocator for all internal structures.
+ *  @tparam atomic_reference_ The reference the generation and commit counters are owned through.
  */
 template < //
-    typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<std::uint8_t>>
+    typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<std::uint8_t>,
+    template <typename> class atomic_reference_ = atomic_ref>
     requires std::strict_weak_order<comparator_type_ const &, typename mapping_key_type_or_itself<value_type_>::type,
                                     typename mapping_key_type_or_itself<value_type_>::type>
 class reference_store {
@@ -1321,7 +1323,7 @@ class reference_store {
      *  the partition lock's job.
      */
     generation_t next_generation_() noexcept {
-        generation_t const stamp = atomic_add_fetch<generation_t>(generation_, 1);
+        generation_t const stamp = atomic_add_fetch<atomic_reference_, generation_t>(generation_, 1);
         // Every entry is stamped from here, so this is the one place that can promise no stored
         // entry carries `absent_generation_k` - the value a watch on a missing key is anchored to.
         assert(stamp != absent_generation_k);
@@ -1336,7 +1338,7 @@ class reference_store {
      *  from @c generation_, which dates a transaction's opening, not what is current.
      */
     commit_stamp_t next_commit_stamp_() noexcept {
-        return static_cast<commit_stamp_t>(atomic_add_fetch<generation_t>(commits_, 1));
+        return static_cast<commit_stamp_t>(atomic_add_fetch<atomic_reference_, generation_t>(commits_, 1));
     }
 
     /**
@@ -2381,12 +2383,14 @@ class reference_store {
 };
 
 template < //
-    typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<std::uint8_t>>
-using reference_set = reference_store<value_type_, comparator_type_, allocator_type_>;
+    typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<std::uint8_t>,
+    template <typename> class atomic_reference_ = atomic_ref>
+using reference_set = reference_store<value_type_, comparator_type_, allocator_type_, atomic_reference_>;
 
 template < //
     typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
-    typename allocator_type_ = std::allocator<std::uint8_t>>
-using reference_map = reference_store<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>;
+    typename allocator_type_ = std::allocator<std::uint8_t>, template <typename> class atomic_reference_ = atomic_ref>
+using reference_map =
+    reference_store<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_, atomic_reference_>;
 
 } // namespace ashvardanian::smashtable

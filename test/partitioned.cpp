@@ -17,6 +17,8 @@
 
 #include <shared_mutex> // `std::shared_mutex`, to keep the substitution path covered
 
+#include <forkunion.hpp>
+
 #include <smashtable/basic_avl_tree.hpp>
 #include <smashtable/locked_store.hpp>
 #include <smashtable/partitioned_store.hpp>
@@ -28,6 +30,8 @@
 #include "surface_parity.hpp"
 #include "consistency.hpp"
 #include "sharded_concurrency.hpp"
+
+namespace fu = ashvardanian::forkunion;
 
 namespace ashvardanian::smashtable::test {
 
@@ -245,6 +249,21 @@ using snapshot_hash_store_t =
 
 /** Sharded and stamped, so sixteen partitions draw one snapshot and publish under one stamp. */
 using sharded_snapshot_map_t = partitioned_store<snapshot_trivial_map_t>;
+
+/** The mutex and the commit order with every shared word owned through ForkUnion's reference for
+ *  this build, and every wait handed to its waiter, which no sanitizer sees into. */
+using forkunion_mutex_t = spin_shared_mutex<fu::preferred_yield_t, fu::preferred_atomic_ref>;
+using forkunion_order_t =
+    basic_commit_order<16, 4, order_sharing_t::shared_k, fu::preferred_yield_t, fu::preferred_atomic_ref>;
+
+static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
+              "a reference short of the concept would pass as a ForkUnion case over the fallback loops");
+static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
+              "the mutex word is narrower than a stamp, and must reach the same verbs");
+
+/** Sixteen stamped partitions locked, ordered and waited on through ForkUnion. */
+using sharded_snapshot_map_forkunion_t =
+    partitioned_map<snapshot_trivial_map_t, hash<trivial_key_t>, forkunion_mutex_t, 16, forkunion_order_t>;
 
 /** Sharded and validating its reads, which is the level a recorded window has to be checked at. */
 using serializable_trivial_map_t =
@@ -1831,8 +1850,13 @@ int main(int argc, char **argv) {
     run_test_case("test_commit_is_visible_to_what_opens_after_it", test_commit_is_visible_to_what_opens_after_it);
     run_test_case("test_standard_mutex_substitutes", test_standard_mutex_substitutes);
     run_test_case("test_group_across_orders_commits_whole", test_group_across_orders_commits_whole);
+    run_test_case(
+        "check_group_across_orders_commits_whole<sharded_snapshot_map_forkunion_t, transactional_trivial_map_t>",
+        check_group_across_orders_commits_whole<sharded_snapshot_map_forkunion_t, transactional_trivial_map_t>);
     run_test_case("test_stage_unwinds_on_partial_failure", test_stage_unwinds_on_partial_failure);
     run_test_case("test_commit_spans_partitions", test_commit_spans_partitions);
+    run_test_case("check_commit_spans_partitions_matches_isolation<sharded_snapshot_map_forkunion_t>(16)",
+                  check_commit_spans_partitions_matches_isolation<sharded_snapshot_map_forkunion_t>, std::size_t {16});
     run_test_case("test_window_read_is_validated", test_window_read_is_validated);
     run_test_case("test_absent_watch_survives_rollback", test_absent_watch_survives_rollback);
     run_test_case("test_single_element_operations", test_single_element_operations);

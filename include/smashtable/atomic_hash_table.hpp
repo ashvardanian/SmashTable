@@ -191,7 +191,7 @@ class atomic_hash_table {
 
     /** Live elements. Read atomically but relaxed, so it may lag a concurrent writer - the count is
      *  a statistic here, and other threads are moving it while this returns. */
-    constexpr offset_t size() const noexcept { return atomic_load(storage_.populated_count); }
+    constexpr offset_t size() const noexcept { return atomic_load<atomic_reference_>(storage_.populated_count); }
     constexpr bool empty() const noexcept { return size() == 0; }
 
     /** Slots this table will never exceed, since it cannot grow. */
@@ -200,7 +200,7 @@ class atomic_hash_table {
 
     /** Tombstones left by @c erase, which only ever grow while the table is pinned. Compaction
      *  needs a rehash, so this is the signal to hand the storage to a growable table. */
-    constexpr offset_t deleted_count() const noexcept { return atomic_load(storage_.deleted_count); }
+    constexpr offset_t deleted_count() const noexcept { return atomic_load<atomic_reference_>(storage_.deleted_count); }
 
     hasher hash_function() const noexcept { return hasher_; }
     key_equal key_eq() const noexcept { return equals_; }

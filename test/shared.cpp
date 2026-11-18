@@ -22,6 +22,8 @@
 #include <utility>     // `std::pair`
 #include <vector>      // `std::vector`
 
+#include <forkunion.hpp>
+
 #include <smashtable/atomic_hash_table.hpp>
 #include <smashtable/basic_hash_table.hpp>
 #include <smashtable/reference_store.hpp>
@@ -32,6 +34,8 @@
 #include <smashtable/snapshot_store.hpp>
 
 #include "harness.hpp"
+
+namespace fu = ashvardanian::forkunion;
 
 namespace ashvardanian::smashtable::test {
 
@@ -271,9 +275,20 @@ static void test_allocator_refuses_overflowing_counts() {
 
 #pragma region Shared Mutex Tests
 
+/** The mutex with its word owned through ForkUnion's reference for this build and its waits handed
+ *  to ForkUnion's waiter, which no sanitizer sees into. */
+using forkunion_mutex_t = spin_shared_mutex<fu::preferred_yield_t, fu::preferred_atomic_ref>;
+using smashtable::spin_shared_mutex_t;
+
+static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
+              "a reference short of the concept would pass as a ForkUnion case over the fallback loops");
+static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
+              "the mutex word is narrower than a stamp, and must reach the same verbs");
+
 /** Exclusion holds: a writer never overlaps a reader or another writer. */
+template <typename mutex_type_>
 static void test_shared_mutex_excludes() {
-    spin_shared_mutex_t mutex;
+    mutex_type_ mutex;
     std::atomic<int> readers_inside {0};
     std::atomic<int> writers_inside {0};
     std::atomic<bool> violated {false};
@@ -287,7 +302,7 @@ static void test_shared_mutex_excludes() {
     for (std::size_t writer = 0; writer != writers_count_k; ++writer)
         threads.emplace_back([&]() noexcept {
             for (std::size_t iteration = 0; iteration != writes_per_writer_k; ++iteration) {
-                unique_lock<spin_shared_mutex_t> guard {mutex};
+                unique_lock<mutex_type_> guard {mutex};
                 if (writers_inside.fetch_add(1) != 0 || readers_inside.load() != 0) violated.store(true);
                 ++guarded_left;
                 ++guarded_right;
@@ -299,7 +314,7 @@ static void test_shared_mutex_excludes() {
     for (std::size_t reader = 0; reader != readers_count_k; ++reader)
         threads.emplace_back([&]() noexcept {
             while (reading.load(std::memory_order_relaxed)) {
-                shared_lock<spin_shared_mutex_t> guard {mutex};
+                shared_lock<mutex_type_> guard {mutex};
                 readers_inside.fetch_add(1);
                 if (writers_inside.load() != 0) violated.store(true);
                 if (guarded_left != guarded_right) violated.store(true);
@@ -319,6 +334,7 @@ static void test_shared_mutex_excludes() {
 /** Several writers under a steady read load all finish, which is what the waiting tally buys. One
  *  writer taking the lock must not erase the intent of the writers still queued, or a reader stream
  *  slips back in and parks them forever. */
+template <typename mutex_type_>
 static void test_shared_mutex_admits_every_writer() {
     // The readers re-enter fast enough that their count effectively never reaches zero, so a writer
     // only gets in by turning them away; the budget is fifty times the deepest run seen.
@@ -329,7 +345,7 @@ static void test_shared_mutex_admits_every_writer() {
     constexpr int reader_hold_steps_k = 20000;
     constexpr int writer_hold_steps_k = 2000;
 
-    spin_shared_mutex_t mutex;
+    mutex_type_ mutex;
     std::atomic<bool> reading {true};
     std::atomic<std::size_t> readers_announced {0};
     std::atomic<std::size_t> readers_spent {0};
@@ -341,7 +357,7 @@ static void test_shared_mutex_admits_every_writer() {
             volatile unsigned hold = 0;
             std::size_t round = 0;
             for (; round < acquisitions_per_reader_k && reading.load(std::memory_order_relaxed); ++round) {
-                shared_lock<spin_shared_mutex_t> guard {mutex};
+                shared_lock<mutex_type_> guard {mutex};
                 if (!announced) {
                     announced = true;
                     readers_announced.fetch_add(1, std::memory_order_relaxed);
@@ -361,7 +377,7 @@ static void test_shared_mutex_admits_every_writer() {
         writers.emplace_back([&]() noexcept {
             volatile unsigned hold = 0;
             for (std::size_t iteration = 0; iteration != acquisitions_per_writer_k; ++iteration) {
-                unique_lock<spin_shared_mutex_t> guard {mutex};
+                unique_lock<mutex_type_> guard {mutex};
                 for (int step = 0; step != writer_hold_steps_k; ++step) hold = hold + 1;
             }
         });
@@ -501,6 +517,14 @@ struct counting_extended_ref : extended_ref_tallies {
         while (observed < floor &&
                !reference.compare_exchange_weak(observed, floor, order, std::memory_order_acquire)) {}
         return observed;
+    }
+    void store_min(value_type_ ceiling, std::memory_order order) const noexcept {
+        posted_writes.fetch_add(1, std::memory_order_relaxed);
+        [[maybe_unused]] value_type_ const before = fetch_min(ceiling, order);
+    }
+    void store_max(value_type_ floor, std::memory_order order) const noexcept {
+        posted_writes.fetch_add(1, std::memory_order_relaxed);
+        [[maybe_unused]] value_type_ const before = fetch_max(floor, order);
     }
     void flip_bits(value_type_ bits, std::memory_order order) const noexcept {
         posted_flips.fetch_add(1, std::memory_order_relaxed);
@@ -1693,8 +1717,12 @@ int main(int argc, char **argv) {
 
     run_test_case("test_allocator_refuses_overflowing_counts", test_allocator_refuses_overflowing_counts);
 
-    run_test_case("test_shared_mutex_excludes", test_shared_mutex_excludes);
-    run_test_case("test_shared_mutex_admits_every_writer", test_shared_mutex_admits_every_writer);
+    run_test_case("test_shared_mutex_excludes<spin_shared_mutex_t>", test_shared_mutex_excludes<spin_shared_mutex_t>);
+    run_test_case("test_shared_mutex_excludes<forkunion_mutex_t>", test_shared_mutex_excludes<forkunion_mutex_t>);
+    run_test_case("test_shared_mutex_admits_every_writer<spin_shared_mutex_t>",
+                  test_shared_mutex_admits_every_writer<spin_shared_mutex_t>);
+    run_test_case("test_shared_mutex_admits_every_writer<forkunion_mutex_t>",
+                  test_shared_mutex_admits_every_writer<forkunion_mutex_t>);
 
     run_test_case("test_extended_atomics_take_the_bounded_path", test_extended_atomics_take_the_bounded_path);
     run_test_case("test_extended_atomics_reach_the_pinned_table", test_extended_atomics_reach_the_pinned_table);

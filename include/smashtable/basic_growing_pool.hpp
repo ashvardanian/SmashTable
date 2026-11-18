@@ -60,9 +60,11 @@ namespace ashvardanian::smashtable {
  *  @tparam value_type_ The record, default-constructed once per slot when its chunk is allocated.
  *  @tparam index_type_ Names a record, whose largest value is @c absent_k.
  *  @tparam allocator_type_ Supplies and reclaims the chunks and the stack of free indices.
+ *  @tparam atomic_reference_ The reference every published chunk word is owned through.
  */
 template <typename value_type_, std::unsigned_integral index_type_ = std::uint32_t,
-          allocator_of<std::byte> allocator_type_ = default_allocator_t>
+          allocator_of<std::byte> allocator_type_ = default_allocator_t,
+          template <typename> class atomic_reference_ = atomic_ref>
 class basic_growing_pool {
   public:
     using value_t = value_type_;
@@ -170,7 +172,7 @@ class basic_growing_pool {
     /** Chunk @p chunk loaded with acquire, null until it is published, so a reader holding no claim
      *  either misses it or sees every record built. */
     [[nodiscard]] value_t *chunk_(std::size_t chunk) const noexcept {
-        return reinterpret_cast<value_t *>(atomic_load(chunks_[chunk], memory_order_acquire_k));
+        return reinterpret_cast<value_t *>(atomic_load<atomic_reference_>(chunks_[chunk], memory_order_acquire_k));
     }
 
     /** The record at @p index, or null past the limit or before its chunk is published. */
@@ -205,7 +207,7 @@ class basic_growing_pool {
             allocator_.deallocate(reinterpret_cast<std::byte *>(free_indices_), capacity_ * sizeof(index_t));
         free_indices_ = reinterpret_cast<index_t *>(stack);
         // Readers hold no claim, so the chunk is released only once every record is built.
-        atomic_ref<std::uintptr_t>(chunks_[chunks_count_++])
+        atomic_reference_<std::uintptr_t>(chunks_[chunks_count_++])
             .store(reinterpret_cast<std::uintptr_t>(records), memory_order_release_k);
         // Stacked in reverse, so the first takes hand out ascending indices.
         for (std::size_t slot = 0; slot != count; ++slot) free_indices_[slot] = static_cast<index_t>(grown - 1 - slot);

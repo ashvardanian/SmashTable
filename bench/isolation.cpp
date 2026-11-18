@@ -16,6 +16,8 @@
 #include <span>   // `std::span`
 #include <string> // `std::string`
 
+#include <forkunion.hpp>
+
 #include "smashtable/basic_vector.hpp"
 #include "smashtable/monotonic_store.hpp"
 #include "smashtable/partitioned_store.hpp"
@@ -23,9 +25,30 @@
 
 #include "harness.hpp"
 
+namespace fu = ashvardanian::forkunion;
+
 namespace ashvardanian::smashtable::bench {
 
 using key_t = std::uint64_t;
+
+/** The mutex and the commit order with every shared word owned through ForkUnion's reference for
+ *  this build, and every wait handed to its waiter. */
+using forkunion_mutex_t = spin_shared_mutex<fu::preferred_yield_t, fu::preferred_atomic_ref>;
+using forkunion_order_t =
+    basic_commit_order<16, 4, order_sharing_t::shared_k, fu::preferred_yield_t, fu::preferred_atomic_ref>;
+
+static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
+              "a reference short of the concept would pass as a ForkUnion row over the fallback loops");
+static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
+              "the mutex word is narrower than a stamp, and must reach the same verbs");
+
+/** A partitioned map locked, ordered and waited on through ForkUnion, whichever store it shards. */
+template <typename store_type_>
+using forkunion_partitioned_map = partitioned_map<store_type_, hash<key_t>, forkunion_mutex_t, 16, forkunion_order_t>;
+
+/** The monotonic store drawing its generations and stamps through ForkUnion's reference as well. */
+using forkunion_monotonic_avl_map_t =
+    monotonic_avl_map<key_t, key_t, less_t, std::allocator<mapping<key_t, key_t>>, fu::preferred_atomic_ref>;
 
 template <typename store_type_>
 double bench_increments(environment_t const &env, std::string const &name, std::span<key_t const> keys,
@@ -74,12 +97,20 @@ void bench_isolation(environment_t const &env) {
                env.settings.keys);
     double const monotonic = bench_increments<partitioned_map<monotonic_avl_map<key_t, key_t>>>(
         env, "isolation.partitioned_map<monotonic_avl_map>", key_span, 0);
+    bench_increments<forkunion_partitioned_map<forkunion_monotonic_avl_map_t>>(
+        env, "isolation.partitioned_map<monotonic_avl_map,forkunion>", key_span, monotonic);
     bench_increments<partitioned_map<snapshot_avl_map<key_t, key_t>>>(
         env, "isolation.partitioned_map<snapshot_avl_map>", key_span, monotonic);
+    bench_increments<forkunion_partitioned_map<snapshot_avl_map<key_t, key_t>>>(
+        env, "isolation.partitioned_map<snapshot_avl_map,forkunion>", key_span, monotonic);
     bench_increments<partitioned_map<serializable_avl_map<key_t, key_t>>>(
         env, "isolation.partitioned_map<serializable_avl_map>", key_span, monotonic);
+    bench_increments<forkunion_partitioned_map<serializable_avl_map<key_t, key_t>>>(
+        env, "isolation.partitioned_map<serializable_avl_map,forkunion>", key_span, monotonic);
     bench_increments<partitioned_map<strict_serializable_avl_map<key_t, key_t>>>(
         env, "isolation.partitioned_map<strict_serializable_avl_map>", key_span, monotonic);
+    bench_increments<forkunion_partitioned_map<strict_serializable_avl_map<key_t, key_t>>>(
+        env, "isolation.partitioned_map<strict_serializable_avl_map,forkunion>", key_span, monotonic);
 }
 
 } // namespace ashvardanian::smashtable::bench

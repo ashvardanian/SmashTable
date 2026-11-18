@@ -76,8 +76,9 @@ namespace ashvardanian::smashtable {
  *  @tparam collection_type_ The underlying core, satisfying @c key_addressable_collection and
  *      providing a @c rebind template alias. Cores that also satisfy @c ordered_collection unlock
  *      the ordered surface - bounds, ranges, and, with order statistics, @c select and @c rank.
+ *  @tparam atomic_reference_ The reference the generation and commit counters are owned through.
  */
-template <typename collection_type_>
+template <typename collection_type_, template <typename> class atomic_reference_ = atomic_ref>
 class monotonic_store {
 
   public:
@@ -1482,7 +1483,9 @@ class monotonic_store {
      *  validating a watch - and never used to order memory. Publishing what a generation tags is
      *  the partition lock's job.
      */
-    generation_t next_generation_() noexcept { return atomic_add_fetch<generation_t>(generation_, 1); }
+    generation_t next_generation_() noexcept {
+        return atomic_add_fetch<atomic_reference_, generation_t>(generation_, 1);
+    }
 
     /**
      *  @brief Hands out the stamp a write becomes visible under, the store's only ordering.
@@ -1492,7 +1495,7 @@ class monotonic_store {
      *  from @c generation_, which dates a transaction's opening and says nothing of what is live.
      */
     commit_stamp_t next_commit_stamp_() noexcept {
-        return static_cast<commit_stamp_t>(atomic_add_fetch<generation_t>(commits_, 1));
+        return static_cast<commit_stamp_t>(atomic_add_fetch<atomic_reference_, generation_t>(commits_, 1));
     }
 
     /** A writable reference to a stored element, which every core hands out as immutable. */
@@ -2790,10 +2793,13 @@ class monotonic_store {
  *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
+ *  @tparam atomic_reference_ The reference the generation and commit counters are owned through.
  */
 template <typename value_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<value_type_>>
-using monotonic_avl_set = monotonic_store<basic_avl_tree<value_type_, comparator_type_, allocator_type_>>;
+          typename allocator_type_ = std::allocator<value_type_>,
+          template <typename> class atomic_reference_ = atomic_ref>
+using monotonic_avl_set =
+    monotonic_store<basic_avl_tree<value_type_, comparator_type_, allocator_type_>, atomic_reference_>;
 
 /**
  *  @brief STL-style transactional map using AVL tree. Stores key-value pairs in sorted order, with
@@ -2804,11 +2810,14 @@ using monotonic_avl_set = monotonic_store<basic_avl_tree<value_type_, comparator
  *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
+ *  @tparam atomic_reference_ The reference the generation and commit counters are owned through.
  */
 template <typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>>
+          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>,
+          template <typename> class atomic_reference_ = atomic_ref>
 using monotonic_avl_map =
-    monotonic_store<basic_avl_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>>;
+    monotonic_store<basic_avl_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>,
+                    atomic_reference_>;
 
 /**
  *  @brief STL-style transactional set using a weight-balanced tree, so it answers @c rank and
@@ -2822,10 +2831,13 @@ using monotonic_avl_map =
  *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
+ *  @tparam atomic_reference_ The reference the generation and commit counters are owned through.
  */
 template <typename value_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<value_type_>>
-using monotonic_wb_set = monotonic_store<basic_wb_tree<value_type_, comparator_type_, allocator_type_>>;
+          typename allocator_type_ = std::allocator<value_type_>,
+          template <typename> class atomic_reference_ = atomic_ref>
+using monotonic_wb_set =
+    monotonic_store<basic_wb_tree<value_type_, comparator_type_, allocator_type_>, atomic_reference_>;
 
 /**
  *  @brief STL-style transactional map using a weight-balanced tree, so it answers @c rank and
@@ -2840,11 +2852,14 @@ using monotonic_wb_set = monotonic_store<basic_wb_tree<value_type_, comparator_t
  *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
+ *  @tparam atomic_reference_ The reference the generation and commit counters are owned through.
  */
 template <typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>>
+          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>,
+          template <typename> class atomic_reference_ = atomic_ref>
 using monotonic_wb_map =
-    monotonic_store<basic_wb_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>>;
+    monotonic_store<basic_wb_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>,
+                    atomic_reference_>;
 
 /**
  *  @brief STL-style transactional set using an open-addressed hash table. Point access only - no
@@ -2855,10 +2870,13 @@ using monotonic_wb_map =
  *  @tparam equals_type_ Equality for resolving collisions. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for the table's slabs, defaults to @c std::allocator.
+ *  @tparam atomic_reference_ The reference the generation and commit counters are owned through.
  */
 template <typename key_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
-          typename allocator_type_ = std::allocator<std::byte>>
-using monotonic_hash_set = monotonic_store<basic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>>;
+          typename allocator_type_ = std::allocator<std::byte>,
+          template <typename> class atomic_reference_ = atomic_ref>
+using monotonic_hash_set =
+    monotonic_store<basic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>, atomic_reference_>;
 
 /**
  *  @brief STL-style transactional map using an open-addressed hash table. Point access only - no
@@ -2870,10 +2888,13 @@ using monotonic_hash_set = monotonic_store<basic_hash_table<key_type_, hasher_ty
  *  @tparam equals_type_ Equality for resolving collisions. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for the table's slabs, defaults to @c std::allocator.
+ *  @tparam atomic_reference_ The reference the generation and commit counters are owned through.
  */
 template <typename key_type_, typename mapped_type_, typename hasher_type_ = default_hash_t,
-          typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
+          typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>,
+          template <typename> class atomic_reference_ = atomic_ref>
 using monotonic_hash_map =
-    monotonic_store<basic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_>>;
+    monotonic_store<basic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_>,
+                    atomic_reference_>;
 
 } // namespace ashvardanian::smashtable

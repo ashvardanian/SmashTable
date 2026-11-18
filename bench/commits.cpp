@@ -18,16 +18,35 @@
 #include <span>   // `std::span`
 #include <string> // `std::string`
 
+#include <forkunion.hpp>
+
 #include "smashtable/basic_vector.hpp"
 #include "smashtable/partitioned_store.hpp"
 #include "smashtable/snapshot_store.hpp"
 
 #include "harness.hpp"
 
+namespace fu = ashvardanian::forkunion;
+
 namespace ashvardanian::smashtable::bench {
 
 using key_t = std::uint64_t;
 using store_t = partitioned_map<snapshot_avl_map<key_t, key_t>>;
+
+/** The mutex and the commit order with every shared word owned through ForkUnion's reference for
+ *  this build, and every wait handed to its waiter. */
+using forkunion_mutex_t = spin_shared_mutex<fu::preferred_yield_t, fu::preferred_atomic_ref>;
+using forkunion_order_t =
+    basic_commit_order<16, 4, order_sharing_t::shared_k, fu::preferred_yield_t, fu::preferred_atomic_ref>;
+
+static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
+              "a reference short of the concept would pass as a ForkUnion row over the fallback loops");
+static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
+              "the mutex word is narrower than a stamp, and must reach the same verbs");
+
+/** Two partitioned stores locked, ordered and waited on through ForkUnion. */
+using forkunion_store_t =
+    partitioned_map<snapshot_avl_map<key_t, key_t>, hash<key_t>, forkunion_mutex_t, 16, forkunion_order_t>;
 
 double bench_std_maps(environment_t const &env, std::span<key_t const> keys) {
     std::string const name = "commits.std_maps";
@@ -45,11 +64,12 @@ double bench_std_maps(environment_t const &env, std::span<key_t const> keys) {
     });
 }
 
-void bench_transaction_group(environment_t const &env, std::span<key_t const> keys, double std_maps) {
-    std::string const name = "commits.transaction_group<partitioned_map<snapshot_avl_map>>";
+template <typename store_type_>
+void bench_transaction_group(environment_t const &env, std::string const &name, std::span<key_t const> keys,
+                             double std_maps) {
     if (!env.settings.regex_filter.selects(name)) return;
-    store_t::order_t order;
-    store_t forward {order}, backward {order};
+    typename store_type_::order_t order;
+    store_type_ forward {order}, backward {order};
     for (key_t const key : keys)
         if (failed(forward.upsert({key, 0})) || failed(backward.upsert({key, 0})))
             return print_line(stdout, "{:<64} skipped: needs memory for {} keys", name, keys.size());
@@ -88,7 +108,10 @@ void bench_commits(environment_t const &env) {
                "\nOne update across two containers per commit over {} keys, the speed-up against std::maps last",
                env.settings.keys);
     double const std_maps = bench_std_maps(env, key_span);
-    bench_transaction_group(env, key_span, std_maps);
+    bench_transaction_group<store_t>(env, "commits.transaction_group<partitioned_map<snapshot_avl_map>>", key_span,
+                                     std_maps);
+    bench_transaction_group<forkunion_store_t>(
+        env, "commits.transaction_group<partitioned_map<snapshot_avl_map>,forkunion>", key_span, std_maps);
 }
 
 } // namespace ashvardanian::smashtable::bench

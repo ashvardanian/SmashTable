@@ -196,7 +196,13 @@
     { "name": "debug", "inherits": "base", "configurePreset": "debug" },
     { "name": "release", "inherits": "base", "configurePreset": "release" },
     { "name": "asan", "inherits": "base", "configurePreset": "asan" },
-    { "name": "tsan", "inherits": "base", "configurePreset": "tsan" },
+    {
+      "name": "tsan",
+      "inherits": "base",
+      "configurePreset": "tsan",
+      "description": "Skips the ForkUnion-parameterized cases, whose inline-asm atomics ThreadSanitizer cannot see.",
+      "environment": { "SMASHTABLE_FILTER": "^(?!.*forkunion)" }
+    },
     { "name": "linux_i386", "inherits": "base", "configurePreset": "linux_i386" },
     {
       "name": "cuda",

@@ -71,6 +71,8 @@ static expected<std::array<type_, count_>> generate_array_safely(generator_type_
  *  @tparam hash_type_ Keys that compare equal must have the same hashes.
  *  @tparam shared_mutex_type_ Mutex type to use for partition locking, like @c std::shared_mutex.
  *  @tparam partitions_count_ Number of partitions to split the store into, default 16.
+ *  @tparam order_type_ The commit order every partition is a member of, like @c basic_commit_order,
+ *      whose reference also owns the partition epochs.
  *
  *  @warning Every callback runs with at least one partition lock held, and the mutex is not
  *      recursive, so a callback that calls back into this store - or into anything that eventually
@@ -83,14 +85,16 @@ static expected<std::array<type_, count_>> generate_array_safely(generator_type_
  *  sampling walks hold one at a time, each saying which in its own docblock.
  */
 template <typename store_type_, typename hash_type_ = hash<typename store_type_::identifier_t>,
-          typename shared_mutex_type_ = spin_shared_mutex_t, std::size_t partitions_count_ = 16>
+          typename shared_mutex_type_ = spin_shared_mutex_t, std::size_t partitions_count_ = 16,
+          typename order_type_ = basic_commit_order<partitions_count_>>
 class partitioned_store {
 
   public:
     static constexpr std::size_t partitions_k = partitions_count_;
     using store_t = partitioned_store;
     using hash_t = hash_type_;
-    using order_t = basic_commit_order<partitions_count_>;
+    using order_t = order_type_;
+    static_assert(order_t::ring_k >= partitions_k, "as many commits may be in flight as there are partitions");
     using inner_store_t = typename rebound_order_of<store_type_, order_t>::type;
     using inner_transaction_t = typename inner_store_t::transaction_t;
     using mutex_t = shared_mutex_type_;
@@ -397,12 +401,13 @@ class partitioned_store {
     static void note_written_(epoch_t &epoch) noexcept {
         // Indivisible: `for_all` counts a whole-store write after releasing every partition, where it
         // can interleave with a single-partition write counting under its own lock.
-        atomic_post_add<atomic_ref>(epoch, epoch_t {1}, memory_order_release_k);
+        atomic_post_add<order_t::template atomic_reference>(epoch, epoch_t {1}, memory_order_release_k);
     }
 
     /** The count a reader last saw, paired with whatever it read under it. */
     static epoch_t epoch_seen_(epoch_t const &epoch) noexcept {
-        return atomic_ref<epoch_t>(const_cast<epoch_t &>(epoch)).load(memory_order_acquire_k);
+        return typename order_t::template atomic_reference<epoch_t>(const_cast<epoch_t &>(epoch))
+            .load(memory_order_acquire_k);
     }
 
     /**
@@ -3377,14 +3382,18 @@ class partitioned_store {
  *  arguments would name the same type and catch nothing.
  */
 template <set_shaped_store set_store_type_, typename hash_type_ = hash<typename set_store_type_::identifier_t>,
-          typename shared_mutex_type_ = spin_shared_mutex_t, std::size_t partitions_count_ = 16>
-using partitioned_set = partitioned_store<set_store_type_, hash_type_, shared_mutex_type_, partitions_count_>;
+          typename shared_mutex_type_ = spin_shared_mutex_t, std::size_t partitions_count_ = 16,
+          typename order_type_ = basic_commit_order<partitions_count_>>
+using partitioned_set =
+    partitioned_store<set_store_type_, hash_type_, shared_mutex_type_, partitions_count_, order_type_>;
 
 /** A map-shaped store sharded across independently locked partitions, spelled
  *  @c partitioned_map<monotonic_avl_map<key_t, value_t>>. */
 template <map_shaped_store map_store_type_, typename hash_type_ = hash<typename map_store_type_::identifier_t>,
-          typename shared_mutex_type_ = spin_shared_mutex_t, std::size_t partitions_count_ = 16>
-using partitioned_map = partitioned_store<map_store_type_, hash_type_, shared_mutex_type_, partitions_count_>;
+          typename shared_mutex_type_ = spin_shared_mutex_t, std::size_t partitions_count_ = 16,
+          typename order_type_ = basic_commit_order<partitions_count_>>
+using partitioned_map =
+    partitioned_store<map_store_type_, hash_type_, shared_mutex_type_, partitions_count_, order_type_>;
 
 #pragma endregion Aliases
 
