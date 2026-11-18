@@ -817,7 +817,7 @@ class snapshot_store {
          */
         void unwind_() noexcept {
             if (store_ && staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
-            release_lent_nodes_();
+            release_lent_nodes_(); // ? A closed transaction names no store and still keeps its nodes
             if (!store_) return;
             claim_.retire();
             staging_ = staging_t::pending_k;
@@ -2274,6 +2274,34 @@ class snapshot_store {
         /** Reads at @p opened.snapshot and dates later writes under @p opened.generation, both
          *  drawn once for every part of a sharded transaction. */
         void reopen_at(opened_at_t opened) noexcept { snapshot_ = opened.snapshot, generation_ = opened.generation; }
+
+        /** Leaves the store and gives back any claim, keeping every buffer for the next
+         *  @c open_at. Nothing may be staged or pending. */
+        void close() noexcept {
+            assert(staging_ == staging_t::pending_k && changes_.empty() && "closing over unpublished writes");
+            claim_.retire();
+            store_ = nullptr;
+        }
+
+        /** Opens a closed transaction on @p store, reading at @p opened.snapshot under a claim
+         *  somebody else holds, and dating its writes under @p opened.generation. */
+        void open_at(store_t &store, opened_at_t opened) noexcept {
+            assert(!store_ && "opening a transaction still bound to a store");
+            // Buffers built over another store's comparator or allocator would carry its state.
+            if constexpr (!std::is_empty_v<typename storage_shape_t::addressing_t> || !std::is_empty_v<comparator_t> ||
+                          !std::is_empty_v<allocator_t>) {
+                release_lent_nodes_();
+                changes_ = store_t::build_changes_(store.entries_);
+                accesses_ = accesses_vector_t(accesses_allocator_t(storage_shape_t::allocator_of(store.entries_)));
+                changed_identifiers_ = changed_identifiers_vector_t(
+                    changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_)));
+                staged_nodes_ = build_staged_nodes_(store.entries_);
+            }
+            store_ = &store;
+            generation_ = opened.generation;
+            snapshot_ = opened.snapshot;
+            committed_stamp_ = 0;
+        }
 
         /**
          *  @brief Frees whatever the commit just published left unreachable, and forgets the

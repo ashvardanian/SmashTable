@@ -15,7 +15,8 @@
 #include <atomic>      // `std::atomic`
 #include <functional>  // `std::equal_to`, `std::hash`, `std::less`
 #include <limits>      // `std::numeric_limits`
-#include <memory>      // `std::allocator`
+#include <memory>      // `std::allocator`, `std::unique_ptr`
+#include <new>         // `std::nothrow_t`, `std::align_val_t`
 #include <span>        // `std::span`
 #include <string_view> // `std::string_view`
 #include <thread>      // `std::thread`
@@ -1302,6 +1303,205 @@ static void test_dynamic_transaction_group_empties_on_commit_and_reset() {
     expect_equal(group->commit_stamp(), generation_t {0});
 }
 
+/** A long-lived group rewriting the same keys of the same stores asks the allocator for nothing
+ *  once its participants and the stores' nodes are warm. */
+static void test_dynamic_group_allocates_nothing_once_warm() {
+    constexpr std::size_t warm_rounds_k = 2, counted_rounds_k = 64;
+    grouped_order_t order;
+    grouped_map_t values {order};
+    grouped_set_t edges {order};
+
+    auto group = dynamic_group_t::make(order);
+    if (!expect_equal(group.status(), success_k)) return;
+    std::size_t warming_allocations = 0, allocations = 0, distinct_stamps = 0;
+    generation_t last_stamp = 0;
+    for (std::size_t round = 0; round != warm_rounds_k + counted_rounds_k; ++round) {
+        std::size_t const before = test_run.nothrow_allocations.load();
+        bool passed = succeeded(group->reset());
+        auto values_joined = group->join(values);
+        auto edges_joined = group->join(edges);
+        passed = passed && values_joined && edges_joined &&
+                 succeeded((*values_joined)->upsert(grouped_member_t {1u, static_cast<int>(round)})) &&
+                 succeeded((*edges_joined)->upsert(std::uint64_t {7})) && succeeded(group->stage()) &&
+                 succeeded(group->commit());
+        group->clear();
+        if (!expect_true(passed)) return;
+        if (round < warm_rounds_k) {
+            warming_allocations += test_run.nothrow_allocations.load() - before;
+            continue;
+        }
+        allocations += test_run.nothrow_allocations.load() - before;
+        distinct_stamps += group->commit_stamp() > last_stamp;
+        last_stamp = group->commit_stamp();
+    }
+    expect_true(warming_allocations != 0, "the counter sees what the first joins and writes allocate");
+    expect_equal(allocations, std::size_t {0}, "a warm group reuses its participants and the stores their nodes");
+    expect_equal(distinct_stamps, counted_rounds_k);
+    expect_equal(group->capacity(), std::size_t {2});
+    expect_true(holds_at(values, last_stamp, 1) && holds_at(edges, last_stamp, 7));
+}
+
+/** A commit an interloper refuses is retried after a reset, and the retry allocates nothing. */
+static void test_dynamic_group_allocates_nothing_across_retries() {
+    constexpr std::size_t warm_rounds_k = 2, counted_rounds_k = 8;
+    grouped_order_t order;
+    grouped_map_t values {order};
+
+    auto group = dynamic_group_t::make(order);
+    if (!expect_equal(group.status(), success_k)) return;
+    std::size_t allocations = 0;
+    for (std::size_t round = 0; round != warm_rounds_k + counted_rounds_k; ++round) {
+        std::size_t before = test_run.nothrow_allocations.load();
+        bool passed = succeeded(group->reset());
+        auto first_attempt = group->join(values);
+        passed = passed && first_attempt && succeeded((*first_attempt)->watch(5)) &&
+                 succeeded((*first_attempt)->upsert(grouped_member_t {1u, static_cast<int>(round)})) &&
+                 succeeded(group->stage());
+        std::size_t spent = test_run.nothrow_allocations.load() - before;
+
+        // The watched key moves between the stage and the commit, from outside the group.
+        {
+            auto interloper = values.transaction();
+            if (!expect_equal(interloper.status(), success_k)) return;
+            expect_equal(interloper->upsert(grouped_member_t {5u, static_cast<int>(round)}), success_k);
+            expect_equal(interloper->stage(), success_k);
+            expect_equal(interloper->commit(), success_k);
+        }
+
+        before = test_run.nothrow_allocations.load();
+        passed = passed && group->commit() == read_conflict_k && succeeded(group->reset());
+        auto second_attempt = group->join(values);
+        passed = passed && second_attempt && first_attempt && *second_attempt == *first_attempt &&
+                 succeeded((*second_attempt)->watch(5)) &&
+                 succeeded((*second_attempt)->upsert(grouped_member_t {1u, static_cast<int>(round)})) &&
+                 succeeded(group->stage()) && succeeded(group->commit());
+        group->clear();
+        spent += test_run.nothrow_allocations.load() - before;
+        if (!expect_true(passed)) return;
+        if (round >= warm_rounds_k) allocations += spent;
+
+        auto committed = values.find_copy(std::uint64_t {1});
+        expect_true(committed && committed->mapped == static_cast<int>(round));
+    }
+    expect_equal(allocations, std::size_t {0}, "a retry reopens the participant the refused attempt closed");
+    expect_equal(group->capacity(), std::size_t {1});
+}
+
+/** A spare participant opens on whichever store of its kind joins next, and every store ends up
+ *  holding exactly the keys written through it. */
+static void test_dynamic_group_rebinds_spares_to_other_stores() {
+    grouped_order_t order;
+    grouped_map_t first {order}, second {order}, third {order};
+    grouped_set_t edges {order};
+
+    auto group = dynamic_group_t::make(order);
+    if (!expect_equal(group.status(), success_k)) return;
+    expect_equal(group->capacity(), std::size_t {0});
+
+    expect_equal((*group->join(first))->upsert(grouped_member_t {1u, 10}), success_k);
+    expect_equal((*group->join(second))->upsert(grouped_member_t {2u, 20}), success_k);
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
+    expect_equal(group->participants_count(), std::size_t {0});
+    expect_equal(group->capacity(), std::size_t {2});
+
+    expect_equal((*group->join(third))->upsert(grouped_member_t {3u, 30}), success_k);
+    expect_equal((*group->join(first))->upsert(grouped_member_t {4u, 40}), success_k);
+    expect_equal(group->capacity(), std::size_t {2}, "both joins reopened a spare");
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
+
+    expect_equal((*group->join(edges))->upsert(std::uint64_t {9}), success_k);
+    expect_equal(group->participants_count(), std::size_t {1});
+    expect_equal(group->capacity(), std::size_t {3}, "a spare of another kind is no use to a set");
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
+
+    generation_t const stamp = group->commit_stamp();
+    expect_true(holds_at(first, stamp, 1) && !holds_at(first, stamp, 2) && !holds_at(first, stamp, 3) &&
+                holds_at(first, stamp, 4));
+    expect_true(!holds_at(second, stamp, 1) && holds_at(second, stamp, 2) && !holds_at(second, stamp, 3) &&
+                !holds_at(second, stamp, 4));
+    expect_true(!holds_at(third, stamp, 1) && !holds_at(third, stamp, 2) && holds_at(third, stamp, 3) &&
+                !holds_at(third, stamp, 4));
+    expect_true(holds_at(edges, stamp, 9));
+
+    grouped_map_t::transaction_t *const kept = *group->join(second);
+    group->shrink_to_fit();
+    expect_equal(group->capacity(), std::size_t {1});
+    expect_true(group->participant(second) == kept);
+    expect_equal(kept->find_copy(std::uint64_t {2}).status(), success_k);
+}
+
+/** A cleared group's spares name no store, so the stores they served may be freed and others
+ *  built where they stood. */
+static void test_spares_outlive_their_store() {
+    grouped_order_t order;
+    auto group = dynamic_group_t::make(order);
+    if (!expect_equal(group.status(), success_k)) return;
+
+    std::unique_ptr<grouped_map_t> values = std::make_unique<grouped_map_t>(order);
+    expect_equal((*group->join(*values))->upsert(grouped_member_t {1u, 100}), success_k);
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
+    group->clear();
+    values.reset();
+
+    std::unique_ptr<grouped_set_t> edges = std::make_unique<grouped_set_t>(order);
+    expect_equal(group->reset(), success_k);
+    expect_equal((*group->join(*edges))->upsert(std::uint64_t {7}), success_k);
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
+    expect_true(holds_at(*edges, group->commit_stamp(), 7));
+    group->clear();
+    edges.reset();
+
+    values = std::make_unique<grouped_map_t>(order);
+    expect_equal(group->reset(), success_k);
+    expect_equal((*group->join(*values))->upsert(grouped_member_t {2u, 200}), success_k);
+    expect_equal(group->capacity(), std::size_t {2}, "the map's spare reopened on the new map");
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
+    expect_true(holds_at(*values, group->commit_stamp(), 2) && !holds_at(*values, group->commit_stamp(), 1));
+    group->clear();
+    values.reset();
+}
+
+/** A cleared group holds no claim, so the low-water mark passes it, and nothing joins it until a
+ *  reset draws a snapshot again. */
+static void test_cleared_group_pins_nothing() {
+    grouped_order_t order;
+    grouped_map_t values {order};
+
+    auto group = dynamic_group_t::make(order);
+    if (!expect_equal(group.status(), success_k)) return;
+    expect_equal((*group->join(values))->upsert(grouped_member_t {1u, 100}), success_k);
+    expect_equal(group->stage(), success_k);
+    expect_equal(group->commit(), success_k);
+    generation_t const pinned = group->snapshot();
+
+    auto const commit_apart = [&](std::uint64_t key) {
+        auto apart = values.transaction();
+        if (!expect_equal(apart.status(), success_k)) return;
+        expect_equal(apart->upsert(grouped_member_t {key, 0}), success_k);
+        expect_equal(apart->stage(), success_k);
+        expect_equal(apart->commit(), success_k);
+    };
+    commit_apart(2);
+    expect_equal(order.low_water_mark(), pinned, "the group's claim still pins its snapshot");
+
+    group->clear();
+    expect_equal(group->participants_count(), std::size_t {0});
+    commit_apart(3);
+    expect_true(order.low_water_mark() > pinned, "a cleared group pins nothing");
+
+    expect_equal(group->join(values).status(), operation_not_permitted_k, "a cleared group has no snapshot to join at");
+    expect_equal(group->reset(), success_k);
+    auto rejoined = group->join(values);
+    if (!expect_true(static_cast<bool>(rejoined))) return;
+    expect_equal((*rejoined)->find_copy(std::uint64_t {3}).status(), success_k);
+}
+
 #pragma endregion Transaction Group Tests
 
 #pragma region Commit Order Tests
@@ -1888,6 +2088,38 @@ static void test_status_vocabulary_names_conflicts_and_input_output() {
 
 using namespace ashvardanian::smashtable::test;
 
+#pragma region Counted Allocations
+
+void *operator new(std::size_t bytes, std::nothrow_t const &) noexcept {
+    test_run.nothrow_allocations.fetch_add(1, std::memory_order_relaxed);
+    try {
+        return ::operator new(bytes); // allocator primitive
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+void *operator new(std::size_t bytes, std::align_val_t alignment, std::nothrow_t const &) noexcept {
+    test_run.nothrow_allocations.fetch_add(1, std::memory_order_relaxed);
+    try {
+        return ::operator new(bytes, alignment); // allocator primitive
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+void operator delete(void *pointer, std::nothrow_t const &) noexcept {
+    ::operator delete(pointer); // allocator primitive
+}
+
+void operator delete(void *pointer, std::align_val_t alignment, std::nothrow_t const &) noexcept {
+    ::operator delete(pointer, alignment); // allocator primitive
+}
+
+#pragma endregion Counted Allocations
+
 int main(int argc, char **argv) {
     start_test_run(argc, argv);
 
@@ -1937,6 +2169,13 @@ int main(int argc, char **argv) {
                   test_dynamic_transaction_group_joins_each_store_once);
     run_test_case("test_dynamic_transaction_group_empties_on_commit_and_reset",
                   test_dynamic_transaction_group_empties_on_commit_and_reset);
+    run_test_case("test_dynamic_group_allocates_nothing_once_warm", test_dynamic_group_allocates_nothing_once_warm);
+    run_test_case("test_dynamic_group_allocates_nothing_across_retries",
+                  test_dynamic_group_allocates_nothing_across_retries);
+    run_test_case("test_dynamic_group_rebinds_spares_to_other_stores",
+                  test_dynamic_group_rebinds_spares_to_other_stores);
+    run_test_case("test_spares_outlive_their_store", test_spares_outlive_their_store);
+    run_test_case("test_cleared_group_pins_nothing", test_cleared_group_pins_nothing);
 
     run_test_case("test_commit_order_resume_continues_stamps", test_commit_order_resume_continues_stamps);
     run_test_case("test_commit_order_resume_reaches_its_stores", test_commit_order_resume_reaches_its_stores);

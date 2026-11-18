@@ -633,6 +633,26 @@ class locked_store {
             inner_transaction_.reopen_at(opened);
         }
 
+        /** Leaves the store, keeping the wrapped transaction's buffers for the next @c open_at.
+         *  Nothing may be staged or pending, so no hold on the mutex is left to give back. */
+        void close() noexcept
+            requires inner_transaction_shards_k
+        {
+            assert(!validation_ && "closing over a validation hold");
+            inner_transaction_.close();
+            store_ = nullptr;
+        }
+
+        /** Opens a closed transaction on @p store at @p opened, without the mutex, since a closed
+         *  transaction holds nothing in any store. */
+        void open_at(locked_store &store, opened_at_t opened) noexcept
+            requires inner_transaction_shards_k
+        {
+            assert(!store_ && "opening a transaction still bound to a store");
+            inner_transaction_.open_at(store.inner_store_, opened);
+            store_ = &store;
+        }
+
         /** Frees whatever the commit just published left unreachable, under the hold the
          *  publication kept, and gives the mutex back. */
         void prune_committed() noexcept

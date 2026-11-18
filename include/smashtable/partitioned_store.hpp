@@ -1577,6 +1577,33 @@ class partitioned_store {
             for (inner_transaction_t &part : partitions_) part.reopen_at(opened);
         }
 
+        /** Leaves the shard set and gives back any claim, keeping every part's buffers for the
+         *  next @c open_at. Nothing may be staged or pending. */
+        void close() noexcept
+            requires draws_from_a_shared_order<inner_store_t>
+        {
+            assert(staging_ == staging_t::pending_k &&
+                   touched_.first_marked().presence != marked_presence_t::one_marked_k &&
+                   "closing over a reached partition");
+            for (inner_transaction_t &part : partitions_) part.close();
+            claim_.retire();
+            store_ = nullptr;
+        }
+
+        /** Opens a closed transaction on @p store, every part at @p opened, which a group's claim
+         *  pins. Takes no partition lock, since a closed part holds nothing in any store. */
+        void open_at(partitioned_store &store, opened_at_t opened) noexcept
+            requires draws_from_a_shared_order<inner_store_t>
+        {
+            assert(!store_ && "opening a transaction still bound to a shard set");
+            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index)
+                partitions_[partition_index].open_at(store.partitions_[partition_index], opened);
+            store_ = &store;
+            touched_.clear();
+            unsettled_stamp_ = 0;
+            committed_stamp_ = 0;
+        }
+
         /** Reclaims what a group commit superseded in every reached partition, under the hold its
          *  validation took, then gives the partitions back and forgets which it reached. */
         void prune_committed() noexcept
@@ -1597,6 +1624,19 @@ class partitioned_store {
             staging_ = staging_t::pending_k;
             status_t const status =
                 for_parts_([stamp](inner_transaction_t &part) noexcept { return part.reset_at(stamp); });
+            touched_.clear();
+            return status;
+        }
+
+        /** The same, under a generation the group drew as well, locking only the reached
+         *  partitions, since no other holds anything to discard. */
+        status_t reset_at(opened_at_t opened) noexcept
+            requires draws_from_a_shared_order<inner_store_t>
+        {
+            staging_ = staging_t::pending_k;
+            status_t const status =
+                for_touched_parts_([opened](inner_transaction_t &part) noexcept { return part.reset_at(opened); });
+            for (inner_transaction_t &part : partitions_) part.reopen_at(opened);
             touched_.clear();
             return status;
         }

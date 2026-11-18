@@ -368,6 +368,9 @@ struct test_run_t {
     std::size_t passed_cases = 0;
     std::size_t failed_cases = 0;
     std::size_t skipped_cases = 0;
+
+    /** Calls of the nothrow @c operator new, counted only in a unit that replaces it to count. */
+    std::atomic<std::size_t> nothrow_allocations {0};
 };
 
 inline test_run_t test_run;
