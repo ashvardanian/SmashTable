@@ -1381,6 +1381,7 @@ class monotonic_store {
 
             staging_ = staging_t::pending_k;
             generation_ = resumed;
+            if (failed(result)) changes_.clear(), changed_identifiers_.clear();
             return result;
         }
 
@@ -1435,6 +1436,8 @@ class monotonic_store {
             }
 
             changed_identifiers_.clear();
+            watches_.clear();
+            generation_ = store.next_generation_();
             staging_ = staging_t::pending_k;
         }
 

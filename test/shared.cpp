@@ -826,6 +826,7 @@ struct store_committing_on_reset_t {
         void publish_under(commit_stamp_t) noexcept {}
         void release_validation() noexcept {}
         void adopt_snapshot(generation_t stamp) noexcept { read_at = stamp; }
+        void reopen_at(opened_at_t opened) noexcept { read_at = opened.snapshot; }
         void prune_committed() noexcept {}
         [[nodiscard]] generation_t snapshot() const noexcept { return read_at; }
 

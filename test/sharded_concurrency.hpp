@@ -1134,5 +1134,61 @@ void check_group_across_orders_commits_whole() {
                  read_every_key<second_member_t>(*second_reader, 1).first_value);
 }
 
+/**
+ *  @brief Staged transactions of a locked store go out of scope while readers walk it.
+ *
+ *  A staged version lives in the store's core, which every reader reaches under the store's mutex,
+ *  so a transaction dropped while staged has to take that mutex to pull its versions back out.
+ *  ThreadSanitizer is the oracle; the counts are checked because a torn walk may still finish.
+ */
+template <typename store_type_>
+void test_a_dropped_staged_transaction_is_unwound_under_the_lock() {
+    std::size_t const rounds = scaled_iterations(2000);
+
+    using member_t = typename store_type_::value_type;
+    constexpr trivial_id_t stable_count_k = 64;
+
+    store_type_ store;
+    for (trivial_id_t identifier = 0; identifier != stable_count_k; ++identifier)
+        expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, 1)), success_k);
+
+    std::atomic<bool> dropping {true};
+    std::atomic<std::size_t> readers_ready {0};
+    std::vector<std::size_t> torn_walks(sharded_threads_count_k, 0);
+    std::vector<std::thread> threads;
+    threads.reserve(sharded_threads_count_k);
+    for (std::size_t thread_index = 0; thread_index != sharded_threads_count_k; ++thread_index)
+        threads.emplace_back([&, thread_index]() noexcept {
+            ++readers_ready;
+            do {
+                std::size_t seen = 0;
+                [[maybe_unused]] status_t const walked = store.for_each([&](member_t const &) noexcept { ++seen; });
+                if (seen != stable_count_k) ++torn_walks[thread_index];
+            } while (dropping.load());
+        });
+
+    expect_true(spin_until([&] { return readers_ready.load() == sharded_threads_count_k; }));
+    for (std::size_t round = 0; round != rounds; ++round) {
+        auto abandoned = store.transaction();
+        if (!expect_true(abandoned.has_value())) break;
+        for (trivial_id_t identifier = 0; identifier != 8; ++identifier) {
+            trivial_id_t const fresh = static_cast<trivial_id_t>(1000 + (round % 64) * 8 + identifier);
+            expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(fresh, 9)), success_k);
+            expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(identifier, 9)), success_k);
+        }
+        expect_equal(abandoned->stage(), success_k);
+    }
+    dropping.store(false);
+    for (std::thread &thread : threads) thread.join();
+
+    std::size_t torn = 0;
+    for (std::size_t const count : torn_walks) torn += count;
+    expect_equal(torn, std::size_t {0}, "a walk met a staged version or missed a published one");
+    expect_equal(store.size(), std::size_t {stable_count_k});
+    if constexpr (requires { store.versions_count(); })
+        expect_equal(store.versions_count(), std::size_t {stable_count_k},
+                     "a dropped transaction left staged versions behind");
+}
+
 #pragma endregion Sharded Concurrency
 } // namespace ashvardanian::smashtable::test

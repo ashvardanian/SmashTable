@@ -1239,11 +1239,12 @@ class partitioned_store {
                 if (unsettled_stamp_ == 0) return;
                 order_t &order = *store_->order_;
                 order.await_published(static_cast<commit_stamp_t>(unsettled_stamp_));
-                generation_t const moved = order.take_snapshot(claim_);
+                opened_at_t const reopened {.snapshot = order.take_snapshot(claim_),
+                                            .generation = order.next_generation()};
                 // Where a transaction reads is its own state, which the const read paths below own as
                 // much as the writing ones do - the partitions themselves are not being written here.
                 auto &parts = const_cast<partition_transactions_t &>(partitions_);
-                for (inner_transaction_t &part : parts) part.adopt_snapshot(moved);
+                for (inner_transaction_t &part : parts) part.reopen_at(reopened);
                 unsettled_stamp_ = 0;
             }
         }
@@ -1554,6 +1555,14 @@ class partitioned_store {
             for (inner_transaction_t &part : partitions_) part.adopt_snapshot(stamp);
         }
 
+        /** Reads every partition at @p opened.snapshot, which the group's claim pins, and dates
+         *  later writes under @p opened.generation. */
+        void reopen_at(opened_at_t opened) noexcept
+            requires draws_from_a_shared_order<inner_store_t>
+        {
+            for (inner_transaction_t &part : partitions_) part.reopen_at(opened);
+        }
+
         /** Reclaims what a group commit superseded in every reached partition, then forgets which
          *  partitions it reached. */
         void prune_committed() noexcept
@@ -1611,10 +1620,17 @@ class partitioned_store {
         status_t rollback() noexcept {
             settle_snapshot_();
             // `std::mem_fn(&inner_transaction_t::rollback)` is cute... but we don't like heavy includes.
-            status_t const unwound =
-                for_touched_parts_([](inner_transaction_t &part) noexcept { return part.rollback(); });
-            if (succeeded(unwound)) staging_ = staging_t::pending_k;
-            return unwound;
+            // A part only read since the stage has nothing staged, which fails no rollback.
+            status_t const unwound = for_touched_parts_([](inner_transaction_t &part) noexcept {
+                status_t const one = part.rollback();
+                return one == operation_not_permitted_k ? success_k : one;
+            });
+            if (failed(unwound)) {
+                [[maybe_unused]] status_t const discarded = reset();
+                return unwound;
+            }
+            staging_ = staging_t::pending_k;
+            return success_k;
         }
 
         /**
@@ -1664,6 +1680,7 @@ class partitioned_store {
          *  or each engine stamping its own versions.
          */
         status_t commit() noexcept {
+            if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
             if (status_t const refused = validate_for_commit(); failed(refused)) return refused;
             publish_under();
             return success_k;

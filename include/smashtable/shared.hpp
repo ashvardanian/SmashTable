@@ -3387,6 +3387,7 @@ concept shards_its_commit = requires(transaction_type_ &transaction, generation_
     transaction.publish_under(static_cast<commit_stamp_t>(stamp));
     transaction.release_validation();
     transaction.adopt_snapshot(stamp);
+    transaction.reopen_at(opened_at_t {});
     transaction.prune_committed();
     transaction.reset_at(stamp);
 };
@@ -3705,11 +3706,11 @@ class transaction_group {
             // Waited for at every level: the participants adopt the stamp at once, and one reading
             // before the watermark covers it would see an older commit half-written.
             order.await_published(in_flight.stamp());
-            generation_t const moved = order.take_snapshot(claim_);
+            opened_at_t const reopened {.snapshot = order.take_snapshot(claim_), .generation = order.next_generation()};
             for (std::size_t position = 0; position != participants_k; ++position) {
                 [[maybe_unused]] status_t const settled =
-                    visit_at_(order_[position], [moved](auto &transaction) noexcept {
-                        transaction.adopt_snapshot(moved);
+                    visit_at_(order_[position], [reopened](auto &transaction) noexcept {
+                        transaction.reopen_at(reopened);
                         transaction.prune_committed();
                         return success_k;
                     });

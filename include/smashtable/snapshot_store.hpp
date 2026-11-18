@@ -2101,6 +2101,7 @@ class snapshot_store {
             store.order_().await_published(in_flight.stamp());
             snapshot_ = store.order_().take_snapshot(claim_);
             prune_committed();
+            generation_ = store.next_generation_();
         }
 
         /**
@@ -2140,6 +2141,8 @@ class snapshot_store {
         void publish_under(commit_stamp_t stamp) noexcept {
             assert(staging_ == staging_t::staged_k && "publishing what was never staged");
             store_ref().stamp_under_(changed_identifiers_.data(), changed_identifiers_.size(), generation_, stamp);
+            accesses_.clear();
+            read_set_ = read_set_t::names_every_key_k;
             staging_ = staging_t::pending_k;
             committed_stamp_ = stamp_of(stamp);
         }
@@ -2147,6 +2150,10 @@ class snapshot_store {
         /** Answers every later read at @p snapshot, which a sharded transaction drew for all its
          *  parts. */
         void adopt_snapshot(generation_t snapshot) noexcept { snapshot_ = snapshot; }
+
+        /** Reads at @p opened.snapshot and dates later writes under @p opened.generation, both
+         *  drawn once for every part of a sharded transaction. */
+        void reopen_at(opened_at_t opened) noexcept { snapshot_ = opened.snapshot, generation_ = opened.generation; }
 
         /** Frees whatever the commit just published left unreachable, and forgets the keys it
          *  named. */
@@ -2184,6 +2191,7 @@ class snapshot_store {
 
             staging_ = staging_t::pending_k;
             generation_ = resumed;
+            if (failed(result)) changes_.clear(), changed_identifiers_.clear();
             return result;
         }
 
@@ -2196,7 +2204,11 @@ class snapshot_store {
 
         /** The same, at a snapshot a sharded transaction drew once for every one of its parts. */
         status_t reset_at(generation_t snapshot) noexcept {
-            auto &store = store_ref();
+            return reset_at(opened_at_t {.snapshot = snapshot, .generation = store_ref().next_generation_()});
+        }
+
+        /** The same, under a generation the sharded transaction drew once as well. */
+        status_t reset_at(opened_at_t opened) noexcept {
             if (staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
 
             accesses_.clear();
@@ -2206,8 +2218,8 @@ class snapshot_store {
             // without clearing that refusal leaves a transaction which can never commit again.
             read_set_ = read_set_t::names_every_key_k;
             staging_ = staging_t::pending_k;
-            generation_ = store.next_generation_();
-            snapshot_ = snapshot;
+            generation_ = opened.generation;
+            snapshot_ = opened.snapshot;
             return success_k;
         }
 

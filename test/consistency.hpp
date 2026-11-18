@@ -1132,6 +1132,109 @@ void check_reset_clears_transaction_state() {
     expect_equal(container.contains(trivial_id_to_key<member_t>(2)), true, "reset must not touch committed entries");
 }
 
+/** Edge Case: commit() clears watches and recorded reads, so neither refuses the next round */
+template <typename container_type_>
+void check_commit_clears_transaction_state() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    expect_equal(container.upsert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(container.upsert(trivial_id_to_member<member_t>(2)), success_k);
+
+    auto transaction = container.transaction();
+    if (!expect_equal(transaction.status(), success_k)) return;
+    expect_equal(transaction->watch(trivial_id_to_key<member_t>(1)), success_k);
+    if constexpr (requires { transaction->for_each(no_op_t {}); })
+        expect_equal(transaction->for_each(no_op_t {}), success_k);
+    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3)), success_k);
+    expect_equal(transaction->stage(), success_k);
+    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction->contains(trivial_id_to_key<member_t>(3)), true, "a commit is read by its own writer");
+
+    // The watched key moves after the commit that watched it, so no later round asked about it.
+    expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 99)), success_k);
+
+    // Enough keys to reach every partition of a sharded container, so no part escapes validation.
+    for (trivial_id_t identifier = 100; identifier != 164; ++identifier)
+        expect_equal(transaction->upsert(trivial_id_to_member<member_t>(identifier)), success_k);
+    expect_equal(transaction->stage(), success_k, "a watch or a read from a committed round refused the next one");
+    expect_equal(transaction->commit(), success_k);
+    expect_equal(container.contains(trivial_id_to_key<member_t>(163)), true);
+}
+
+/**
+ *  @brief Write Conflicts: A transaction reused after its own commit still conflicts with a rival
+ *
+ *  A reused transaction restages a key it already published. Filed under the generation of its
+ *  first commit, the restaged version replaces the published one, and the rival below finds
+ *  nothing newer than what it read.
+ *
+ *  @verbatim
+ *  T1:  upsert(1,20)  →  commit  →  upsert(1,30)  →  stage()
+ *
+ *  T2:  opened before T1's commit  →  upsert(1,40)  →  stage()   ✗ must fail, T1 committed key 1
+ *  @endverbatim
+ *
+ *  The second script is the watch: T2 watches key 1 between T1's two commits of it, so the second
+ *  commit is the move the watch was taken against.
+ */
+template <typename container_type_>
+void check_reused_committer_still_conflicts() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    if constexpr (at_least(container_t::isolation_k, isolation_t::snapshot_k)) {
+        container_t container;
+        expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
+
+        auto reused = container.transaction();
+        auto rival = container.transaction();
+        if (!expect_true(reused.has_value() && rival.has_value())) return;
+
+        expect_equal(reused->upsert(trivial_id_to_member<member_t>(1, 20)), success_k);
+        expect_equal(reused->stage(), success_k);
+        expect_equal(reused->commit(), success_k);
+        expect_equal(reused->upsert(trivial_id_to_member<member_t>(1, 30)), success_k);
+        expect_equal(reused->stage(), success_k);
+
+        expect_equal(rival->upsert(trivial_id_to_member<member_t>(1, 40)), success_k);
+        status_t const staged = rival->stage();
+        expect_equal(succeeded(staged) ? rival->commit() : staged, status_t::write_conflict_k,
+                     "the first committer wins, however often it commits");
+    }
+
+    container_t container;
+    expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
+
+    auto reused = container.transaction();
+    if (!expect_equal(reused.status(), success_k)) return;
+    expect_equal(reused->upsert(trivial_id_to_member<member_t>(1, 20)), success_k);
+    expect_equal(reused->stage(), success_k);
+    expect_equal(reused->commit(), success_k);
+
+    auto rival = container.transaction();
+    if (!expect_equal(rival.status(), success_k)) return;
+    expect_equal(rival->watch(trivial_id_to_key<member_t>(1)), success_k);
+
+    expect_equal(reused->upsert(trivial_id_to_member<member_t>(1, 30)), success_k);
+    expect_equal(reused->stage(), success_k);
+    expect_equal(reused->commit(), success_k);
+
+    expect_equal(rival->upsert(trivial_id_to_member<member_t>(2, 5)), success_k);
+    status_t const staged = rival->stage();
+    expect_equal(succeeded(staged) ? rival->commit() : staged, status_t::read_conflict_k,
+                 "a watch must see the second commit of a reused transaction");
+}
+
 /**
  *  @brief Write Conflicts: Watch validation must detect staged (invisible) writes
  *

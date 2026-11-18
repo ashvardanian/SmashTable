@@ -30,6 +30,7 @@
 
 #include "harness.hpp"
 #include "fixtures.hpp"
+#include "batch_atomicity.hpp"
 #include "consistency.hpp"
 #include "fuzz.hpp"
 #include "sharded_concurrency.hpp"
@@ -125,9 +126,16 @@ using monotonic_avl_map_t =
 /** A part that decides visibility by what is published, not by a stamp, so sharding caps it. */
 using sharded_monotonic_map_t = partitioned_store<monotonic_avl_map_t>;
 
+/** The same map over an allocator that can be told to refuse, so a stage or a rollback can fail. */
+using budgeted_monotonic_avl_map_t =
+    monotonic_avl_map<trivial_key_t, int, std::less<trivial_key_t>, stateful_allocator<mapping<trivial_key_t, int>>>;
+
 /** The @c std::set-backed oracle, which the range surfaces are checked against. */
 using reference_avl_map_t =
     reference_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
+
+/** The oracle behind sixteen partition locks, so the sharded suites can be checked against it. */
+using sharded_reference_map_t = partitioned_store<reference_avl_map_t>;
 
 /** The weight-balanced part of the lower isolation level, which is where its ordinals live. */
 using monotonic_wb_map_t =
@@ -3923,6 +3931,34 @@ int main(int argc, char **argv) {
     run_test_case("test_read_conflict_matches_isolation", test_read_conflict_matches_isolation);
     run_test_case("test_repeated_read_matches_isolation", test_repeated_read_matches_isolation);
     run_test_case("test_repeated_range_matches_isolation", test_repeated_range_matches_isolation);
+    run_test_case("check_reused_committer_still_conflicts<snapshot_avl_map_t>",
+                  check_reused_committer_still_conflicts<snapshot_avl_map_t>);
+    run_test_case("check_reused_committer_still_conflicts<monotonic_avl_map_t>",
+                  check_reused_committer_still_conflicts<monotonic_avl_map_t>);
+    run_test_case("check_reused_committer_still_conflicts<reference_avl_map_t>",
+                  check_reused_committer_still_conflicts<reference_avl_map_t>);
+    run_test_case("check_reused_committer_still_conflicts<sharded_snapshot_map_t>",
+                  check_reused_committer_still_conflicts<sharded_snapshot_map_t>);
+    run_test_case("check_reused_committer_still_conflicts<sharded_monotonic_map_t>",
+                  check_reused_committer_still_conflicts<sharded_monotonic_map_t>);
+    run_test_case("check_reused_committer_still_conflicts<locked_snapshot_map_t>",
+                  check_reused_committer_still_conflicts<locked_snapshot_map_t>);
+    run_test_case("check_commit_clears_transaction_state<snapshot_avl_map_t>",
+                  check_commit_clears_transaction_state<snapshot_avl_map_t>);
+    run_test_case("check_commit_clears_transaction_state<serializable_avl_map_t>",
+                  check_commit_clears_transaction_state<serializable_avl_map_t>);
+    run_test_case("check_commit_clears_transaction_state<monotonic_avl_map_t>",
+                  check_commit_clears_transaction_state<monotonic_avl_map_t>);
+    run_test_case("check_commit_clears_transaction_state<reference_avl_map_t>",
+                  check_commit_clears_transaction_state<reference_avl_map_t>);
+    run_test_case("check_commit_clears_transaction_state<sharded_snapshot_map_t>",
+                  check_commit_clears_transaction_state<sharded_snapshot_map_t>);
+    run_test_case("check_commit_clears_transaction_state<sharded_monotonic_map_t>",
+                  check_commit_clears_transaction_state<sharded_monotonic_map_t>);
+    run_test_case("check_refusals_spare_a_reused_transaction<budgeted_snapshot_avl_map_t>",
+                  check_refusals_spare_a_reused_transaction<budgeted_snapshot_avl_map_t>);
+    run_test_case("check_refusals_spare_a_reused_transaction<budgeted_monotonic_avl_map_t>",
+                  check_refusals_spare_a_reused_transaction<budgeted_monotonic_avl_map_t>);
 
     // Sixteen partitions, one order. The suites above pin what a single store promises; these pin
     // that sharding it does not quietly take that promise back.
@@ -3991,6 +4027,20 @@ int main(int argc, char **argv) {
                   test_random_writes_match_the_oracle<monotonic_avl_map_t>);
     run_test_case("test_random_writes_match_the_oracle<serializable_avl_map_t>",
                   test_random_writes_match_the_oracle<serializable_avl_map_t>);
+    run_test_case("test_a_reused_transaction_matches_a_map<snapshot_avl_map_t>",
+                  test_a_reused_transaction_matches_a_map<snapshot_avl_map_t>);
+    run_test_case("test_a_reused_transaction_matches_a_map<monotonic_avl_map_t>",
+                  test_a_reused_transaction_matches_a_map<monotonic_avl_map_t>);
+    run_test_case("test_a_reused_transaction_matches_a_map<reference_avl_map_t>",
+                  test_a_reused_transaction_matches_a_map<reference_avl_map_t>);
+    run_test_case("test_a_reused_transaction_matches_a_map<sharded_snapshot_map_t>",
+                  test_a_reused_transaction_matches_a_map<sharded_snapshot_map_t>);
+    run_test_case("test_a_reused_transaction_matches_a_map<sharded_monotonic_map_t>",
+                  test_a_reused_transaction_matches_a_map<sharded_monotonic_map_t>);
+    run_test_case("test_a_reused_transaction_matches_a_map<sharded_reference_map_t>",
+                  test_a_reused_transaction_matches_a_map<sharded_reference_map_t>);
+    run_test_case("test_a_reused_transaction_matches_a_map<locked_snapshot_map_t>",
+                  test_a_reused_transaction_matches_a_map<locked_snapshot_map_t>);
     run_test_case("test_random_windows_match_the_oracle<snapshot_avl_map_t>",
                   test_random_windows_match_the_oracle<snapshot_avl_map_t>);
     run_test_case("test_random_windows_match_the_oracle<sharded_snapshot_map_t>",
@@ -4099,6 +4149,8 @@ int main(int argc, char **argv) {
                   test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_t>);
     run_test_case("test_staged_transaction_unwinds_under_partition_locks<sharded_strict_map_t>",
                   test_staged_transaction_unwinds_under_partition_locks<sharded_strict_map_t>);
+    run_test_case("test_a_dropped_staged_transaction_is_unwound_under_the_lock<locked_snapshot_map_t>",
+                  test_a_dropped_staged_transaction_is_unwound_under_the_lock<locked_snapshot_map_t>);
 
     run_test_case("test_sorted_staging_equals_element_staging<snapshot_avl_map_t>",
                   test_sorted_staging_equals_element_staging<snapshot_avl_map_t>);

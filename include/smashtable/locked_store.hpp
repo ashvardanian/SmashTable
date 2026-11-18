@@ -78,13 +78,19 @@ class locked_store {
     /** Whether the wrapped transaction decides and writes in two steps rather than one. */
     static constexpr bool inner_transaction_splits_commit_k = splits_its_commit<inner_transaction_t>;
 
-    /** A transaction over the wrapped store, taking the store's mutex for each call that
-     *  touches it. */
+    /**
+     *  @brief A transaction over the wrapped store, taking the store's mutex
+     *      for each call that touches it.
+     *
+     *  @warning Destroying or assigning over a transaction takes the store's mutex, so doing
+     *      either while a sibling transaction on the same thread holds a validation of the
+     *      same store deadlocks.
+     */
     class transaction_t {
         friend class locked_store;
 
-        /** The store this transaction reaches through, never null after construction. A pointer
-         *  rather than a reference, which would delete the defaulted move assignment. */
+        /** The store this transaction reaches through, null only once it was moved from. A pointer
+         *  rather than a reference, which would delete the move assignment. */
         locked_store *store_;
 
         /** The inner store's own transaction, which stages entirely outside the mutex. */
@@ -101,11 +107,28 @@ class locked_store {
             return validation_ ? std::move(validation_) : unique_lock<mutex_t> {store_->mutex_};
         }
 
+        /** Unwinds whatever is staged under the store's mutex, moving the inner transaction out. */
+        void discard_() noexcept {
+            if (!store_) return;
+            unique_lock<mutex_t> const _ = held_();
+            inner_transaction_t const dropped = std::move(inner_transaction_);
+        }
+
       public:
         transaction_t(locked_store &db, inner_transaction_t &&inner_transaction) noexcept
             : store_(&db), inner_transaction_(std::move(inner_transaction)) {}
-        transaction_t(transaction_t &&) noexcept = default;
-        transaction_t &operator=(transaction_t &&) noexcept = default;
+        transaction_t(transaction_t &&other) noexcept
+            : store_(std::exchange(other.store_, nullptr)), inner_transaction_(std::move(other.inner_transaction_)),
+              validation_(std::move(other.validation_)) {}
+        transaction_t &operator=(transaction_t &&other) noexcept {
+            if (this == &other) return *this;
+            discard_();
+            store_ = std::exchange(other.store_, nullptr);
+            inner_transaction_ = std::move(other.inner_transaction_);
+            validation_ = std::move(other.validation_);
+            return *this;
+        }
+        ~transaction_t() noexcept { discard_(); }
 
         /** The generation the wrapped transaction stages its writes under. */
         generation_t generation() const noexcept { return inner_transaction_.generation(); }
@@ -595,6 +618,13 @@ class locked_store {
             inner_transaction_.adopt_snapshot(snapshot);
         }
 
+        /** Moves where this part reads and what dates its later writes, which touches no store. */
+        void reopen_at(opened_at_t opened) noexcept
+            requires inner_transaction_shards_k
+        {
+            inner_transaction_.reopen_at(opened);
+        }
+
         /** Frees whatever the commit just published left unreachable. */
         void prune_committed() noexcept
             requires inner_transaction_shards_k
@@ -609,6 +639,14 @@ class locked_store {
         {
             unique_lock<mutex_t> const _ = held_();
             return inner_transaction_.reset_at(snapshot);
+        }
+
+        /** The same, under a generation the shard set drew once as well. */
+        status_t reset_at(opened_at_t opened) noexcept
+            requires requires(inner_transaction_t &inner, opened_at_t at) { inner.reset_at(at); }
+        {
+            unique_lock<mutex_t> const _ = held_();
+            return inner_transaction_.reset_at(opened);
         }
 
 #pragma endregion Sharded Commit

@@ -1277,6 +1277,9 @@ class reference_store {
             }
 
             changed_identifiers_.clear();
+            changes_.clear();
+            watches_.clear();
+            generation_ = store.next_generation_();
             staging_ = staging_t::pending_k;
         }
 

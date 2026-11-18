@@ -24,6 +24,8 @@
  */
 #pragma once
 #include <compare> // `std::compare_three_way`
+#include <map>     // `std::map`
+#include <vector>  // `std::vector`
 
 #include <smashtable/reference_store.hpp>
 
@@ -145,6 +147,91 @@ void test_random_writes_match_the_oracle() {
         expect_equal(engine.size(), oracle.size(), "a committed round left the two holding different counts");
         expect_equal(fuzz_snapshot_of(engine), fuzz_snapshot_of(oracle),
                      "a committed round left the two holding different contents");
+    }
+}
+
+/**
+ *  @brief Keeps one transaction across every round and compares the engine against a @c std::map.
+ *
+ *  A committed transaction returns to pending and is reused, so every round restages keys the same
+ *  transaction already published. A round ends in a commit, in a reset of what it staged, or in a
+ *  rollback followed by a commit. A reader opened at the round's start is read while the writer
+ *  sits staged, since a version restaged over its own published one vanishes from everyone else.
+ */
+template <typename store_type_>
+void test_a_reused_transaction_matches_a_map() {
+    std::size_t const rounds = scaled_iterations(300);
+
+    using store_t = store_type_;
+    using member_t = typename store_t::value_type;
+
+    split_mix_generator_t generator {case_stream_key()};
+    store_t engine;
+    std::map<trivial_id_t, int> model;
+
+    auto const expect_reads = [](auto const &readable, std::map<trivial_id_t, int> const &wanted, char const *when) {
+        for (trivial_id_t identifier = 0; identifier != fuzz_keyspace_k; ++identifier) {
+            expected<int> held {status_t::key_not_found_k};
+            expect_equal(readable.find(
+                             trivial_key_t {identifier}, [&](member_t const &member) noexcept { held = member.mapped; },
+                             no_op_t {}),
+                         success_k);
+            auto const modelled = wanted.find(identifier);
+            if (modelled == wanted.end()) expect_equal(held.status(), status_t::key_not_found_k, "{}", when);
+            else if (expect_equal(held.status(), success_k, "{}", when))
+                expect_equal(*held, modelled->second, "{}", when);
+        }
+    };
+
+    auto writer = engine.transaction();
+    if (!expect_true(writer.has_value())) return;
+
+    for (std::size_t round = 0; round != rounds; ++round) {
+        std::map<trivial_id_t, int> intended = model;
+        {
+            auto pinned = engine.transaction();
+            if (!expect_true(pinned.has_value())) return;
+
+            for (std::size_t written = 0, writes = 1 + generator() % 3; written != writes; ++written) {
+                trivial_id_t const identifier = trivial_id_t(generator() % fuzz_keyspace_k);
+                if ((generator() % 4) == 0) {
+                    [[maybe_unused]] status_t const erased = writer->erase(trivial_key_t {identifier});
+                    intended.erase(identifier);
+                }
+                else {
+                    int const value = int(generator() % 1000);
+                    expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
+                    intended[identifier] = value;
+                }
+            }
+
+            expect_equal(writer->stage(), success_k);
+            expect_reads(*pinned, model, "a reader pinned before the round, while the writer is staged");
+            expect_reads(engine, model, "the store, while the writer is staged");
+
+            switch (generator() % 3) {
+            case 0:
+                expect_equal(writer->commit(), success_k);
+                model = intended;
+                break;
+            case 1: expect_equal(writer->reset(), success_k); break;
+            default:
+                expect_equal(writer->rollback(), success_k);
+                expect_reads(engine, model, "the store, after the writer rolled back");
+                expect_equal(writer->stage(), success_k);
+                expect_equal(writer->commit(), success_k);
+                model = intended;
+                break;
+            }
+        }
+
+        expect_reads(engine, model, "the store, after the round");
+        expect_equal(engine.size(), model.size(), "a reused transaction left the store miscounting its members");
+        if constexpr (requires { engine.versions_count(); }) {
+            expect_true(engine.vacuum().has_value());
+            expect_equal(engine.versions_count(), engine.size(),
+                         "a vacuum with no reader open keeps one version a key");
+        }
     }
 }
 
@@ -307,23 +394,29 @@ void test_an_accepted_group_publishes_everything() {
     fuzz_oracle_t model;
     std::size_t published_rounds = 0;
 
+    // One group across every round, so each commit restages keys the same participants published.
+    auto group = make_transaction_group(alpha, beta);
+    if (!expect_true(group.has_value())) return;
+    std::vector<model_member_t> pending;
+
     for (std::size_t round = 0; round != rounds; ++round) {
         trivial_id_t const identifier = trivial_id_t(generator() % fuzz_keyspace_k);
         int const value = int(round) + 1;
         bool const unwinding = (generator() % 4) == 0;
 
-        auto group = make_transaction_group(alpha, beta);
-        if (!expect_true(group.has_value())) return;
         expect_equal(group->template participant<0>().upsert(trivial_id_to_member<first_member_t>(identifier, value)),
                      success_k);
         expect_equal(group->template participant<1>().upsert(trivial_id_to_member<second_member_t>(identifier, value)),
                      success_k);
+        pending.push_back(trivial_id_to_member<model_member_t>(identifier, value));
         expect_equal(group->stage(), success_k);
 
+        // A rollback keeps the round's writes pending, so the next commit publishes them as well.
         if (unwinding) { expect_equal(group->rollback(), success_k); }
         else {
             expect_equal(group->commit(), success_k);
-            expect_equal(model.upsert(trivial_id_to_member<model_member_t>(identifier, value)), success_k);
+            for (model_member_t const &member : pending) expect_equal(model.upsert(model_member_t(member)), success_k);
+            pending.clear();
             ++published_rounds;
         }
 
@@ -332,6 +425,8 @@ void test_an_accepted_group_publishes_everything() {
         fuzz_snapshot_t const intended = fuzz_snapshot_of(model);
         expect_equal(fuzz_snapshot_of(alpha), intended, "the first participant lost what its round published");
         expect_equal(fuzz_snapshot_of(beta), intended, "the second participant lost what its round published");
+        expect_equal(alpha.size(), model.size(), "the first participant miscounts what the group published");
+        expect_equal(beta.size(), model.size(), "the second participant miscounts what the group published");
     }
 
     expect_true(published_rounds != 0, "no round published, so this proves nothing");

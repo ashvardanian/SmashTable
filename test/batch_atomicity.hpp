@@ -30,6 +30,7 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint8_t`
 
+#include <map>    // `std::map`
 #include <vector> // `std::vector`
 
 #include "harness.hpp"
@@ -240,6 +241,78 @@ void check_batch_contracts() {
                      "a key missing here refuses the whole update");
         expect_equal(updating.size(), 1u, "and none of that batch is stored");
     }
+}
+
+/** The two verbs of a staged transaction that ask the allocator, each refused in turn below. */
+enum class refused_verb_t : std::uint8_t { stage_k, rollback_k };
+
+/**
+ *  @brief Refuses every request @p verb_ makes on a transaction reused after its own commit.
+ *  @tparam store_type_ A transactional map allocating through an @c allocation_ledger_t.
+ *
+ *  The transaction has already published key 1 and now writes it again beside a new key 3. A
+ *  refused @c stage leaves the store as the first commit left it and the writes still pending, so
+ *  the retry publishes both. A refused @c rollback has lost a write, so the transaction comes back
+ *  empty, and a commit retried after it publishes nothing, least of all key 3 without its value.
+ */
+template <typename store_type_, refused_verb_t verb_>
+void sweep_reused_transaction_refusals() {
+
+    using member_t = typename store_type_::value_type;
+    using model_t = std::map<trivial_id_t, int>;
+    model_t const first_commit {{1, 20}, {2, 1}};
+    model_t const both_commits {{1, 30}, {2, 1}, {3, 30}};
+    auto const expect_holds = [](store_type_ &store, model_t const &wanted, char const *when) {
+        expect_equal(store.size(), wanted.size(), "{}", when);
+        for (auto const &[identifier, mapped] : wanted) {
+            auto const held = store.find_copy(trivial_id_to_key<member_t>(identifier));
+            if (expect_true(held.has_value(), "{}", when)) expect_equal(held->mapped, mapped, "{}", when);
+        }
+    };
+
+    std::size_t refused_requests = 0;
+    for (std::size_t refusal_index = 0;; ++refusal_index) {
+        allocation_ledger_t ledger;
+        std::size_t refusals = 0;
+        {
+            store_type_ store {typename store_type_::allocator_t(ledger)};
+            expect_equal(store.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
+            expect_equal(store.upsert(trivial_id_to_member<member_t>(2, 1)), success_k);
+
+            auto transaction = store.transaction();
+            if (!expect_equal(transaction.status(), success_k)) return;
+            expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1, 20)), success_k);
+            expect_equal(transaction->stage(), success_k);
+            expect_equal(transaction->commit(), success_k);
+
+            expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1, 30)), success_k);
+            expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
+            if constexpr (verb_ == refused_verb_t::rollback_k) expect_equal(transaction->stage(), success_k);
+
+            // Armed around the one call, so nothing the oracle itself needs is refused.
+            ledger.allow(refusal_index);
+            status_t const reported = verb_ == refused_verb_t::stage_k ? transaction->stage() : transaction->rollback();
+            ledger.allow(unlimited_budget_k);
+            refusals = ledger.refusals;
+
+            if (failed(reported)) expect_holds(store, first_commit, "after the refused verb");
+            bool const emptied = verb_ == refused_verb_t::rollback_k && failed(reported);
+            if (verb_ == refused_verb_t::rollback_k || failed(reported)) expect_equal(transaction->stage(), success_k);
+            expect_equal(transaction->commit(), success_k);
+            expect_holds(store, emptied ? first_commit : both_commits, "after the retried commit");
+        }
+        ledger.check_balanced();
+        if (refusals == 0) break; // ? An index past what the verb asks for refuses nothing
+        refused_requests += refusals;
+    }
+    expect_true(refused_requests > 0u, "the verb never reached the allocator, so nothing was refused");
+}
+
+/** Sweeps the allocator under both verbs of a reused transaction that can lose memory. */
+template <typename store_type_>
+void check_refusals_spare_a_reused_transaction() {
+    sweep_reused_transaction_refusals<store_type_, refused_verb_t::stage_k>();
+    sweep_reused_transaction_refusals<store_type_, refused_verb_t::rollback_k>();
 }
 
 #pragma endregion Batch Atomicity Test Templates
