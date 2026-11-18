@@ -17,14 +17,16 @@
  *  @verify fail rc11 take_read_modify_write=false: with a plain acquire load, a commit landing
  *      after the reader took its stamp scans the buckets without seeing the join, and its mark
  *      passes the stamp the reader holds
+ *  @verify pass sc,rc11 join_unconditional=1: the add that always lands is backed out where the
+ *      bucket was recycled ahead of the joiner, and the unit it held meanwhile only lowers a mark
  */
 #define thread_count 3
-#define location_count 9
-#define history_depth 6
+#define location_count (7 + ring_words)
+#define history_depth 7
 #include <commit_order/protocol.pml>
 
 proctype committer(byte t) {
-    byte scanned;
+    byte scanned, landed_run;
     int seen, observed, opened, least, mark, drawn;
     bool exchanged, moved;
     commit(t);
@@ -34,8 +36,8 @@ proctype committer(byte t) {
 
 /** @c take_snapshot: the bucket joined, then the watermark read newest, and nothing re-read. */
 proctype reader(byte t) {
-    byte joined;
-    int observed, opened, snapshot;
+    byte joined, scanned;
+    int observed, opened, least, mark, refused, snapshot;
     bool exchanged;
     take_snapshot(t, joined, snapshot);
     atomic { reader_snapshot = snapshot; reader_settled = true; assert(freed_below <= snapshot) }

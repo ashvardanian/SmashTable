@@ -5,26 +5,42 @@
  *  @brief The census of @c basic_commit_order: the buckets readers join, the floors they carry, and
  *      the mark, from `include/smashtable/shared.hpp` under the steps of `commit_order_steps.pml`.
  *
- *  The stamps @c begin_commit draws from @c commits_, the ring of marks @c end_commit lands into
- *  and walks the watermark through, the buckets @c take_snapshot joins and @c retire_snapshot_
+ *  The stamps @c begin_commit draws from @c commits_, the word @c end_commit flips a bit of and
+ *  raises the watermark from, the buckets @c take_snapshot joins and @c retire_snapshot_
  *  leaves, the member @c share_snapshot posts onto a claim that is still live, and the mark
  *  @c republish_mark_ computes from the watermark and the occupied buckets. The commit order
  *  carries no mutex at all, and three orderings stand in its place.
  *
  *  - The mark never passes a snapshot a live claim names, which @c record_mark checks.
  */
+#define ring 2
+
+/** One or zero, as <tt>commit_order_steps.pml</tt> asks: it lays out the words below. */
+#ifndef parity_word
+#define parity_word 1
+#endif
+#if parity_word
+#define word_bits 4
+#define window ring
+#define ring_words 1
+#else
+#define ring_words ring
+#endif
 #include <weak_memory.pml>
 #include <monitor_wait.pml>
 
-#define ring 2
-
-/** The words: the stamp counter, the watermark, the ring of marks, and the census readers join. */
+/** The words: the stamp counter, the watermark, the word of landings or the ring of marks, and the
+ *  census readers join. */
 #define commits 0
 #define published_stamp 1
+#if parity_word
+#define landed_parity 2
+#else
 #define landed_at(slot) (2 + (slot))
-#define head (2 + ring)
-#define members(bucket) (3 + ring + (bucket))
-#define floors(bucket) (3 + ring + buckets + (bucket))
+#endif
+#define head (2 + ring_words)
+#define members(bucket) (3 + ring_words + (bucket))
+#define floors(bucket) (3 + ring_words + buckets + (bucket))
 
 /** The knob: how many floors the census keeps, which is @c buckets_k. */
 #ifndef buckets

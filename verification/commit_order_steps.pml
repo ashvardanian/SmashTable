@@ -14,12 +14,18 @@
  *
  *  - @c commits, the counter @c begin_commit adds to, which is @c commits_.
  *  - @c published_stamp, the watermark, which is @c published_stamp_.
- *  - @c landed_at of a slot in `0 .. ring - 1`, which is @c landed_ indexed by stamp.
+ *  - @c landed_parity, one word of @c word_bits flipped per landing, which is @c landed_parity_;
+ *    the model also sizes @c window, which is @c window_k, and @c ring is then the uncapped wait a
+ *    replay may put in its place.
+ *  - With @c parity_word=0, @c landed_at of a slot in <tt>0 .. ring - 1</tt> in its place, which is the
+ *    ring of stamps the word replaced, kept for the replays that walk it.
  *  - With a census, @c head, the monotone bucket cursor, which is @c head_.
  *  - With a census, @c members of a bucket, the tagged live count, which is @c snapshots_.
  *  - With a census, @c floors of a bucket, the watermark each bucket was opened at.
- *  - Scratch: <tt>int seen, observed, opened, least, mark</tt>, <tt>byte scanned</tt>,
- *    <tt>bool exchanged, moved</tt>.
+ *  - Scratch: <tt>int seen, observed, opened, least, mark</tt>, <tt>byte scanned, landed_run</tt>,
+ *    and <tt>bool exchanged, moved</tt>.
+ *  - With @c join_unconditional, a joiner also carries the scratch of @c republish_mark and
+ *    <tt>int refused</tt>, and the model's own @c record_mark judges the mark its back-out computes.
  */
 #if ring < 1
 #error "ring is one or more"
@@ -57,6 +63,30 @@
 #define share_order order_release
 #endif
 
+/** One or zero, never true or false: the preprocessor gates on it and reads a word as zero. */
+#ifndef join_unconditional
+#define join_unconditional 0
+#endif
+#ifndef parity_word
+#define parity_word 1
+#endif
+#ifndef read_before_flip
+#define read_before_flip false
+#endif
+#ifndef own_stamp_return
+#define own_stamp_return true
+#endif
+#ifndef wait_bound
+#if parity_word
+#define wait_bound window
+#else
+#define wait_bound ring
+#endif
+#endif
+#ifndef run_bound
+#define run_bound word_bits
+#endif
+
 /** The head value that opened a bucket sits above its live count in one word, as @c snapshots_
  *  packs a tag over a count; eight leaves room for every count and every head value a model
  *  this size reaches. */
@@ -80,8 +110,36 @@ inline raise_word(t, word, floor_value) {
 /** Models @c basic_commit_order::record_snapshot_ in `shared.hpp`: one member more under a bounded
  *  add, and the add succeeding is the whole answer. The ceiling refuses only a tag above the head
  *  just read, which a bucket recycled ahead of this thread carries; a tag below it is a bucket this
- *  thread shares, whose older floor still bounds it. */
+ *  thread shares, whose older floor still bounds it. With @c join_unconditional the add always
+ *  lands, and a joiner that finds the word above the ceiling leaves as any member does, through
+ *  @c retire_snapshot, which republishes the mark where its unit was the last. */
 inline join_head(t, joined) {
+#if join_unconditional
+    atomic { load(t, head, order_relaxed, opened); joined = bucket_of(opened) };
+    do
+    :: atomic {
+           read_modify_write(t, members(joined), order_acq_rel, observed, observed + 1);
+           exchanged = observed <= ceiling_of(opened)
+       };
+       if
+       :: exchanged -> exchanged = false; break
+       :: else ->
+           refused = opened;
+           retire_snapshot(t, joined);
+           atomic { record_mark(mark); mark = 0; exchanged = false };
+           // A refusal names a raised head; rereading the stale one only repeats this turn
+           do
+           :: atomic {
+                  load(t, head, order_relaxed, opened);
+                  if
+                  :: opened != refused -> joined = bucket_of(opened); refused = 0; break
+                  :: else
+                  fi
+              }
+           od
+       fi
+    od
+#else
     do
     :: atomic { load(t, head, order_relaxed, opened); joined = bucket_of(opened) };
        atomic {
@@ -93,6 +151,7 @@ inline join_head(t, joined) {
            fi
        }
     od
+#endif
 }
 
 /** Models @c basic_commit_order::open_next_bucket_ in `shared.hpp`: the bucket the next head names,
@@ -215,10 +274,30 @@ inline draw_stamp(t, drawn) {
     atomic { read_modify_write(t, commits, order_relaxed, seen, seen + 1); drawn = seen + 1 }
 }
 
+#if parity_word
+#if window < 1 || ring < window || word_bits < ring
+#error "window is one or more, ring at least window, and word_bits at least ring"
+#endif
+
+#define word_mask ((1 << word_bits) - 1)
+
+/** The word as it reads when every stamp through @p through landed and nothing above it, which is
+ *  @c parity_through_: every bit when the laps so far are odd, with bits one through the stamp's
+ *  own flipped once more. */
+#define parity_through(through) \
+    (((((through) / word_bits) & 1) * word_mask) ^ \
+     ((word_mask >> (word_bits - 1 - ((through) % word_bits))) & (word_mask - 1)))
+#define rotated_right(word, turns) ((((word) >> (turns)) | ((word) << (word_bits - (turns)))) & word_mask)
+
+int flipped; // bit `stamp` once that stamp flipped its bit, which no word of the order remembers
+#endif
+
 /** Models @c basic_commit_order::end_commit in `shared.hpp`: the slot this stamp is about to reuse
  *  waited for, parked on the watermark between two loads, the mark released into it, the watermark
  *  read newest, the ring walked while the next slot carries the next stamp, and the parked
- *  committers woken where the walk moved the watermark. A model with a census follows it with
+ *  committers woken where the walk moved the watermark. With @c parity_word the mark is one bit
+ *  flipped in a word read back by the same instruction, the watermark is loaded after it, and the
+ *  landed run above the watermark is published by one raise. A model with a census follows it with
  *  @c republish_mark where @c moved says so, which is the rest of @c end_commit. */
 inline land_stamp(t, drawn) {
     // Waited here rather than at the draw, so the write happened during the overlap rather than
@@ -229,7 +308,7 @@ inline land_stamp(t, drawn) {
         :: atomic {
                load(t, published_stamp, order_acquire, seen);
                if
-               :: drawn - seen > ring -> skip
+               :: drawn - seen > wait_bound -> skip
                :: else -> break
                fi
            };
@@ -237,6 +316,54 @@ inline land_stamp(t, drawn) {
         od
     :: else
     fi;
+#if parity_word
+    if
+    :: read_before_flip -> load(t, published_stamp, order_acquire, seen)
+    :: else
+    fi;
+    atomic {
+        read_modify_write(t, landed_parity, order_acq_rel, observed, observed ^ (1 << (drawn % word_bits)));
+        observed = observed ^ (1 << (drawn % word_bits));
+        flipped = flipped | (1 << drawn)
+    };
+    // After the flip: an older watermark only shortens the run, a newer one misreads it
+    if
+    :: !read_before_flip -> load(t, published_stamp, order_acquire, seen)
+    :: else
+    fi;
+    atomic {
+        moved = false;
+        landed_run = 0;
+        if
+        // The word was read before the watermark passed this stamp, so its low bits are a lap stale
+        :: own_stamp_return && seen >= drawn
+        :: else ->
+            observed = rotated_right(observed ^ parity_through(seen), (seen + 1) % word_bits);
+            do
+            :: landed_run < run_bound && ((observed >> landed_run) & 1) == 1 -> landed_run++
+            :: else -> break
+            od;
+            // The capped wait and the watermark read after the flip keep the run inside the window
+            assert(!ring_check || read_before_flip || landed_run <= wait_bound)
+        fi;
+        observed = 0
+    };
+    if
+    :: landed_run > 0 ->
+        atomic {
+            assert(((flipped >> 1) & ((1 << (seen + landed_run)) - 1)) == ((1 << (seen + landed_run)) - 1));
+            read_modify_write_if(t, published_stamp, order_acq_rel, observed < seen + landed_run, observed,
+                                 seen + landed_run);
+            moved = observed < seen + landed_run;
+            landed_run = 0;
+            if
+            :: moved && watermark_notify -> wake(published_stamp)
+            :: else
+            fi
+        }
+    :: else
+    fi
+#else
     // The slot's previous stamp is one the watermark already passed, or its mark would be lost.
     atomic {
         assert(drawn - newest_value(published_stamp) <= ring);
@@ -275,6 +402,7 @@ inline land_stamp(t, drawn) {
            fi
        }
     od
+#endif
 }
 
 /** Models @c basic_commit_order::take_snapshot in `shared.hpp` over a census: the bucket joined,

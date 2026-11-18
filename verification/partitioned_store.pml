@@ -29,8 +29,20 @@
  */
 #define partitions 2
 #define ring 2
+
+/** One or zero, as <tt>commit_order_steps.pml</tt> asks: it lays out the words below. */
+#ifndef parity_word
+#define parity_word 1
+#endif
+#if parity_word
+#define word_bits 4
+#define window ring
+#define ring_words 1
+#else
+#define ring_words ring
+#endif
 #define thread_count 3
-#define location_count 12
+#define location_count (3 * partitions + 4 + ring_words)
 #define history_depth 18
 #include <weak_memory.pml>
 #include <monitor_wait.pml>
@@ -45,7 +57,11 @@
 #define done (3 * partitions + 1)
 #define commits (3 * partitions + 2)
 #define published_stamp (3 * partitions + 3)
+#if parity_word
+#define landed_parity (3 * partitions + 4)
+#else
 #define landed_at(slot) (3 * partitions + 4 + (slot))
+#endif
 
 /** The keys, one bit each: the first partition holds two, the second four, and the writer inserts
  *  one, the least of all. */
@@ -87,7 +103,7 @@ inline read_front(t, partition, contents) {
 /** @c publish_every_part_: every partition held ascending, the key and the version written under
  *  one stamp, the partitions given back, then every count stepped and the flag released. */
 proctype writer(byte t) {
-    byte partition;
+    byte partition, landed_run;
     int seen, observed, drawn;
     bool moved;
     lock(t, mutex(0));
@@ -137,6 +153,7 @@ proctype cursor(byte t) {
 /** A transaction over the second partition: validated, stamped, written and landed under one hold,
  *  its count stepped before the hold goes. */
 proctype committer(byte t) {
+    byte landed_run;
     int seen, observed, drawn, validated;
     bool moved;
     lock(t, mutex(1));

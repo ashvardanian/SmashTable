@@ -17,14 +17,16 @@
  *  @verify fail sc buckets=1: with one, a reader handing over to the next pins the first
  *      one's floor for good, which is the configuration the <tt>buckets_k >= 2</tt> static
  *      assert refuses outright
+ *  @verify pass sc join_unconditional=1: the head still rotates under a joiner whose add always
+ *      lands, and the successor is held to the watermark it joined under
  */
 #define thread_count 4
-#define location_count 9
+#define location_count (7 + ring_words)
 #define history_depth 8
 #include <commit_order/protocol.pml>
 
 proctype committer(byte t) {
-    byte scanned;
+    byte scanned, landed_run;
     int seen, observed, opened, least, mark, drawn;
     bool exchanged, moved;
     commit(t);
@@ -36,7 +38,7 @@ proctype committer(byte t) {
  *  retired, which leaves the successor's floor the only one the mark still stands at. */
 proctype reader(byte t) {
     byte joined, scanned;
-    int observed, opened, least, mark, snapshot;
+    int observed, opened, least, mark, refused, snapshot;
     bool exchanged;
     take_snapshot(t, joined, snapshot);
     atomic { reader_snapshot = snapshot; reader_settled = true };
@@ -49,8 +51,8 @@ proctype reader(byte t) {
 /** A snapshot of its own, taken once the commit landed and while the first claim is still held,
  *  which is the bucket the head has to have rotated out of. */
 proctype successor(byte t) {
-    byte joined;
-    int observed, opened, snapshot;
+    byte joined, scanned;
+    int observed, opened, least, mark, refused, snapshot;
     bool exchanged;
     (reader_settled && finished == 1);
     take_snapshot(t, joined, snapshot);

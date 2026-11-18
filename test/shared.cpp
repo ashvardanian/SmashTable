@@ -1398,6 +1398,155 @@ static void test_commit_order_resume_refusals() {
     }
 }
 
+/** The order with every word owned through ForkUnion's reference. */
+using forkunion_order_t =
+    basic_commit_order<16, 4, order_sharing_t::shared_k, fu::preferred_yield_t, fu::preferred_atomic_ref>;
+
+using smashtable::commit_order_t;
+using smashtable::solitary_commit_order_t;
+
+/** Two commits in flight, so four committers wait for room on most landings. */
+using narrow_order_t = basic_commit_order<2>;
+
+/** More commits in flight than half the word, so the window is what bounds a landing. */
+using wide_order_t = basic_commit_order<64>;
+using forkunion_narrow_order_t =
+    basic_commit_order<2, 4, order_sharing_t::shared_k, fu::preferred_yield_t, fu::preferred_atomic_ref>;
+
+/** The ring the parity word replaced, kept as its oracle: slot @c stamp % ring_ holds a stamp once
+ *  that commit landed, and the watermark walks one slot at a time. */
+template <std::size_t ring_>
+struct ring_walk_order {
+    std::atomic<generation_t> commits {0};
+    std::atomic<generation_t> published {0};
+    std::array<std::atomic<generation_t>, ring_> landed {};
+
+    void resume(generation_t at) noexcept {
+        commits.store(at);
+        published.store(at);
+    }
+
+    generation_t begin_commit() noexcept { return commits.fetch_add(1) + 1; }
+
+    void end_commit(generation_t stamp) noexcept {
+        while (stamp - published.load() > static_cast<generation_t>(ring_)) std::this_thread::yield();
+        landed[static_cast<std::size_t>(stamp) % ring_].store(stamp);
+        generation_t seen = published.load();
+        while (landed[static_cast<std::size_t>(seen + 1) % ring_].load() == seen + 1) {
+            generation_t before = published.load();
+            while (before < seen + 1 && !published.compare_exchange_weak(before, seen + 1)) {}
+            seen = before < seen + 1 ? seen + 1 : before;
+        }
+    }
+};
+
+/** Lands @p landings stamps above the watermark of @p order on it and on the ring, four threads
+ *  taking turns, each landing a random unlanded stamp inside the window, and expects the same
+ *  watermark after every one. */
+template <typename order_type_>
+static void check_landings_match_ring_walk(order_type_ &order, std::size_t landings) {
+    using flight_t = typename order_type_::commit_in_flight_t;
+    constexpr std::size_t threads_k = 4;
+    generation_t const resumed = order.published_stamp();
+    ring_walk_order<order_type_::ring_k> ring;
+    ring.resume(resumed);
+
+    split_mix_generator_t generator {case_stream_key(static_cast<std::uint64_t>(resumed))};
+    std::vector<std::size_t> landing_order;
+    std::vector<std::uint8_t> is_landed(landings, 0);
+    for (std::size_t lowest = 0; lowest != landings;) {
+        std::size_t const left = landings - lowest;
+        std::size_t const picked =
+            lowest + generator.below(left < order_type_::window_k ? left : order_type_::window_k);
+        if (is_landed[picked]) continue;
+        is_landed[picked] = 1;
+        landing_order.push_back(picked);
+        while (lowest != landings && is_landed[lowest]) ++lowest;
+    }
+
+    std::vector<flight_t> flights(landings);
+    std::vector<generation_t> word_watermarks(landings), ring_watermarks(landings);
+    std::atomic<std::size_t> turn {0};
+    std::size_t drawn = 0;
+    std::vector<std::thread> threads;
+    for (std::size_t thread = 0; thread != threads_k; ++thread)
+        threads.emplace_back([&, thread]() noexcept {
+            for (std::size_t step = thread; step < landings; step += threads_k) {
+                while (turn.load() != step) std::this_thread::yield();
+                std::size_t const picked = landing_order[step];
+                for (; drawn <= picked; ++drawn) {
+                    order.begin_commit(flights[drawn]);
+                    ring.begin_commit();
+                }
+                order.end_commit(flights[picked]);
+                ring.end_commit(static_cast<generation_t>(flights[picked].stamp()));
+                word_watermarks[step] = order.published_stamp();
+                ring_watermarks[step] = ring.published.load();
+                turn.store(step + 1);
+            }
+        });
+    for (std::thread &thread : threads) thread.join();
+
+    expect_true(word_watermarks == ring_watermarks, "the word raises the watermark where the ring walked it");
+    expect_equal(order.published_stamp(), resumed + static_cast<generation_t>(landings));
+    expect_equal(order.drawn_stamp(), order.published_stamp());
+    expect_equal(order.low_water_mark(), order.published_stamp());
+}
+
+/** One bit flipped per landing publishes what the ring walk did: from a fresh order, from one
+ *  resumed just below a lap of the word and one far above it, and from one adopted mid-lap. */
+template <typename order_type_>
+static void test_commit_order_parity_matches_ring_walk() {
+    constexpr std::size_t landings_k = 1000; // an odd count of laps and a part of one, so an adopted word is not zero
+    order_type_ fresh;
+    check_landings_match_ring_walk(fresh, landings_k);
+
+    for (generation_t const durable : {generation_t {61}, generation_t {(1 << 20) + 127}}) {
+        order_type_ resumed;
+        expect_equal(resumed.resume(durable), success_k);
+        check_landings_match_ring_walk(resumed, landings_k);
+    }
+
+    order_type_ adopted;
+    adopted.adopt(fresh);
+    check_landings_match_ring_walk(adopted, landings_k);
+}
+
+/** Committers racing through a window narrower than their count land every stamp: the watermark
+ *  covers each one's stamp once it asks, and ends on the newest drawn, where the ring's ends. */
+template <typename order_type_>
+static void test_commit_order_parity_lands_racing_commits() {
+    constexpr std::size_t committers_k = 4;
+    std::size_t const commits = scaled_iterations(5000);
+    order_type_ order;
+    ring_walk_order<order_type_::ring_k> ring;
+    std::atomic<bool> uncovered {false};
+
+    std::vector<std::thread> threads;
+    for (std::size_t committer = 0; committer != committers_k; ++committer)
+        threads.emplace_back([&, committer]() noexcept {
+            split_mix_generator_t generator {case_stream_key(committer)};
+            for (std::size_t commit = 0; commit != commits; ++commit) {
+                typename order_type_::commit_in_flight_t landing;
+                order.begin_commit(landing);
+                generation_t const ring_stamp = ring.begin_commit();
+                if (generator.below(4) == 0) std::this_thread::yield();
+                order.end_commit(landing);
+                ring.end_commit(ring_stamp);
+                order.await_published(landing.stamp());
+                if (order.published_stamp() < static_cast<generation_t>(landing.stamp())) uncovered.store(true);
+            }
+        });
+    for (std::thread &thread : threads) thread.join();
+
+    generation_t const drawn = static_cast<generation_t>(committers_k * commits);
+    expect_true(!uncovered.load(), "a committer reads its own stamp once the watermark was awaited");
+    expect_equal(order.published_stamp(), drawn);
+    expect_equal(ring.published.load(), drawn);
+    expect_equal(order.drawn_stamp(), drawn);
+    expect_equal(order.low_water_mark(), drawn);
+}
+
 #pragma endregion Commit Order Tests
 
 #pragma region Ordering Tests
@@ -1792,6 +1941,18 @@ int main(int argc, char **argv) {
     run_test_case("test_commit_order_resume_continues_stamps", test_commit_order_resume_continues_stamps);
     run_test_case("test_commit_order_resume_reaches_its_stores", test_commit_order_resume_reaches_its_stores);
     run_test_case("test_commit_order_resume_refusals", test_commit_order_resume_refusals);
+    run_test_case("test_commit_order_parity_matches_ring_walk<commit_order_t>",
+                  test_commit_order_parity_matches_ring_walk<commit_order_t>);
+    run_test_case("test_commit_order_parity_matches_ring_walk<wide_order_t>",
+                  test_commit_order_parity_matches_ring_walk<wide_order_t>);
+    run_test_case("test_commit_order_parity_matches_ring_walk<forkunion_order_t>",
+                  test_commit_order_parity_matches_ring_walk<forkunion_order_t>);
+    run_test_case("test_commit_order_parity_matches_ring_walk<solitary_commit_order_t>",
+                  test_commit_order_parity_matches_ring_walk<solitary_commit_order_t>);
+    run_test_case("test_commit_order_parity_lands_racing_commits<narrow_order_t>",
+                  test_commit_order_parity_lands_racing_commits<narrow_order_t>);
+    run_test_case("test_commit_order_parity_lands_racing_commits<forkunion_narrow_order_t>",
+                  test_commit_order_parity_lands_racing_commits<forkunion_narrow_order_t>);
 
     run_test_case("test_versioned_comparator_orders_by_key_then_generation",
                   test_versioned_comparator_orders_by_key_then_generation);

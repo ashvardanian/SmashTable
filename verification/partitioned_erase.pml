@@ -21,8 +21,20 @@
  */
 #define partitions 2
 #define ring 2
+
+/** One or zero, as <tt>commit_order_steps.pml</tt> asks: it lays out the words below. */
+#ifndef parity_word
+#define parity_word 1
+#endif
+#if parity_word
+#define word_bits 4
+#define window ring
+#define ring_words 1
+#else
+#define ring_words ring
+#endif
 #define thread_count 3
-#define location_count (2 * partitions + 2 + ring)
+#define location_count (2 * partitions + 2 + ring_words)
 #define history_depth 10
 #include <weak_memory.pml>
 #include <monitor_wait.pml>
@@ -34,7 +46,11 @@
 #define tombstone(partition) (partitions + (partition))
 #define commits (2 * partitions)
 #define published_stamp (2 * partitions + 1)
+#if parity_word
+#define landed_parity (2 * partitions + 2)
+#else
 #define landed_at(slot) (2 * partitions + 2 + (slot))
+#endif
 
 /** The knob: the header's choice, which a `@verify` line overrides to replay its counterexample. */
 #ifndef one_stamp
@@ -46,7 +62,7 @@
 /** Every partition held ascending, the tombstones written, the stamp landed:
  *  @c partitioned_store::publish_every_part_. */
 proctype eraser(byte t) {
-    byte partition;
+    byte partition, landed_run;
     int seen, observed, drawn;
     bool moved;
     // `every_part_lock`, ascending and exclusive, held from the first staging to the last prune

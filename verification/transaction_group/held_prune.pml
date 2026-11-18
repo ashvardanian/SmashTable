@@ -26,8 +26,8 @@
  *  @verify pass sc,rc11 nested=true second_group=false blind_entry=false
  *  @verify pass sc ring=1: every commit past the oldest waits for ring room under its holds
  *  @verify pass sc nested=true ring=1
- *  @verify fail sc ring=1 ring_check=false: a group lands over the committer's mark, so the wait
- *      for ring room under the holds is reached
+ *  @verify fail sc parity_word=0 ring=1 ring_check=false: a group lands over the committer's mark
+ *      in the ring of stamps, so the wait for room under the holds is reached
  *  @verify pass sc queued=true
  *  @verify pass sc locked_hold_through_prune=false partition_hold_through_prune=false: both stores
  *      giving their holds up as they publish, each prune takes its store back holding nothing
@@ -43,8 +43,20 @@
 #ifndef ring
 #define ring 2
 #endif
+
+/** One or zero, as <tt>commit_order_steps.pml</tt> asks: it lays out the words below. */
+#ifndef parity_word
+#define parity_word 1
+#endif
+#if parity_word
+#define word_bits 4
+#define window ring
+#define ring_words 1
+#else
+#define ring_words ring
+#endif
 #define thread_count 4
-#define location_count (7 + ring)
+#define location_count (7 + ring_words)
 #define history_depth 16
 #include <weak_memory.pml>
 #include <monitor_wait.pml>
@@ -58,7 +70,11 @@
 #define commits 3
 #define published_stamp 4
 #define stamp_at(reached) (5 + (reached))
+#if parity_word
+#define landed_parity 7
+#else
 #define landed_at(slot) (7 + (slot))
+#endif
 
 /** The knobs: the header's choices, which <tt>@verify</tt> lines override to replay counterexamples. */
 #ifndef locked_hold_through_prune
@@ -115,6 +131,7 @@ inline prune_partition(t) {
 
 /** @c transaction_group::commit in <tt>shared.hpp</tt>, where the participants share one order. */
 proctype group(byte t) {
+    byte landed_run;
     int seen, observed, drawn, snapshot;
     bool moved;
     // `validate_participants_`: every hold taken, ascending, before the stamp is drawn
@@ -163,6 +180,7 @@ proctype group(byte t) {
 /** A commit over a partition no group reaches, landing under its hold and awaiting its own
  *  publication once the hold is gone. */
 proctype committer(byte t) {
+    byte landed_run;
     int seen, observed, drawn;
     bool moved;
     lock(t, mutex(2));

@@ -49,7 +49,7 @@
 
 #include <array>       // `std::array`
 #include <atomic>      // `std::atomic_ref`
-#include <bit>         // `std::countl_zero`
+#include <bit>         // `std::countl_zero`, `std::countr_one`, `std::rotr`
 #include <compare>     // `std::compare_three_way`, for the total order over unrelated pointers
 #include <concepts>    // `std::convertible_to`, `std::same_as`, `std::integral`, `std::unsigned_integral`
 #include <limits>      // `std::numeric_limits`
@@ -61,7 +61,7 @@
 
 #if defined(__CUDACC__)
 #include <cuda/atomic>  // `cuda::atomic_ref`
-#include <cuda/std/bit> // `cuda::std::popcount`, `cuda::std::countr_zero`
+#include <cuda/std/bit> // `cuda::std::popcount`, `cuda::std::countr_zero`, `cuda::std::rotr`
 #endif
 
 #define SMASHTABLE_VERSION_MAJOR 1
@@ -2000,14 +2000,18 @@ static_assert(cache_line_bytes_k >= 32 && (cache_line_bytes_k & (cache_line_byte
 #if defined(__CUDACC__)
 
 using ::cuda::std::countl_zero;
+using ::cuda::std::countr_one;
 using ::cuda::std::countr_zero;
 using ::cuda::std::popcount;
+using ::cuda::std::rotr;
 
 #else
 
 using std::countl_zero;
+using std::countr_one;
 using std::countr_zero;
 using std::popcount;
+using std::rotr;
 
 #endif
 
@@ -4510,14 +4514,15 @@ enum class order_sharing_t : bool {
  *
  *  @section commit_order_publication Publication
  *
- *  Commits are a ring indexed by stamp. Drawing a stamp is one unconditional add, so a committer
- *  never waits for room; landing is what waits, and only for the stamp whose slot it is about to
- *  reuse. The watermark then walks forward through consecutive landed slots, so it stops one below
- *  the oldest commit still in flight and never covers a stamp whose versions are still being
- *  written. A later commit that finishes first stays invisible until the earlier one lands, when
- *  both appear together.
+ *  Commits land in one word of parities, each flipping the bit its stamp names. Drawing a stamp is
+ *  one unconditional add, so a committer never waits for room; landing is what waits, and only
+ *  while its stamp stands a window above the watermark, where its bit could still be read as the
+ *  stamp a lap below. The watermark then rises over the run of consecutive landed stamps above it
+ *  in one step, so it stops one below the oldest commit still in flight and never covers a stamp
+ *  whose versions are still being written. A later commit that finishes first stays invisible until
+ *  the earlier one lands, when both appear together.
  *
- *  The ring is correct at every size down to one, where it degenerates to publishing in stamp
+ *  The window is correct at every size down to one, where it degenerates to publishing in stamp
  *  order; @p commits_in_flight_ chooses only how often a committer waits, never what the watermark
  *  means. What bounds it is not the core count: a committer holds its locks across the whole span
  *  between @c begin_commit and @c end_commit, so two commits in flight hold disjoint lock sets, and
@@ -4546,11 +4551,12 @@ enum class order_sharing_t : bool {
  *  watermark through a read-modify-write, so a mark computed after the join counts it, and one
  *  computed before it stands at or below the stamp the reader is handed. A mark reads the watermark
  *  through a read-modify-write @b before scanning the buckets, never after, or a reader joining in
- *  between is missed. A landed commit reads the watermark through a read-modify-write before it
- *  walks the ring, or two commits landing at once store-buffer past each other and a mark is left
- *  for the next commit to find. A bucket is also retagged shut to arrivals @b before its floor is
- *  stored, which keeps the floor from moving under a member; a joiner the retag misses read the
- *  watermark before the opener did, so the floor stays at or below its snapshot either way.
+ *  between is missed. A landing commit flips its bit and reads the word back @b before it loads the
+ *  watermark, so the later of two flips counts both, and it returns once that watermark covers its
+ *  own stamp, since the word it read is then a lap stale. A bucket is also retagged shut to
+ *  arrivals @b before its floor is stored, which keeps the floor from moving under a member; a
+ *  joiner the retag misses read the watermark before the opener did, so the floor stays at or below
+ *  its snapshot either way.
  *
  *  Under @c solitary_k none of that applies, because there is no second thread to order against.
  *
@@ -4590,6 +4596,18 @@ class basic_commit_order {
     static constexpr order_sharing_t sharing_k = sharing_;
 
     static_assert(ring_k >= 1 && buckets_k >= 2, "the head rotates into another bucket, so there must be one");
+
+  private:
+    /** The word of landings, one bit per stamp modulo its width. */
+    using parity_word_t = std::uint64_t;
+
+    /** How many stamps the word tells apart before a bit names two of them. */
+    static constexpr std::size_t parity_bits_k = std::numeric_limits<parity_word_t>::digits;
+
+  public:
+    /** How far above the watermark a commit may land: half the word at most, so no landed run
+     *  reaches the bits of stamps the watermark already passed. */
+    static constexpr std::size_t window_k = ring_k < parity_bits_k / 2 ? ring_k : parity_bits_k / 2;
 
   private:
     /** One bucket's word, and the monotone cursor naming which bucket a new snapshot lands in. */
@@ -4685,8 +4703,8 @@ class basic_commit_order {
 
   public:
     /** One commit that has drawn its stamp and has not finished writing it everywhere yet: the
-     *  stamp alone, since the ring slot it lands in is named by the stamp, so it may live anywhere
-     *  and needs no linking. */
+     *  stamp alone, since the stamp names the bit it flips on landing, so it may live anywhere and
+     *  needs no linking. */
     class commit_in_flight_t {
         friend class basic_commit_order;
 
@@ -4776,8 +4794,8 @@ class basic_commit_order {
     /** Which bucket arrivals join, monotone, so a bucket is recycled only after it has drained. */
     alignas(word_alignment_k) bucket_word_t head_ {0};
 
-    /** The ring: slot @c stamp % ring_k holds @c stamp once that commit has landed. */
-    alignas(word_alignment_k) generation_t landed_[ring_k] {};
+    /** Bit @c stamp % parity_bits_k flips once that commit has landed. */
+    alignas(word_alignment_k) parity_word_t landed_parity_ {0};
 
     /** How many words apart two buckets sit, so each contended one owns its line. */
     static constexpr std::size_t bucket_stride_k = word_alignment_k / sizeof(bucket_snapshots_t);
@@ -4791,9 +4809,23 @@ class basic_commit_order {
     /** What a committer waiting for ring room does with its core. */
     SMASHTABLE_NO_UNIQUE_ADDRESS_ waiting_policy_type_ waiting_ {};
 
-    /** Which ring slot @p stamp lands in. */
-    static constexpr std::size_t ring_slot_(generation_t stamp) noexcept {
-        return static_cast<std::size_t>(stamp) % ring_k;
+    /** Which bit of the word @p stamp flips. */
+    static constexpr unsigned parity_bit_(generation_t stamp) noexcept {
+        return static_cast<unsigned>(static_cast<parity_word_t>(stamp) % parity_bits_k);
+    }
+
+    /** The word as it reads once every stamp through @p through landed and none above it: every bit
+     *  where the laps so far are odd, with bits one through the stamp's own flipped once more. */
+    static constexpr parity_word_t parity_through_(generation_t through) noexcept {
+        parity_word_t const odd_laps = parity_word_t {0} - ((static_cast<parity_word_t>(through) / parity_bits_k) & 1);
+        parity_word_t const this_lap = ~parity_word_t {0} >> (parity_bits_k - 1 - parity_bit_(through));
+        return odd_laps ^ (this_lap & ~parity_word_t {1});
+    }
+
+    /** How many consecutive stamps above @p seen the word @p landed counts as landed. */
+    static constexpr generation_t landed_run_(parity_word_t landed, generation_t seen) noexcept {
+        parity_word_t const above = landed ^ parity_through_(seen);
+        return countr_one(rotr(above, static_cast<int>(parity_bit_(seen + 1))));
     }
 
     /** Which bucket the head value @p opened names. */
@@ -4970,48 +5002,48 @@ class basic_commit_order {
                "the drawn stamp would mark every version it commits as never committed");
     }
 
-    /** Records that every version of @p node is written, and walks the watermark through every
+    /** Records that every version of @p node is written, and raises the watermark over every
      *  landed stamp above it: one below the oldest commit still in flight, or all the way to the
      *  newest drawn when none is. */
     void end_commit(commit_in_flight_t &node) noexcept {
         generation_t const stamp = node.stamp_;
         if constexpr (sharing_ == order_sharing_t::solitary_k) {
-            landed_[ring_slot_(stamp)] = stamp;
-            generation_t seen = published_stamp_;
-            while (landed_[ring_slot_(seen + 1)] == seen + 1) ++seen;
-            if (seen == published_stamp_) return;
-            published_stamp_ = seen;
-            republish_mark_(seen);
+            assert(stamp - published_stamp_ <= static_cast<generation_t>(window_k) &&
+                   "one thread has nobody to wait for, so it lands inside the window");
+            landed_parity_ ^= parity_word_t {1} << parity_bit_(stamp);
+            generation_t const seen = published_stamp_;
+            generation_t const run = landed_run_(landed_parity_, seen);
+            if (run == 0) return;
+            published_stamp_ = seen + run;
+            republish_mark_(seen + run);
             return;
         }
         else {
             atomic_reference_<generation_t> published(published_stamp_);
 
-            // This slot still holds `stamp - ring_k`, and overwriting a mark the watermark has not
-            // consumed would lose it for good. Waited here rather than at the draw, so the write already
-            // happened during the overlap rather than after it.
+            // A stamp a lap below shares this bit, and flipping it before the watermark is within a
+            // window would read as that stamp landing. Waited here rather than at the draw, so the
+            // write already happened during the overlap rather than after it.
             for (generation_t seen = published.load(memory_order_acquire_k);
-                 stamp - seen > static_cast<generation_t>(ring_k); seen = published.load(memory_order_acquire_k))
+                 stamp - seen > static_cast<generation_t>(window_k); seen = published.load(memory_order_acquire_k))
                 waiting_.wait_until_changed(&published_stamp_, seen);
 
-            atomic_reference_<generation_t>(landed_[ring_slot_(stamp)]).store(stamp, memory_order_release_k);
+            parity_word_t const bit = parity_word_t {1} << parity_bit_(stamp);
+            parity_word_t const landed =
+                atomic_reference_<parity_word_t>(landed_parity_).fetch_xor(bit, memory_order_acq_rel_k) ^ bit;
 
-            // Reading the newest, not merely loading: a plain load could miss a neighbour's mark and leave
-            // ours for the next commit to publish, which the strict rung would wait on for good.
-            generation_t seen = atomic_load_newest<atomic_reference_>(published_stamp_);
-            bool moved = false;
-            while (atomic_reference_<generation_t>(landed_[ring_slot_(seen + 1)]).load(memory_order_acquire_k) ==
-                   seen + 1) {
-                generation_t const before =
-                    atomic_fetch_max<atomic_reference_>(published_stamp_, seen + 1, memory_order_acq_rel_k);
-                moved = moved || before < seen + 1;
-                seen = before < seen + 1 ? seen + 1 : before;
-            }
-            if (!moved) return;
+            // Loaded after the flip: a watermark older than the word only shortens the run.
+            generation_t const seen = published.load(memory_order_acquire_k);
+            // The watermark passed this stamp since the word was read, so its bits are a lap stale.
+            if (seen >= stamp) return;
+            generation_t const run = landed_run_(landed, seen);
+            if (run == 0) return;
+            if (atomic_fetch_max<atomic_reference_>(published_stamp_, seen + run, memory_order_acq_rel_k) >= seen + run)
+                return;
             // A store wakes nobody, so anyone parked in `await_published` or in the wait above sleeps through
             // the very publication it waits for unless the wake goes out here.
             waiting_.notify_waiters(&published_stamp_);
-            republish_mark_(seen);
+            republish_mark_(seen + run);
         }
     }
 
@@ -5069,6 +5101,7 @@ class basic_commit_order {
         write_(commits_, published);
         write_(published_stamp_, published);
         write_(low_water_mark_, published);
+        write_(landed_parity_, parity_through_(published));
         for (generation_t &floor : floors_) write_(floor, published);
         return success_k;
     }
@@ -5078,11 +5111,12 @@ class basic_commit_order {
     void adopt(basic_commit_order const &other) noexcept {
         assert(open_snapshots() == 0 && other.open_snapshots() == 0 && "a claim names the order it was drawn from");
         assert(read_(other.commits_) == read_(other.published_stamp_) &&
-               "a commit in flight names the ring it lands in");
+               "a commit in flight names the word it lands in");
         write_(generation_, read_(other.generation_));
         write_(commits_, read_(other.commits_));
         write_(published_stamp_, read_(other.published_stamp_));
         write_(low_water_mark_, read_(other.low_water_mark_));
+        write_(landed_parity_, parity_through_(read_(other.published_stamp_)));
     }
 };
 

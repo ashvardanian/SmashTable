@@ -25,15 +25,31 @@
 #define ring 1
 #define buckets 2
 
+/** One or zero, as <tt>commit_order_steps.pml</tt> asks: it lays out the words below. */
+#ifndef parity_word
+#define parity_word 1
+#endif
+#if parity_word
+#define word_bits 4
+#define window ring
+#define ring_words 1
+#else
+#define ring_words ring
+#endif
+
 /** The words: the partition's mutex, the stamp counter and the watermark, the ring of marks, and
  *  the census the readers are counted in. */
 #define partition_mutex 0
 #define commits 1
 #define published_stamp 2
+#if parity_word
+#define landed_parity 3
+#else
 #define landed_at(slot) (3 + (slot))
-#define head (3 + ring)
-#define members(bucket) (4 + ring + (bucket))
-#define floors(bucket) (4 + ring + buckets + (bucket))
+#endif
+#define head (3 + ring_words)
+#define members(bucket) (4 + ring_words + (bucket))
+#define floors(bucket) (4 + ring_words + buckets + (bucket))
 
 /** The knobs: the header's choices, which `@verify` lines override to replay counterexamples. */
 #ifndef join_first
@@ -103,7 +119,7 @@ inline prune(at_mark) {
 /** A commit: draws its stamp, joins its version to the run, lands the stamp, and prunes at the
  *  mark it computed. */
 inline commit(t) {
-    byte slot, each, scanned, survivor;
+    byte slot, each, scanned, survivor, landed_run;
     int seen, observed, opened, least, newest_stamp, drawn, mark;
     bool exchanged, moved;
     // `begin_commit`: the stamp drawn outside the partition's lock, as the commit draws it

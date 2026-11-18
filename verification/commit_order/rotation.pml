@@ -13,16 +13,20 @@
  *  @verify pass sc,rc11
  *  @verify pass sc,rc11 bucket_retag=false: what the retag buys is a floor that never moves under a
  *      member, a shape rather than a value, which no assertion here names
+ *  @verify pass sc,rc11 join_unconditional=1: the joiner that read the head before the first
+ *      rotation adds to the recycled bucket, finds a tag above its own and leaves through the
+ *      retire, whose mark stands at or below every claim
+ *  @budget 3072
  */
 #define thread_count 3
-#define location_count 9
-#define history_depth 9
+#define location_count (7 + ring_words)
+#define history_depth 11
 #include <commit_order/protocol.pml>
 
 /** The first commit rotates the head out of the bucket it opened at, the second recycles the bucket
  *  the reader may have joined. */
 proctype committer(byte t) {
-    byte scanned;
+    byte scanned, landed_run;
     int seen, observed, opened, least, mark, drawn;
     bool exchanged, moved;
     commit(t);
@@ -35,8 +39,8 @@ proctype committer(byte t) {
 /** The joiner the second rotation recycles a bucket under: it reads the head after the first
  *  rotation, and the head it reads may be the one before it, which names that very bucket. */
 proctype reader(byte t) {
-    byte joined;
-    int observed, opened, snapshot;
+    byte joined, scanned;
+    int observed, opened, least, mark, refused, snapshot;
     bool exchanged;
     (head_rotated);
     take_snapshot(t, joined, snapshot);

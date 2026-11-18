@@ -16,12 +16,12 @@
  *      the shared snapshot
  */
 #define thread_count 3
-#define location_count 9
+#define location_count (7 + ring_words)
 #define history_depth 7
 #include <commit_order/protocol.pml>
 
 proctype committer(byte t) {
-    byte scanned;
+    byte scanned, landed_run;
     int seen, observed, opened, least, mark, drawn;
     bool exchanged, moved;
     commit(t);

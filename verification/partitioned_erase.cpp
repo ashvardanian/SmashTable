@@ -16,7 +16,8 @@
  *      drawing between two publications names the first partition's stamp and not the second's, and
  *      both observers see the window half erased
  */
-#include <atomic> // `std::atomic` - the mutexes, the tombstone stamps, the watermark and the ring
+#include <atomic> // `std::atomic` - the mutexes, the tombstone stamps, the watermark and the word of landings
+#include <bit>    // `std::countr_one`
 
 #include <genmc.hpp>
 
@@ -47,14 +48,16 @@ struct snapshot_claim_t {
     int snapshot {0};
 };
 
-constexpr int partitions_k = 2; // the partitions one window write spans
-constexpr int ring_k = 2;       // commits that may sit past the watermark, which is `ring_k`
+constexpr int partitions_k = 2;             // the partitions one window write spans
+constexpr int parity_bits_k = 4;            // the narrowest word whose window holds both stamps a mutant draws
+constexpr int window_k = parity_bits_k / 2; // how far above the watermark a commit may land
+constexpr unsigned parity_mask_k = (1u << parity_bits_k) - 1; // the bits of the word of landings
 
 spin_mutex_t partition_mutexes[partitions_k];
 std::atomic<int> tombstones[partitions_k] = {0, 0}; // zero while the key is present
 std::atomic<int> commits {0};
 std::atomic<int> published_stamp {0};
-std::atomic<int> landed[ring_k] = {0, 0};
+std::atomic<unsigned> landed_parity {0}; // bit `stamp % parity_bits_k` flips once that commit has landed
 
 /** Raises @p word to @p floor and answers what it held, which is @c atomic_max_fetch. */
 int raise_to(std::atomic<int> &word, int floor) noexcept {
@@ -68,18 +71,37 @@ int raise_to(std::atomic<int> &word, int floor) noexcept {
  *  @c basic_commit_order::begin_commit. */
 int draw_stamp() noexcept { return commits.fetch_add(1, std::memory_order_relaxed) + 1; }
 
-/** Waits for the slot, releases the mark into it and walks the watermark in stamp order. Models
- *  @c basic_commit_order::end_commit. */
+/** The word once every stamp through @p through landed and none above it. Models
+ *  @c basic_commit_order::parity_through_. */
+constexpr unsigned parity_through(int through) noexcept {
+    unsigned const odd_laps = (through / parity_bits_k) & 1 ? parity_mask_k : 0u;
+    unsigned const this_lap = parity_mask_k >> (parity_bits_k - 1 - through % parity_bits_k);
+    return odd_laps ^ (this_lap & ~1u);
+}
+
+/** How many consecutive stamps above @p seen the word @p landed counts as landed. Models
+ *  @c basic_commit_order::landed_run_. */
+constexpr int landed_run(unsigned landed, int seen) noexcept {
+    unsigned const above = landed ^ parity_through(seen);
+    int const turns = (seen + 1) % parity_bits_k;
+    return std::countr_one(((above >> turns) | (above << (parity_bits_k - turns))) & parity_mask_k);
+}
+
+/** Waits for room in the window, flips the stamp's bit and raises the watermark over the landed
+ *  run. Models @c basic_commit_order::end_commit. */
 void land_stamp(int stamp) noexcept {
-    // The slot still holds `stamp - ring_k`, and overwriting a mark the watermark has not consumed loses it.
-    while (stamp - published_stamp.load(std::memory_order_acquire) > ring_k) {}
-    landed[stamp % ring_k].store(stamp, std::memory_order_release);
-    // Reading the newest, not merely loading: a plain load could miss a neighbour's mark and leave ours behind.
-    int seen = published_stamp.fetch_add(0, std::memory_order_acq_rel);
-    while (landed[(seen + 1) % ring_k].load(std::memory_order_acquire) == seen + 1) {
-        int const before = raise_to(published_stamp, seen + 1);
-        seen = before < seen + 1 ? seen + 1 : before;
-    }
+    // A stamp a lap below shares this bit, so a flip outside the window reads as that stamp.
+    while (stamp - published_stamp.load(std::memory_order_acquire) > window_k) {}
+    unsigned const bit = 1u << (stamp % parity_bits_k);
+    unsigned const landed = landed_parity.fetch_xor(bit, std::memory_order_acq_rel) ^ bit;
+    // Loaded after the flip: a watermark older than the word only shortens the run.
+    int const seen = published_stamp.load(std::memory_order_acquire);
+    // The watermark passed this stamp since the word was read, so its bits are a lap stale.
+    if (seen >= stamp) return;
+    int const run = landed_run(landed, seen);
+    if (run == 0) return;
+    // Nobody parks here, so the wake that follows a raise has no step.
+    raise_to(published_stamp, seen + run);
 }
 
 /** Reads the newest watermark, which is the whole claim where nothing prunes. Models
