@@ -243,17 +243,24 @@ void check_batch_contracts() {
     }
 }
 
-/** The two verbs of a staged transaction that ask the allocator, each refused in turn below. */
-enum class refused_verb_t : std::uint8_t { stage_k, rollback_k };
+/** The verbs of a reused transaction that may ask the allocator, each refused in turn below. */
+enum class refused_verb_t : std::uint8_t { write_k, stage_k, rollback_k };
+
+/** Whether @p store_type_ stages by relinking its transactions' own nodes, so that staging and
+ *  rolling back ask the allocator for nothing and only a write can be refused. */
+template <typename store_type_>
+constexpr bool relinks_staged_nodes = requires { requires store_type_::relinks_staged_nodes_k; };
 
 /**
  *  @brief Refuses every request @p verb_ makes on a transaction reused after its own commit.
  *  @tparam store_type_ A transactional map allocating through an @c allocation_ledger_t.
  *
  *  The transaction has already published key 1 and now writes it again beside a new key 3. A
- *  refused @c stage leaves the store as the first commit left it and the writes still pending, so
- *  the retry publishes both. A refused @c rollback has lost a write, so the transaction comes back
+ *  refused write of key 3 leaves the transaction as it was, so writing it again lands. A refused
+ *  @c stage leaves the store as the first commit left it and the writes still pending, so the
+ *  retry publishes both. A refused @c rollback has lost a write, so the transaction comes back
  *  empty, and a commit retried after it publishes nothing, least of all key 3 without its value.
+ *  A store relinking staged nodes has nothing to refuse in the last two.
  */
 template <typename store_type_, refused_verb_t verb_>
 void sweep_reused_transaction_refusals() {
@@ -286,18 +293,24 @@ void sweep_reused_transaction_refusals() {
             expect_equal(transaction->commit(), success_k);
 
             expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1, 30)), success_k);
-            expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
+            if constexpr (verb_ != refused_verb_t::write_k)
+                expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
             if constexpr (verb_ == refused_verb_t::rollback_k) expect_equal(transaction->stage(), success_k);
 
             // Armed around the one call, so nothing the oracle itself needs is refused.
             ledger.allow(refusal_index);
-            status_t const reported = verb_ == refused_verb_t::stage_k ? transaction->stage() : transaction->rollback();
+            status_t const reported = verb_ == refused_verb_t::write_k
+                                          ? transaction->upsert(trivial_id_to_member<member_t>(3, 30))
+                                      : verb_ == refused_verb_t::stage_k ? transaction->stage()
+                                                                         : transaction->rollback();
             ledger.allow(unlimited_budget_k);
             refusals = ledger.refusals;
 
             if (failed(reported)) expect_holds(store, first_commit, "after the refused verb");
+            if (verb_ == refused_verb_t::write_k && failed(reported))
+                expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
             bool const emptied = verb_ == refused_verb_t::rollback_k && failed(reported);
-            if (verb_ == refused_verb_t::rollback_k || failed(reported)) expect_equal(transaction->stage(), success_k);
+            if (verb_ != refused_verb_t::stage_k || failed(reported)) expect_equal(transaction->stage(), success_k);
             expect_equal(transaction->commit(), success_k);
             expect_holds(store, emptied ? first_commit : both_commits, "after the retried commit");
         }
@@ -305,14 +318,72 @@ void sweep_reused_transaction_refusals() {
         if (refusals == 0) break; // ? An index past what the verb asks for refuses nothing
         refused_requests += refusals;
     }
-    expect_true(refused_requests > 0u, "the verb never reached the allocator, so nothing was refused");
+    if (relinks_staged_nodes<store_type_> && verb_ != refused_verb_t::write_k)
+        expect_equal(refused_requests, 0u, "relinking a staged node, either way, asks the allocator for nothing");
+    else expect_true(refused_requests > 0u, "the verb never reached the allocator, so nothing was refused");
 }
 
-/** Sweeps the allocator under both verbs of a reused transaction that can lose memory. */
+/** Sweeps the allocator under every verb of a reused transaction that can lose memory. */
 template <typename store_type_>
 void check_refusals_spare_a_reused_transaction() {
+    sweep_reused_transaction_refusals<store_type_, refused_verb_t::write_k>();
     sweep_reused_transaction_refusals<store_type_, refused_verb_t::stage_k>();
     sweep_reused_transaction_refusals<store_type_, refused_verb_t::rollback_k>();
+}
+
+/**
+ *  @brief Commits and aborts through one reused transaction and finds the allocator untouched.
+ *  @tparam store_type_ A transactional map allocating through an @c allocation_ledger_t.
+ *
+ *  Eight commits over the same keys warm both sides: each prune empties the versions the commit
+ *  masked, and the transaction borrows those nodes for its next writes. From then on neither an
+ *  overwriting commit nor a staged write that is reset asks the allocator for anything.
+ */
+template <typename store_type_>
+void check_warm_commits_ask_the_allocator_for_nothing() {
+
+    using member_t = typename store_type_::value_type;
+    constexpr trivial_id_t written_keys_k = 4;
+    constexpr int warm_rounds_k = 8, measured_rounds_k = 64;
+    allocation_ledger_t ledger;
+    {
+        store_type_ store {typename store_type_::allocator_t(ledger)};
+        auto transaction = store.transaction();
+        if (!expect_equal(transaction.status(), success_k)) return;
+        auto const stage_overwrites = [&](int round) {
+            for (trivial_id_t identifier = 1; identifier <= written_keys_k; ++identifier)
+                expect_equal(transaction->upsert(trivial_id_to_member<member_t>(identifier, round)), success_k);
+            expect_equal(transaction->stage(), success_k);
+        };
+
+        int round = 0;
+        for (; round != warm_rounds_k; ++round) {
+            stage_overwrites(round);
+            expect_equal(transaction->commit(), success_k);
+        }
+        std::size_t const allocated = ledger.allocations, freed = ledger.deallocations;
+
+        for (; round != warm_rounds_k + measured_rounds_k; ++round) {
+            stage_overwrites(round);
+            expect_equal(transaction->commit(), success_k);
+        }
+        expect_equal(ledger.allocations, allocated, "a warm commit builds in the nodes its last prune emptied");
+        expect_equal(ledger.deallocations, freed, "and keeps the ones this prune empties");
+
+        for (int aborted = 0; aborted != measured_rounds_k; ++aborted) {
+            stage_overwrites(round + aborted);
+            expect_equal(transaction->reset(), success_k);
+        }
+        expect_equal(ledger.allocations, allocated, "a staged write that is reset keeps its node for the next");
+        expect_equal(ledger.deallocations, freed, "and returns none");
+
+        expect_equal(store.size(), written_keys_k);
+        for (trivial_id_t identifier = 1; identifier <= written_keys_k; ++identifier) {
+            auto const held = store.find_copy(trivial_id_to_key<member_t>(identifier));
+            if (expect_true(held.has_value())) expect_equal(held->mapped, round - 1, "the last commit still reads");
+        }
+    }
+    ledger.check_balanced();
 }
 
 #pragma endregion Batch Atomicity Test Templates

@@ -225,6 +225,20 @@ void test_a_reused_transaction_matches_a_map() {
             }
         }
 
+        // Erased and written again with no reader open, so each commit prunes all it masked, the
+        // tombstone itself included, and the rewrite lands over whatever that pruning left.
+        trivial_id_t const rewritten = trivial_id_t(generator() % fuzz_keyspace_k);
+        [[maybe_unused]] status_t const erased = writer->erase(trivial_key_t {rewritten});
+        expect_equal(writer->stage(), success_k);
+        expect_equal(writer->commit(), success_k);
+        model.erase(rewritten);
+        expect_reads(engine, model, "the store, after the erase");
+        int const value = int(generator() % 1000);
+        expect_equal(writer->upsert(trivial_id_to_member<member_t>(rewritten, value)), success_k);
+        expect_equal(writer->stage(), success_k);
+        expect_equal(writer->commit(), success_k);
+        model[rewritten] = value;
+
         expect_reads(engine, model, "the store, after the round");
         expect_equal(engine.size(), model.size(), "a reused transaction left the store miscounting its members");
         if constexpr (requires { engine.versions_count(); }) {

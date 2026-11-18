@@ -228,7 +228,24 @@ class snapshot_store {
     /** How the store names a position inside its versioned core, never handed out. */
     using entry_iterator_t = decltype(std::declval<dated_entries_t const &>().begin());
 
+    /** The node a linked core files one version in, or @c void where the core has none. */
+    using entry_node_t = typename storage_node_of<dated_entries_t>::type;
+
   public:
+    /**
+     *  @brief Whether staging relinks a transaction's own nodes into the store, which then names
+     *      them by address through publish and prune and recycles the ones pruning empties.
+     *
+     *  Holds where the pending writes and the versions are one node-linked type whose nodes climb
+     *  to their parents. Every other core copies each write into a slot found by its key.
+     */
+    static constexpr bool relinks_staged_nodes_k =
+        std::is_same_v<changes_t, dated_entries_t> &&
+        requires(dated_entries_t &entries, dated_entries_t &changes, entry_node_t *node) {
+            entries.extract(entries.iterator_to(node));
+            entries.splice(changes, no_op_t {});
+        } && !ranked_core_k;
+
 #pragma region Visible Cursor
 
     /**
@@ -542,6 +559,27 @@ class snapshot_store {
 
         mutable read_set_t read_set_ {read_set_t::names_every_key_k};
         changed_identifiers_vector_t changed_identifiers_ {};
+
+        /** A list of nodes where staging relinks them, and nothing where it copies instead. */
+        using staged_nodes_t = std::conditional_t<
+            relinks_staged_nodes_k,
+            basic_vector<entry_node_t *,
+                         typename std::allocator_traits<allocator_t>::template rebind_alloc<entry_node_t *>>,
+            placeholder_t>;
+
+        /** The nodes @c stage linked into the store, sized by every write so staging allocates
+         *  nothing. */
+        SMASHTABLE_NO_UNIQUE_ADDRESS_ staged_nodes_t staged_nodes_ {};
+
+        /** Builds the staged list over the allocator @p entries carries. */
+        static staged_nodes_t build_staged_nodes_([[maybe_unused]] dated_entries_t const &entries) noexcept {
+            if constexpr (relinks_staged_nodes_k)
+                return staged_nodes_t(typename staged_nodes_t::allocator_type(storage_shape_t::allocator_of(entries)));
+            else return staged_nodes_t {};
+        }
+
+        /** Detached nodes holding no entry, linked through @c left, for the next writes. */
+        entry_node_t *lent_nodes_ {nullptr};
         generation_t generation_ {0};
 
         /** This transaction's own claim on its snapshot, empty when a shard set holds one for it. A
@@ -561,13 +599,15 @@ class snapshot_store {
             : store_(&store), changes_(store_t::build_changes_(store.entries_)),
               accesses_(accesses_allocator_t(storage_shape_t::allocator_of(store.entries_))),
               changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
-              generation_(store.next_generation_()), snapshot_(store.order_().share_snapshot(reader.claim_, claim_)) {}
+              staged_nodes_(build_staged_nodes_(store.entries_)), generation_(store.next_generation_()),
+              snapshot_(store.order_().share_snapshot(reader.claim_, claim_)) {}
 
         transaction_t(store_t &store) noexcept
             : store_(&store), changes_(store_t::build_changes_(store.entries_)),
               accesses_(accesses_allocator_t(storage_shape_t::allocator_of(store.entries_))),
               changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
-              generation_(store.next_generation_()), snapshot_(store.order_().take_snapshot(claim_)) {}
+              staged_nodes_(build_staged_nodes_(store.entries_)), generation_(store.next_generation_()),
+              snapshot_(store.order_().take_snapshot(claim_)) {}
 
         /** Opens on a snapshot and a generation somebody else drew, for one partition of a sharded
          *  transaction whose other partitions must answer at the very same stamp. */
@@ -575,18 +615,54 @@ class snapshot_store {
             : store_(&store), changes_(store_t::build_changes_(store.entries_)),
               accesses_(accesses_allocator_t(storage_shape_t::allocator_of(store.entries_))),
               changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
-              generation_(opened.generation), snapshot_(opened.snapshot) {}
+              staged_nodes_(build_staged_nodes_(store.entries_)), generation_(opened.generation),
+              snapshot_(opened.snapshot) {}
 
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
 
-        /** Drops this transaction's version of the first @p processed changed identifiers. */
-        void unstage_(std::size_t processed) noexcept {
+        /** Drops this transaction's version of the first @p processed changed identifiers, or every
+         *  node it staged where staging relinks them, keeping those nodes for later writes. */
+        void unstage_([[maybe_unused]] std::size_t processed) noexcept {
             auto &store = store_ref();
-            for (std::size_t index = 0; index != processed; ++index)
-                // ! Don't materialize a new copy of the identifier here, use a reference
-                [[maybe_unused]]
-                bool const dropped = store.drop_version_(changed_identifiers_[index], generation_);
+            if constexpr (relinks_staged_nodes_k) {
+                for (entry_node_t *staged : staged_nodes_)
+                    keep_emptied_(store.entries_.extract(store.entries_.iterator_to(staged)).release());
+                staged_nodes_.clear();
+            }
+            else
+                for (std::size_t index = 0; index != processed; ++index)
+                    // ! Don't materialize a new copy of the identifier here, use a reference
+                    [[maybe_unused]]
+                    bool const dropped = store.drop_version_(changed_identifiers_[index], generation_);
+        }
+
+        /** Destroys the entry of the detached @p node and keeps the node for a later write. */
+        void keep_emptied_(entry_node_t *node) noexcept
+            requires relinks_staged_nodes_k
+        {
+            node->payload.~versioned_t();
+            node->left = std::exchange(lent_nodes_, node);
+        }
+
+        /** Hands every kept node back to the allocator it came from. */
+        void release_lent_nodes_() noexcept {
+            if constexpr (relinks_staged_nodes_k)
+                while (lent_nodes_) changes_.allocator().deallocate(std::exchange(lent_nodes_, lent_nodes_->left), 1);
+        }
+
+        /** Takes every staged node back out of the store and files it among the pending writes
+         *  under @p generation, which allocates nothing and so cannot fail. */
+        void recall_staged_(generation_t generation) noexcept
+            requires relinks_staged_nodes_k
+        {
+            auto &store = store_ref();
+            for (entry_node_t *staged : staged_nodes_) {
+                store.entries_.extract(store.entries_.iterator_to(staged)).release();
+                staged->payload.generation = generation;
+                changes_.merge(typename changes_t::extract_result_t {&changes_, staged});
+            }
+            staged_nodes_.clear();
         }
 
         /**
@@ -704,8 +780,13 @@ class snapshot_store {
 
             // First-committer-wins: an earlier commit keeps the key and the later transaction is
             // turned away rather than overwriting a version it never read.
-            for (identifier_t const &identifier : changed_identifiers_)
-                if (store.key_changed_since_(identifier, snapshot_)) return status_t::write_conflict_k;
+            // Once staged, a written key is reached from its own node, which costs no descent.
+            if constexpr (relinks_staged_nodes_k)
+                for (entry_node_t const *staged : staged_nodes_)
+                    if (store.key_changed_since_(staged, snapshot_)) return status_t::write_conflict_k;
+            if (!relinks_staged_nodes_k || staging_ != staging_t::staged_k)
+                for (identifier_t const &identifier : changed_identifiers_)
+                    if (store.key_changed_since_(identifier, snapshot_)) return status_t::write_conflict_k;
 
             for (std::size_t index = 0; index != accesses_.size(); ++index) {
                 access_t const access = accesses_[index].access;
@@ -735,8 +816,9 @@ class snapshot_store {
          *  transaction, which owns nothing and must undo nothing.
          */
         void unwind_() noexcept {
+            if (store_ && staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
+            release_lent_nodes_();
             if (!store_) return;
-            if (staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
             claim_.retire();
             staging_ = staging_t::pending_k;
             store_ = nullptr;
@@ -754,8 +836,17 @@ class snapshot_store {
             auto reserve_status = changed_identifiers_.reserve(changed_identifiers_.size() + 1);
             if (failed(reserve_status)) return reserve_status;
             versioned.generation = generation_;
-            auto result = storage_shape_t::upsert(changes_, std::move(versioned));
-            if (failed(result)) return out_of_memory_heap_k;
+            if constexpr (relinks_staged_nodes_k) {
+                if (status_t const reserved = staged_nodes_.reserve(changes_.size() + 1); failed(reserved))
+                    return reserved;
+                if (!already_listed && lent_nodes_) {
+                    entry_node_t *const lent = std::exchange(lent_nodes_, lent_nodes_->left);
+                    new (&lent->payload) versioned_t(std::move(versioned));
+                    changes_.merge(typename changes_t::extract_result_t {&changes_, lent});
+                }
+                else if (failed(storage_shape_t::upsert(changes_, std::move(versioned)))) return out_of_memory_heap_k;
+            }
+            else if (failed(storage_shape_t::upsert(changes_, std::move(versioned)))) return out_of_memory_heap_k;
             if (!already_listed) {
                 [[maybe_unused]] status_t const recorded =
                     changed_identifiers_.push_back(assume_reserved, std::move(identifier));
@@ -802,6 +893,8 @@ class snapshot_store {
 
             std::size_t const listed = changed_identifiers_.size();
             status_t status = changed_identifiers_.reserve(listed + sorted.size());
+            if constexpr (relinks_staged_nodes_k)
+                if (succeeded(status)) status = staged_nodes_.reserve(sorted.size());
             for (std::size_t index = 0; succeeded(status) && index != sorted.size(); ++index) {
                 auto identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(sorted[index].payload));
                 if (!identifier) status = identifier.status();
@@ -822,8 +915,9 @@ class snapshot_store {
         transaction_t(transaction_t &&other) noexcept
             : store_(std::exchange(other.store_, nullptr)), changes_(std::move(other.changes_)),
               accesses_(std::move(other.accesses_)), read_set_(other.read_set_),
-              changed_identifiers_(std::move(other.changed_identifiers_)), generation_(other.generation_),
-              claim_(std::move(other.claim_)), snapshot_(other.snapshot_),
+              changed_identifiers_(std::move(other.changed_identifiers_)),
+              staged_nodes_(std::move(other.staged_nodes_)), lent_nodes_(std::exchange(other.lent_nodes_, nullptr)),
+              generation_(other.generation_), claim_(std::move(other.claim_)), snapshot_(other.snapshot_),
               staging_(std::exchange(other.staging_, staging_t::pending_k)), committed_stamp_(other.committed_stamp_) {}
 
         transaction_t &operator=(transaction_t &&other) noexcept {
@@ -834,6 +928,8 @@ class snapshot_store {
             accesses_ = std::move(other.accesses_);
             read_set_ = other.read_set_;
             changed_identifiers_ = std::move(other.changed_identifiers_);
+            staged_nodes_ = std::move(other.staged_nodes_);
+            lent_nodes_ = std::exchange(other.lent_nodes_, nullptr);
             generation_ = other.generation_;
             claim_ = std::move(other.claim_);
             snapshot_ = other.snapshot_;
@@ -2017,42 +2113,63 @@ class snapshot_store {
          *  - @c read_conflict_k A recorded key changed since the snapshot, which any commit does to
          *    a read that could not be recorded.
          *  - @c write_conflict_k A later commit wrote a key this transaction writes.
+         *  - @c consistency_k Where staging relinks nodes, a version of a written key already
+         *    stands under this transaction's generation, so nothing is staged and every write stays
+         *    pending for a retry.
          */
         status_t stage() noexcept {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             auto &store = store_ref();
-            auto const prepaid = storage_shape_t::prepare(store.entries_, changed_identifiers_.size());
-            if (failed(prepaid)) return prepaid;
-            if (status_t const validated = validate_accesses_(); failed(validated)) return validated;
-
-            // Every change needs somewhere to land before any of them moves, or a transaction could
-            // run out of memory with half of itself already in the store. So this pass files a
-            // key-only placeholder under this generation for each written key, and only then does
-            // the second pass move the payloads onto slots already paid for, where it cannot fail.
-            for (std::size_t reserved = 0; reserved != changed_identifiers_.size(); ++reserved) {
-                auto reserved_identifier = copy_safely<identifier_t>(changed_identifiers_[reserved]);
-                if (!reserved_identifier) {
-                    unstage_(reserved);
-                    return out_of_memory_heap_k;
+            // The pending writes sit in nodes of the very type the store links, so each is relinked
+            // where it stands: nothing is copied or allocated, and the store names it by address.
+            if constexpr (relinks_staged_nodes_k) {
+                if (status_t const validated = validate_accesses_(); failed(validated)) return validated;
+                store.entries_.splice(changes_, [&](entry_node_t *linked) noexcept {
+                    [[maybe_unused]] status_t const recorded =
+                        staged_nodes_.push_back(assume_reserved, std::move(linked));
+                });
+                if (changes_.size() != 0) {
+                    recall_staged_(generation_);
+                    return status_t::consistency_k;
                 }
-                versioned_t placeholder(value_t {std::move(*reserved_identifier)});
-                placeholder.generation = generation_;
-                placeholder.presence = presence_t::present_k;
-                if (failed(storage_shape_t::upsert(store.entries_, std::move(placeholder)))) {
-                    unstage_(reserved);
-                    return out_of_memory_heap_k;
+                staging_ = staging_t::staged_k;
+                return success_k;
+            }
+            else {
+                auto const prepaid = storage_shape_t::prepare(store.entries_, changed_identifiers_.size());
+                if (failed(prepaid)) return prepaid;
+                if (status_t const validated = validate_accesses_(); failed(validated)) return validated;
+
+                // Every change needs somewhere to land before any of them moves, or a transaction
+                // could run out of memory with half of itself already in the store. So this pass
+                // files a key-only placeholder under this generation for each written key, and
+                // only then does the second pass move the payloads onto slots already paid for,
+                // where it cannot fail.
+                for (std::size_t reserved = 0; reserved != changed_identifiers_.size(); ++reserved) {
+                    auto reserved_identifier = copy_safely<identifier_t>(changed_identifiers_[reserved]);
+                    if (!reserved_identifier) {
+                        unstage_(reserved);
+                        return out_of_memory_heap_k;
+                    }
+                    versioned_t placeholder(value_t {std::move(*reserved_identifier)});
+                    placeholder.generation = generation_;
+                    placeholder.presence = presence_t::present_k;
+                    if (failed(storage_shape_t::upsert(store.entries_, std::move(placeholder)))) {
+                        unstage_(reserved);
+                        return out_of_memory_heap_k;
+                    }
                 }
-            }
 
-            for (auto staged = changes_.begin(); staged != changes_.end(); ++staged) {
-                versioned_t &version = store_t::mutable_ref_(*staged);
-                [[maybe_unused]] status_t const moved = storage_shape_t::upsert(store.entries_, std::move(version));
-                assert(succeeded(moved) && "the placeholder pass already paid for this slot");
-            }
+                for (auto staged = changes_.begin(); staged != changes_.end(); ++staged) {
+                    versioned_t &version = store_t::mutable_ref_(*staged);
+                    [[maybe_unused]] status_t const moved = storage_shape_t::upsert(store.entries_, std::move(version));
+                    assert(succeeded(moved) && "the placeholder pass already paid for this slot");
+                }
 
-            changes_.clear();
-            staging_ = staging_t::staged_k;
-            return success_k;
+                changes_.clear();
+                staging_ = staging_t::staged_k;
+                return success_k;
+            }
         }
 
         /**
@@ -2140,7 +2257,10 @@ class snapshot_store {
          */
         void publish_under(commit_stamp_t stamp) noexcept {
             assert(staging_ == staging_t::staged_k && "publishing what was never staged");
-            store_ref().stamp_under_(changed_identifiers_.data(), changed_identifiers_.size(), generation_, stamp);
+            if constexpr (relinks_staged_nodes_k)
+                for (entry_node_t const *staged : staged_nodes_)
+                    store_ref().publish_found_(staged->payload, staged, stamp);
+            else store_ref().stamp_under_(changed_identifiers_.data(), changed_identifiers_.size(), generation_, stamp);
             accesses_.clear();
             read_set_ = read_set_t::names_every_key_k;
             staging_ = staging_t::pending_k;
@@ -2155,11 +2275,31 @@ class snapshot_store {
          *  drawn once for every part of a sharded transaction. */
         void reopen_at(opened_at_t opened) noexcept { snapshot_ = opened.snapshot, generation_ = opened.generation; }
 
-        /** Frees whatever the commit just published left unreachable, and forgets the keys it
-         *  named. */
+        /**
+         *  @brief Frees whatever the commit just published left unreachable, and forgets the
+         *      keys that it named.
+         *
+         *  @warning Whoever published holds the store, or the partition it is, from that
+         *      @c publish_under through this call. Where staging relinks nodes the published
+         *      versions are named here by address, which a commit or a vacuum landing in between
+         *      may already have freed.
+         */
         void prune_committed() noexcept {
             auto &store = store_ref();
-            store.prune_each_(changed_identifiers_.data(), changed_identifiers_.size());
+            if constexpr (relinks_staged_nodes_k) {
+                generation_t const mark = store.low_water_mark_();
+                for (entry_node_t *staged : staged_nodes_) {
+                    [[maybe_unused]] std::size_t const reclaimed = store.prune_run_of_(staged, mark);
+                }
+                // Borrowed while the store is held, so the next writes never reach for it unheld
+                for (std::size_t wanted = staged_nodes_.size(); wanted != 0; --wanted) {
+                    entry_node_t *const spare = store.take_spare_node_();
+                    if (!spare) break;
+                    spare->left = std::exchange(lent_nodes_, spare);
+                }
+                staged_nodes_.clear();
+            }
+            else store.prune_each_(changed_identifiers_.data(), changed_identifiers_.size());
             changed_identifiers_.clear();
         }
 
@@ -2179,15 +2319,17 @@ class snapshot_store {
             // transaction is about to take a new one, so each is re-stamped while it is out of any
             // container. The changed identifiers are kept: these keys are still going to be written.
             generation_t const resumed = store.next_generation_();
-            for (identifier_t const &identifier : changed_identifiers_) {
-                versioned_t recovered;
-                if (!store.recover_version_(identifier, generation_, recovered)) {
-                    result = status_t::consistency_k;
-                    continue;
+            if constexpr (relinks_staged_nodes_k) recall_staged_(resumed);
+            else
+                for (identifier_t const &identifier : changed_identifiers_) {
+                    versioned_t recovered;
+                    if (!store.recover_version_(identifier, generation_, recovered)) {
+                        result = status_t::consistency_k;
+                        continue;
+                    }
+                    recovered.generation = resumed;
+                    if (failed(storage_shape_t::upsert(changes_, std::move(recovered)))) result = out_of_memory_heap_k;
                 }
-                recovered.generation = resumed;
-                if (failed(storage_shape_t::upsert(changes_, std::move(recovered)))) result = out_of_memory_heap_k;
-            }
 
             staging_ = staging_t::pending_k;
             generation_ = resumed;
@@ -2212,7 +2354,9 @@ class snapshot_store {
             if (staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
 
             accesses_.clear();
-            changes_.clear();
+            if constexpr (relinks_staged_nodes_k)
+                while (changes_.size() != 0) keep_emptied_(changes_.extract(changes_.begin()).release());
+            else changes_.clear();
             changed_identifiers_.clear();
             // A read that named no key refuses every commit that saw a newer stamp. Clearing the reads
             // without clearing that refusal leaves a transaction which can never commit again.
@@ -2559,6 +2703,10 @@ class snapshot_store {
      *  store exclusively. */
     generation_t newest_stamped_ {0};
 
+    /** Nodes pruning emptied, linked through @c left, which committing transactions borrow for
+     *  their next writes. Only a core whose staging relinks nodes ever fills it. */
+    entry_node_t *spare_nodes_ {nullptr};
+
     friend class transaction_t;
 
 #pragma region Stamps and Snapshots
@@ -2619,6 +2767,20 @@ class snapshot_store {
                 return walk_control_t::resume_k;
             });
         }
+    }
+
+    /** Applies @p visitor to every stored version of the key @p anchor carries, walking its run
+     *  outward from that node, so a caller already holding one version costs no descent. */
+    template <typename visitor_type_>
+    void visit_versions_(entry_node_t const *anchor, visitor_type_ &&visitor) const noexcept
+        requires relinks_staged_nodes_k
+    {
+        // Stepping back from the first entry lands on the end, as stepping on from the last does
+        entry_iterator_t const anchored = entries_.iterator_to(anchor);
+        for (entry_iterator_t earlier = anchored; --earlier != entries_.end() && same_key_(*earlier, *anchored);)
+            visitor(*earlier);
+        for (entry_iterator_t later = anchored; later != entries_.end() && same_key_(*later, *anchored); ++later)
+            visitor(*later);
     }
 
     /**
@@ -2958,14 +3120,21 @@ class snapshot_store {
                                         commit_stamp_t stamp) noexcept {
         versioned_t const *staged = dated_version_(identifier, generation);
         if (!staged) return false;
-        versioned_t const *const previously_visible = readable_version_(identifier, latest_snapshot_k);
-        mutable_ref_(*staged).committed = stamp;
+        publish_found_(*staged, identifier, stamp);
+        return true;
+    }
+
+    /** Stamps @p staged as published under @p stamp and settles what its key now reads; @p key
+     *  names that key, as an identifier to descend by or as the node @p staged sits in. */
+    template <typename key_type_>
+    void publish_found_(versioned_t const &staged, key_type_ const &key, commit_stamp_t stamp) noexcept {
+        versioned_t const *const previously_visible = readable_version_(key, latest_snapshot_k);
+        mutable_ref_(staged).committed = stamp;
         if (newest_stamped_ < stamp_of(stamp)) newest_stamped_ = stamp_of(stamp);
-        versioned_t const *const now_visible = readable_version_(identifier, latest_snapshot_k);
+        versioned_t const *const now_visible = readable_version_(key, latest_snapshot_k);
         live_count_ +=
             static_cast<std::size_t>(now_visible != nullptr) - static_cast<std::size_t>(previously_visible != nullptr);
         mark_liveness_(previously_visible, now_visible);
-        return true;
     }
 
     /**
@@ -3103,6 +3272,72 @@ class snapshot_store {
         return reclaimed;
     }
 
+    /**
+     *  @brief Empties every version sharing @p anchor's key that no snapshot at or below @p mark
+     *      reaches into the spare nodes, walking the run outward from @p anchor with no descent.
+     *      @p anchor is judged last, as the run is recognized by its key.
+     *  @return How many versions were reclaimed.
+     */
+    std::size_t prune_run_of_(entry_node_t *anchor, generation_t mark) noexcept
+        requires relinks_staged_nodes_k
+    {
+        using position_t = typename dated_entries_t::iterator;
+        entry_node_t const *const named = anchor;
+        versioned_t const &anchored = anchor->payload;
+        versioned_t const *const survivor = visible_version_(named, mark);
+        std::size_t reclaimed = 0;
+
+        position_t const anchor_position = entries_.iterator_to(anchor);
+        position_t scan = anchor_position;
+        for (position_t earlier = scan; --earlier != entries_.end() && same_key_(*earlier, anchored);) scan = earlier;
+        while (scan != entries_.end() && same_key_(*scan, anchored)) {
+            position_t const judged = scan++;
+            if (judged == anchor_position || !unreachable_(*judged, survivor, mark)) continue;
+            give_back_spare_node_(entries_.extract(judged).release());
+            ++reclaimed;
+        }
+        if (unreachable_(anchored, survivor, mark)) {
+            give_back_spare_node_(entries_.extract(anchor_position).release());
+            ++reclaimed;
+        }
+        return reclaimed;
+    }
+
+    /** Tops the spare nodes up to @p count, so that many versions are written without the
+     *  allocator once transactions have borrowed them. */
+    status_t reserve_spare_nodes_(std::size_t count) noexcept
+        requires relinks_staged_nodes_k
+    {
+        for (entry_node_t const *spare = spare_nodes_; spare && count != 0; spare = spare->left) --count;
+        for (; count != 0; --count) {
+            entry_node_t *const made = entries_.allocator().allocate(1);
+            if (!made) return out_of_memory_heap_k;
+            made->left = std::exchange(spare_nodes_, made);
+        }
+        return success_k;
+    }
+
+    /** A spare node holding no entry, or null when none is kept, which is never a failure. */
+    [[nodiscard]] entry_node_t *take_spare_node_() noexcept
+        requires relinks_staged_nodes_k
+    {
+        return spare_nodes_ ? std::exchange(spare_nodes_, spare_nodes_->left) : nullptr;
+    }
+
+    /** Destroys the entry of the detached @p node and keeps the node among the spares. */
+    void give_back_spare_node_(entry_node_t *node) noexcept
+        requires relinks_staged_nodes_k
+    {
+        node->payload.~versioned_t();
+        node->left = std::exchange(spare_nodes_, node);
+    }
+
+    /** Hands every spare node back to the allocator. */
+    void release_spare_nodes_() noexcept {
+        if constexpr (relinks_staged_nodes_k)
+            while (spare_nodes_) entries_.allocator().deallocate(std::exchange(spare_nodes_, spare_nodes_->left), 1);
+    }
+
     /** Frees every version of @p identifier that no snapshot at or below @p mark reaches. */
     template <typename comparable_type_>
     std::size_t prune_key_(comparable_type_ const &comparable, generation_t mark) noexcept {
@@ -3163,20 +3398,26 @@ class snapshot_store {
      *  pointing at it; one whose order is its own copies the counters across, since the moved-from
      *  object it lives in is about to stop speaking for anything. */
     snapshot_store(snapshot_store &&other) noexcept
-        : entries_(std::move(other.entries_)), live_count_(other.live_count_), newest_stamped_(other.newest_stamped_) {
+        : entries_(std::move(other.entries_)), live_count_(other.live_count_), newest_stamped_(other.newest_stamped_),
+          spare_nodes_(std::exchange(other.spare_nodes_, nullptr)) {
         adopt_order_of_(other);
     }
 
     snapshot_store &operator=(snapshot_store &&other) noexcept {
         if (this == &other) return *this;
+        release_spare_nodes_();
         entries_ = std::move(other.entries_);
         adopt_order_of_(other);
         live_count_ = other.live_count_;
         newest_stamped_ = other.newest_stamped_;
+        spare_nodes_ = std::exchange(other.spare_nodes_, nullptr);
         return *this;
     }
 
-    ~snapshot_store() noexcept { entries_.clear(); }
+    ~snapshot_store() noexcept {
+        entries_.clear();
+        release_spare_nodes_();
+    }
 
     snapshot_store(snapshot_store const &) = delete;
     snapshot_store &operator=(snapshot_store const &) = delete;
@@ -3769,8 +4010,12 @@ class snapshot_store {
         return publish_directly_(*maybe_identifier, std::move(tombstone));
     }
 
-    /** Grows the core to hold @p size more versions, so later writes cannot run out of memory. */
-    status_t reserve(std::size_t size) noexcept { return storage_shape_t::prepare(entries_, size); }
+    /** Grows the core to hold @p size more versions, so later writes cannot run out of memory. A
+     *  core whose staging relinks nodes keeps that many spare for its transactions to borrow. */
+    status_t reserve(std::size_t size) noexcept {
+        if constexpr (relinks_staged_nodes_k) return reserve_spare_nodes_(size);
+        else return storage_shape_t::prepare(entries_, size);
+    }
 
     /** Opens a group of writes over many keys that will become visible under one stamp. A write of
      *  one key needs none of this - @c upsert and @c erase already draw a stamp each. */
@@ -4008,7 +4253,11 @@ class snapshot_store {
      *      bare zero standing for both, which is why the count travels inside @c expected.
      */
     expected<std::size_t> vacuum() noexcept {
-        if constexpr (ordered_core_k) { return vacuum_runs_(entries_.begin(), unbounded); }
+        if constexpr (ordered_core_k) {
+            std::size_t const reclaimed = vacuum_runs_(entries_.begin(), unbounded);
+            release_spare_nodes_();
+            return reclaimed;
+        }
         else {
             // Pruning a key is idempotent, so meeting the same key once per version it still carries
             // costs a probe and changes nothing after the first pass over it.

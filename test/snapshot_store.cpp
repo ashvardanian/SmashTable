@@ -4043,6 +4043,8 @@ int main(int argc, char **argv) {
                   check_refusals_spare_a_reused_transaction<budgeted_snapshot_avl_map_t>);
     run_test_case("check_refusals_spare_a_reused_transaction<budgeted_monotonic_avl_map_t>",
                   check_refusals_spare_a_reused_transaction<budgeted_monotonic_avl_map_t>);
+    run_test_case("check_warm_commits_ask_the_allocator_for_nothing<budgeted_snapshot_avl_map_t>",
+                  check_warm_commits_ask_the_allocator_for_nothing<budgeted_snapshot_avl_map_t>);
 
     // Sixteen partitions, one order. The suites above pin what a single store promises; these pin
     // that sharding it does not quietly take that promise back.

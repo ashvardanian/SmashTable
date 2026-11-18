@@ -709,6 +709,30 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
             return extract(node, comparator);
     }
 
+    /**
+     *  @brief Extracts @p node from the tree under @p root by climbing its parent links, so no
+     *      key is compared on the way.
+     *
+     *  Every ancestor is rebalanced up to the first whose height the removal left unchanged, above
+     *  which nothing can be off balance.
+     */
+    static extract_result_t extract_at(node_t *root, node_t *node, comparator_t const &comparator) noexcept {
+        node_t *ancestor = node->parent; // ? Read before the extraction below clears it
+        node_t **const emptied = !ancestor ? &root : ancestor->left == node ? &ancestor->left : &ancestor->right;
+        extract_result_t result = extract(node, comparator);
+        *emptied = result.root;
+        while (ancestor) {
+            node_t *const above = ancestor->parent;
+            node_t **const link = !above ? &root : above->left == ancestor ? &above->left : &above->right;
+            height_t const height_before = ancestor->height;
+            *link = rebalance_after_extract(ancestor);
+            if ((*link)->height == height_before) break;
+            ancestor = above;
+        }
+        result.root = root;
+        return result;
+    }
+
     struct erase_if_result_t {
         node_t *root = nullptr;
         std::size_t count = 0;
@@ -1587,6 +1611,12 @@ class basic_avl_tree {
      */
     const_iterator cend() const noexcept { return const_iterator(this, nullptr); }
 
+    /** The position of @p node, which must be linked into this tree, found without a descent. */
+    iterator iterator_to(node_t *node) noexcept { return iterator(this, node); }
+
+    /** The position of @p node, which must be linked into this tree, found without a descent. */
+    const_iterator iterator_to(node_t const *node) const noexcept { return const_iterator(this, node); }
+
     /**
      *  @brief Returns a reverse iterator to the reversed tree's first element, the maximum.
      *  @return Reverse iterator to the maximum element, or rend() if empty.
@@ -2457,6 +2487,22 @@ class basic_avl_tree {
         return extract_result_t {this, result.extracted.release()};
     }
 
+    /** Takes the entry at @p position out whole by climbing from its node, so no key is compared
+     *  on the way. @p position must be dereferenceable. */
+    extract_result_t extract(iterator position) noexcept {
+        typename node_t::extract_result_t result = node_t::extract_at(root_, position.node_, comparator_);
+        root_ = result.root;
+        --size_;
+        return extract_result_t {this, result.release()};
+    }
+
+    /** Takes the entry at @p position out whole by climbing from its node, so no key is compared
+     *  on the way. @p position must be dereferenceable. */
+    extract_result_t extract(const_iterator position) noexcept {
+        // Extracting through a const iterator is the STL contract: the tree is not const
+        return extract(iterator(this, const_cast<node_t *>(position.node_)));
+    }
+
     /**
      *  @brief Erases a single entry matching the given @p comparable.
      *
@@ -2503,8 +2549,9 @@ class basic_avl_tree {
         if (position == end()) return {end(), {success_k}};
         iterator next = position;
         ++next;
-        bool erased = erase(*position);
-        return {next, erased ? success_k : status_t::unknown_k};
+        // The guard destroys the entry and returns the node to the allocator it came from.
+        [[maybe_unused]] extract_result_t const erased = extract(position);
+        return {next, {success_k}};
     }
 
     /**
@@ -2704,6 +2751,33 @@ class basic_avl_tree {
         if (result.placement == node_t::node_placement_t::matched_k) {
             node_to_insert->payload.~value_t();
             allocator_.deallocate(node_to_insert, 1);
+        }
+    }
+
+    /**
+     *  @brief Relinks every node of @p other into this tree where it stands, so no entry moves and
+     *      nothing is allocated or freed.
+     *  @param[in,out] other Tree to take from. Keeps only the nodes whose keys are already here.
+     *  @param[in] callback_linked Receives each node once it is linked here. Must be @c noexcept.
+     *
+     *  @note Unlike @c merge(), a node with a duplicate key stays in @p other, still owned by it.
+     */
+    template <typename callback_type_ = no_op_t>
+    void splice(basic_avl_tree &other, callback_type_ &&callback_linked = {}) noexcept {
+        node_t *tied = nullptr;
+        node_t::for_each_bottom_up(other.root_, [&](node_t *node) noexcept {
+            typename node_t::find_or_make_result_t const result = node_t::insert(root_, node, comparator_);
+            root_ = result.root;
+            // The walk is past a node's children once it reaches it, so that link may chain
+            if (result.placement == node_t::node_placement_t::matched_k) node->left = std::exchange(tied, node);
+            else ++size_, callback_linked(node);
+        });
+        other.root_ = nullptr;
+        other.size_ = 0;
+        while (tied) {
+            node_t *const node = std::exchange(tied, tied->left);
+            other.root_ = node_t::insert(other.root_, node, other.comparator_).root;
+            ++other.size_;
         }
     }
 

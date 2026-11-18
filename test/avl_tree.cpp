@@ -796,6 +796,81 @@ static void check_random_mutations_preserve_invariants() {
     expect_true(expected == oracle.end());
 }
 
+/** Extracts random positions against @c std::set, re-checking every node's balance after each. */
+template <typename tree_type_>
+static void check_extract_by_position_stays_balanced() {
+    using member_t = typename tree_type_::value_type;
+    split_mix_generator_t generator {case_stream_key()};
+    tree_type_ tree;
+    std::set<trivial_id_t> oracle;
+
+    for (std::size_t step = 0; step < 4000; ++step) {
+        trivial_id_t const identifier = generator() % 300;
+        typename tree_type_::iterator const position = tree.find(trivial_id_to_key<member_t>(identifier));
+        expect_equal(position != tree.end(), oracle.count(identifier) == 1);
+        if (position == tree.end()) {
+            expect_true(!tree.upsert(trivial_id_to_member<member_t>(identifier)).failed());
+            oracle.insert(identifier);
+        }
+        else {
+            typename tree_type_::extract_result_t const extracted = tree.extract(position);
+            if (expect_true(bool(extracted), "a dereferenceable position always names a node"))
+                expect_equal(mapping_key_or_itself(extracted.node_ptr_->payload).unique_id, identifier);
+            oracle.erase(identifier);
+        }
+        check_invariants(tree);
+        expect_equal(tree.size(), oracle.size());
+    }
+
+    auto expected = oracle.begin();
+    for (auto const &member : tree) {
+        expect_equal(mapping_key_or_itself(member).unique_id, *expected);
+        ++expected;
+    }
+    expect_true(expected == oracle.end());
+}
+
+/** A splice relinks the nodes themselves, so every entry keeps its address, and a key the
+ *  destination already holds stays behind in the tree it came from. */
+template <typename tree_type_>
+static void check_splice_keeps_addresses_and_leaves_ties() {
+    using member_t = typename tree_type_::value_type;
+    using node_t = typename tree_type_::node_t;
+    for (std::size_t total = 1; total <= 96; ++total) {
+        tree_type_ destination, source;
+        std::size_t tied = 0;
+        for (std::size_t index = 0; index < total; ++index) {
+            expect_true(!source.upsert(trivial_id_to_member<member_t>(index)).failed());
+            if (index % 3 != 0) continue;
+            expect_true(!destination.upsert(trivial_id_to_member<member_t>(index)).failed());
+            ++tied;
+        }
+        std::vector<member_t const *> addresses;
+        for (member_t const &member : source) addresses.push_back(&member);
+
+        std::size_t linked = 0;
+        destination.splice(source, [&](node_t *node) noexcept {
+            expect_equal(&*destination.iterator_to(node), &node->payload);
+            ++linked;
+        });
+        check_invariants(destination);
+        check_invariants(source);
+        expect_equal(linked, total - tied);
+        expect_equal(destination.size(), total);
+        expect_equal(source.size(), tied, "a key already there stays in the tree it came from");
+
+        for (member_t const &member : destination) {
+            std::size_t const index = mapping_key_or_itself(member).unique_id;
+            if (index % 3 != 0) expect_equal(&member, addresses[index], "a spliced entry never moves");
+        }
+        for (member_t const &member : source) {
+            std::size_t const index = mapping_key_or_itself(member).unique_id;
+            expect_equal(index % 3, 0u);
+            expect_equal(&member, addresses[index], "and neither does one left behind");
+        }
+    }
+}
+
 /** Post-decrement must exist for the type to model @c std::bidirectional_iterator. */
 template <typename tree_type_>
 static void check_iterator_post_decrement() {
@@ -960,6 +1035,17 @@ static void test_random_mutations_preserve_invariants() {
     check_random_mutations_preserve_invariants<trivial_set_t>();
     check_random_mutations_preserve_invariants<tracking_set_t>();
     check_random_mutations_preserve_invariants<trivial_map_t>();
+}
+
+static void test_extract_by_position_stays_balanced() {
+    check_extract_by_position_stays_balanced<trivial_set_t>();
+    check_extract_by_position_stays_balanced<tracking_set_t>();
+    check_extract_by_position_stays_balanced<trivial_map_t>();
+}
+
+static void test_splice_keeps_addresses_and_leaves_ties() {
+    check_splice_keeps_addresses_and_leaves_ties<trivial_set_t>();
+    check_splice_keeps_addresses_and_leaves_ties<trivial_map_t>();
 }
 
 static void test_iterator_post_decrement() {
@@ -1176,6 +1262,8 @@ int main(int argc, char **argv) {
     run_test_case("test_split_and_erase_range_stay_balanced", test_split_and_erase_range_stay_balanced);
     run_test_case("test_merge_unique_stays_balanced", test_merge_unique_stays_balanced);
     run_test_case("test_random_mutations_preserve_invariants", test_random_mutations_preserve_invariants);
+    run_test_case("test_extract_by_position_stays_balanced", test_extract_by_position_stays_balanced);
+    run_test_case("test_splice_keeps_addresses_and_leaves_ties", test_splice_keeps_addresses_and_leaves_ties);
     run_test_case("test_iterator_post_decrement", test_iterator_post_decrement);
     run_test_case("test_node_equal_range", test_node_equal_range);
     run_test_case("test_bulk_upsert_pays_only_while_staging", test_bulk_upsert_pays_only_while_staging);
