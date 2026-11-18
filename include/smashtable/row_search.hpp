@@ -30,6 +30,7 @@
 #include <cstddef> // `std::size_t`, `offsetof`
 #include <cstdint> // `std::uint32_t`, `std::uint64_t`, `std::int64_t`
 
+#include <array>       // `std::array`
 #include <bit>         // `std::popcount`, `std::endian`
 #include <concepts>    // `std::same_as`
 #include <limits>      // `std::numeric_limits`
@@ -369,11 +370,12 @@ struct haswell_row_kit_t {
             _mm256_xor_si256(_mm256_set1_epi64x(static_cast<std::int64_t>(wanted.high)), sign);
         __m256i const low_threshold = _mm256_xor_si256(_mm256_set1_epi64x(static_cast<std::int64_t>(wanted.low)), sign);
         std::size_t const whole = high_words.size() - high_words.size() % 4;
+        // Masks sum to the count negated: adds, unlike subtracts, get balanced into a tree.
         __m256i accumulated = _mm256_setzero_si256();
         __m256i tied = _mm256_setzero_si256();
         for (std::size_t offset = 0; offset < whole; offset += 4) {
             __m256i const high = flipped_load_(high_words.data() + offset, sign);
-            accumulated = _mm256_sub_epi64(accumulated, _mm256_cmpgt_epi64(high_threshold, high));
+            accumulated = _mm256_add_epi64(accumulated, _mm256_cmpgt_epi64(high_threshold, high));
             tied = _mm256_or_si256(tied, _mm256_cmpeq_epi64(high_threshold, high));
         }
         // One branch per row rather than per load, since a present key ties exactly once at an unpredictable spot.
@@ -383,9 +385,9 @@ struct haswell_row_kit_t {
                     _mm256_cmpeq_epi64(high_threshold, flipped_load_(high_words.data() + offset, sign));
                 __m256i const low_below =
                     _mm256_cmpgt_epi64(low_threshold, flipped_load_(low_words.data() + offset, sign));
-                accumulated = _mm256_sub_epi64(accumulated, _mm256_and_si256(high_tied, low_below));
+                accumulated = _mm256_add_epi64(accumulated, _mm256_and_si256(high_tied, low_below));
             }
-        return sum_lanes_(accumulated) +
+        return 0u - sum_lanes_(accumulated) +
                serial_row_kit_t::count_below(high_words.subspan(whole), low_words.subspan(whole), wanted);
     }
 
@@ -441,15 +443,16 @@ struct haswell_row_kit_t {
                                           std::uint64_t flip) noexcept {
         __m256i const flipper = _mm256_set1_epi64x(static_cast<std::int64_t>(flip));
         __m256i const threshold = _mm256_set1_epi64x(static_cast<std::int64_t>(wanted ^ flip));
+        // Masks sum to the count negated: adds, unlike subtracts, get balanced into a tree.
         __m256i accumulated = _mm256_setzero_si256();
         std::size_t offset = 0;
         for (; offset + 4 <= words.size(); offset += 4) {
             __m256i const loaded =
                 _mm256_loadu_si256(static_cast<__m256i const *>(static_cast<void const *>(words.data() + offset)));
             accumulated =
-                _mm256_sub_epi64(accumulated, _mm256_cmpgt_epi64(threshold, _mm256_xor_si256(loaded, flipper)));
+                _mm256_add_epi64(accumulated, _mm256_cmpgt_epi64(threshold, _mm256_xor_si256(loaded, flipper)));
         }
-        std::size_t below = sum_lanes_(accumulated);
+        std::size_t below = 0u - sum_lanes_(accumulated);
         for (; offset < words.size(); ++offset)
             below += static_cast<std::size_t>(static_cast<std::int64_t>(words[offset] ^ flip) <
                                               static_cast<std::int64_t>(wanted ^ flip));
@@ -753,64 +756,95 @@ struct neon_row_kit_t {
     [[nodiscard]] static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
                                                  std::uint32_t wanted) noexcept {
         uint32x4_t const threshold = vdupq_n_u32(wanted);
-        uint32x4_t accumulated = vdupq_n_u32(0);
-        std::size_t offset = 0;
-        for (; offset + 4 <= keys.size(); offset += 4)
-            accumulated = vsubq_u32(accumulated, vcltq_u32(vld1q_u32(keys.data() + offset), threshold));
-        return vaddvq_u32(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+        if constexpr (extent_ != std::dynamic_extent && extent_ % 4 == 0) {
+            std::array<uint32x4_t, extent_ / 4> masks;
+            for (std::size_t index = 0; index != masks.size(); ++index)
+                masks[index] = vcltq_u32(vld1q_u32(keys.data() + index * 4), threshold);
+            return static_cast<std::uint32_t>(0u - vaddvq_u32(sum_pairwise_(masks)));
+        }
+        else {
+            uint32x4_t accumulated = vdupq_n_u32(0);
+            std::size_t offset = 0;
+            for (; offset + 4 <= keys.size(); offset += 4)
+                accumulated = vsubq_u32(accumulated, vcltq_u32(vld1q_u32(keys.data() + offset), threshold));
+            return vaddvq_u32(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+        }
     }
 
     template <std::size_t extent_>
     [[nodiscard]] static std::size_t count_below(std::span<std::int32_t const, extent_> keys,
                                                  std::int32_t wanted) noexcept {
         int32x4_t const threshold = vdupq_n_s32(wanted);
-        uint32x4_t accumulated = vdupq_n_u32(0);
-        std::size_t offset = 0;
-        for (; offset + 4 <= keys.size(); offset += 4)
-            accumulated = vsubq_u32(accumulated, vcltq_s32(vld1q_s32(keys.data() + offset), threshold));
-        return vaddvq_u32(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+        if constexpr (extent_ != std::dynamic_extent && extent_ % 4 == 0) {
+            std::array<uint32x4_t, extent_ / 4> masks;
+            for (std::size_t index = 0; index != masks.size(); ++index)
+                masks[index] = vcltq_s32(vld1q_s32(keys.data() + index * 4), threshold);
+            return static_cast<std::uint32_t>(0u - vaddvq_u32(sum_pairwise_(masks)));
+        }
+        else {
+            uint32x4_t accumulated = vdupq_n_u32(0);
+            std::size_t offset = 0;
+            for (; offset + 4 <= keys.size(); offset += 4)
+                accumulated = vsubq_u32(accumulated, vcltq_s32(vld1q_s32(keys.data() + offset), threshold));
+            return vaddvq_u32(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+        }
     }
 
     template <std::size_t extent_>
     [[nodiscard]] static std::size_t count_below(std::span<std::uint64_t const, extent_> keys,
                                                  std::uint64_t wanted) noexcept {
         uint64x2_t const threshold = vdupq_n_u64(wanted);
-        uint64x2_t accumulated = vdupq_n_u64(0);
-        std::size_t offset = 0;
-        for (; offset + 2 <= keys.size(); offset += 2)
-            accumulated = vsubq_u64(accumulated, vcltq_u64(vld1q_u64(keys.data() + offset), threshold));
-        return vaddvq_u64(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+        if constexpr (extent_ != std::dynamic_extent && extent_ % 2 == 0) {
+            std::array<uint64x2_t, extent_ / 2> masks;
+            for (std::size_t index = 0; index != masks.size(); ++index)
+                masks[index] = vcltq_u64(vld1q_u64(keys.data() + index * 2), threshold);
+            return 0u - vaddvq_u64(sum_pairwise_(masks));
+        }
+        else {
+            uint64x2_t accumulated = vdupq_n_u64(0);
+            std::size_t offset = 0;
+            for (; offset + 2 <= keys.size(); offset += 2)
+                accumulated = vsubq_u64(accumulated, vcltq_u64(vld1q_u64(keys.data() + offset), threshold));
+            return vaddvq_u64(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+        }
     }
 
     template <std::size_t extent_>
     [[nodiscard]] static std::size_t count_below(std::span<std::int64_t const, extent_> keys,
                                                  std::int64_t wanted) noexcept {
         int64x2_t const threshold = vdupq_n_s64(wanted);
-        uint64x2_t accumulated = vdupq_n_u64(0);
-        std::size_t offset = 0;
-        for (; offset + 2 <= keys.size(); offset += 2)
-            accumulated = vsubq_u64(accumulated, vcltq_s64(vld1q_s64(keys.data() + offset), threshold));
-        return vaddvq_u64(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+        if constexpr (extent_ != std::dynamic_extent && extent_ % 2 == 0) {
+            std::array<uint64x2_t, extent_ / 2> masks;
+            for (std::size_t index = 0; index != masks.size(); ++index)
+                masks[index] = vcltq_s64(vld1q_s64(keys.data() + index * 2), threshold);
+            return 0u - vaddvq_u64(sum_pairwise_(masks));
+        }
+        else {
+            uint64x2_t accumulated = vdupq_n_u64(0);
+            std::size_t offset = 0;
+            for (; offset + 2 <= keys.size(); offset += 2)
+                accumulated = vsubq_u64(accumulated, vcltq_s64(vld1q_s64(keys.data() + offset), threshold));
+            return vaddvq_u64(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+        }
     }
 
     template <std::size_t extent_>
     [[nodiscard]] static std::size_t count_below(std::span<key128_t const, extent_> keys, key128_t wanted) noexcept {
         uint64x2_t const high_threshold = vdupq_n_u64(wanted.high);
         uint64x2_t const low_threshold = vdupq_n_u64(wanted.low);
-        uint64x2_t accumulated = vdupq_n_u64(0);
-        std::size_t offset = 0;
-        for (; offset + 2 <= keys.size(); offset += 2) {
-            std::uint64_t const *const words =
-                static_cast<std::uint64_t const *>(static_cast<void const *>(keys.data() + offset));
-            uint64x2_t const first_key = vld1q_u64(words);
-            uint64x2_t const second_key = vld1q_u64(words + 2);
-            uint64x2_t const high = vuzp1q_u64(first_key, second_key);
-            uint64x2_t const high_tied = vceqq_u64(high, high_threshold);
-            uint64x2_t const low_below =
-                vandq_u64(high_tied, vcltq_u64(vuzp2q_u64(first_key, second_key), low_threshold));
-            accumulated = vsubq_u64(accumulated, vorrq_u64(vcltq_u64(high, high_threshold), low_below));
+        if constexpr (extent_ != std::dynamic_extent && extent_ % 2 == 0) {
+            std::array<uint64x2_t, extent_ / 2> masks;
+            for (std::size_t index = 0; index != masks.size(); ++index)
+                masks[index] = below_pair_(keys.data() + index * 2, high_threshold, low_threshold);
+            return 0u - vaddvq_u64(sum_pairwise_(masks));
         }
-        return vaddvq_u64(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+        else {
+            uint64x2_t accumulated = vdupq_n_u64(0);
+            std::size_t offset = 0;
+            for (; offset + 2 <= keys.size(); offset += 2)
+                accumulated = vsubq_u64(accumulated, below_pair_(keys.data() + offset, high_threshold, low_threshold));
+            return vaddvq_u64(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+        }
     }
 
     template <std::size_t extent_>
@@ -820,23 +854,45 @@ struct neon_row_kit_t {
         assert(high_words.size() == low_words.size() && "a split row has one low word per high word");
         uint64x2_t const high_threshold = vdupq_n_u64(wanted.high);
         uint64x2_t const low_threshold = vdupq_n_u64(wanted.low);
-        std::size_t const whole = high_words.size() - high_words.size() % 2;
-        uint64x2_t accumulated = vdupq_n_u64(0);
-        uint64x2_t tied = vdupq_n_u64(0);
-        for (std::size_t offset = 0; offset < whole; offset += 2) {
-            uint64x2_t const high = vld1q_u64(high_words.data() + offset);
-            accumulated = vsubq_u64(accumulated, vcltq_u64(high, high_threshold));
-            tied = vorrq_u64(tied, vceqq_u64(high, high_threshold));
-        }
-        // One branch per row rather than per load, since a present key ties exactly once at an unpredictable spot.
-        if (vmaxvq_u32(vreinterpretq_u32_u64(tied)) != 0)
-            for (std::size_t offset = 0; offset < whole; offset += 2) {
-                uint64x2_t const high_tied = vceqq_u64(vld1q_u64(high_words.data() + offset), high_threshold);
-                uint64x2_t const low_below = vcltq_u64(vld1q_u64(low_words.data() + offset), low_threshold);
-                accumulated = vsubq_u64(accumulated, vandq_u64(high_tied, low_below));
+        if constexpr (extent_ != std::dynamic_extent && extent_ % 2 == 0) {
+            std::array<uint64x2_t, extent_ / 2> masks;
+            uint64x2_t tied = vdupq_n_u64(0);
+            for (std::size_t index = 0; index != masks.size(); ++index) {
+                uint64x2_t const high = vld1q_u64(high_words.data() + index * 2);
+                masks[index] = vcltq_u64(high, high_threshold);
+                tied = vorrq_u64(tied, vceqq_u64(high, high_threshold));
             }
-        return vaddvq_u64(accumulated) +
-               serial_row_kit_t::count_below(high_words.subspan(whole), low_words.subspan(whole), wanted);
+            uint64x2_t below = sum_pairwise_(masks);
+            // One branch per row, not per load: a present key ties once, at an unpredictable spot.
+            if (vmaxvq_u32(vreinterpretq_u32_u64(tied)) != 0) {
+                for (std::size_t index = 0; index != masks.size(); ++index) {
+                    uint64x2_t const high_tied = vceqq_u64(vld1q_u64(high_words.data() + index * 2), high_threshold);
+                    uint64x2_t const low_below = vcltq_u64(vld1q_u64(low_words.data() + index * 2), low_threshold);
+                    masks[index] = vandq_u64(high_tied, low_below);
+                }
+                below = add_lanes_(below, sum_pairwise_(masks));
+            }
+            return 0u - vaddvq_u64(below);
+        }
+        else {
+            std::size_t const whole = high_words.size() - high_words.size() % 2;
+            uint64x2_t accumulated = vdupq_n_u64(0);
+            uint64x2_t tied = vdupq_n_u64(0);
+            for (std::size_t offset = 0; offset < whole; offset += 2) {
+                uint64x2_t const high = vld1q_u64(high_words.data() + offset);
+                accumulated = vsubq_u64(accumulated, vcltq_u64(high, high_threshold));
+                tied = vorrq_u64(tied, vceqq_u64(high, high_threshold));
+            }
+            // One branch per row, not per load: a present key ties once, at an unpredictable spot.
+            if (vmaxvq_u32(vreinterpretq_u32_u64(tied)) != 0)
+                for (std::size_t offset = 0; offset < whole; offset += 2) {
+                    uint64x2_t const high_tied = vceqq_u64(vld1q_u64(high_words.data() + offset), high_threshold);
+                    uint64x2_t const low_below = vcltq_u64(vld1q_u64(low_words.data() + offset), low_threshold);
+                    accumulated = vsubq_u64(accumulated, vandq_u64(high_tied, low_below));
+                }
+            return vaddvq_u64(accumulated) +
+                   serial_row_kit_t::count_below(high_words.subspan(whole), low_words.subspan(whole), wanted);
+        }
     }
 
     [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint32_t const, mask_equal_width_k> keys,
@@ -908,6 +964,36 @@ struct neon_row_kit_t {
     }
 
   private:
+    /** Folds @p vectors pairwise, level by level, into one whose lanes keep their total: for
+     *  masks of all-ones lanes, the count negated. */
+    template <typename vector_type_, std::size_t count_>
+    [[nodiscard]] static vector_type_ sum_pairwise_(std::array<vector_type_, count_> const &vectors) noexcept {
+        if constexpr (count_ == 0) return vector_type_ {};
+        else if constexpr (count_ == 1) return vectors[0];
+        else {
+            std::array<vector_type_, (count_ + 1) / 2> halved;
+            for (std::size_t index = 0; index != halved.size(); ++index)
+                halved[index] = 2 * index + 1 != count_ ? add_lanes_(vectors[2 * index], vectors[2 * index + 1])
+                                                        : vectors[2 * index];
+            return sum_pairwise_(halved);
+        }
+    }
+
+    // `ADDP` mixes lanes but keeps their total; plain adds the compiler relinks into a chain.
+    static uint32x4_t add_lanes_(uint32x4_t left, uint32x4_t right) noexcept { return vpaddq_u32(left, right); }
+    static uint64x2_t add_lanes_(uint64x2_t left, uint64x2_t right) noexcept { return vpaddq_u64(left, right); }
+
+    /** Two adjacent 16-byte keys against a split threshold, one all-ones lane per key below. */
+    static uint64x2_t below_pair_(key128_t const *pair, uint64x2_t high_threshold, uint64x2_t low_threshold) noexcept {
+        std::uint64_t const *const words = static_cast<std::uint64_t const *>(static_cast<void const *>(pair));
+        uint64x2_t const first_key = vld1q_u64(words);
+        uint64x2_t const second_key = vld1q_u64(words + 2);
+        uint64x2_t const high = vuzp1q_u64(first_key, second_key);
+        uint64x2_t const high_tied = vceqq_u64(high, high_threshold);
+        uint64x2_t const low_below = vandq_u64(high_tied, vcltq_u64(vuzp2q_u64(first_key, second_key), low_threshold));
+        return vorrq_u64(vcltq_u64(high, high_threshold), low_below);
+    }
+
     /** Two adjacent 16-byte keys against a needle split in words, one all-ones lane per match. */
     static uint64x2_t equal_pair_(key128_t const *pair, uint64x2_t high_needle, uint64x2_t low_needle) noexcept {
         uint64x2x2_t const columns = vld2q_u64(static_cast<std::uint64_t const *>(static_cast<void const *>(pair)));
