@@ -10,15 +10,18 @@
  *  reads are listed in CONTRIBUTING.md.
  */
 #include <cstddef> // `std::size_t`
-#include <cstdint> // `std::uint64_t`
+#include <cstdint> // `std::uint64_t`, `std::uintptr_t`
 #include <cstring> // `std::strcmp`
 
-#include <algorithm> // `std::lower_bound`, `std::sort`
-#include <chrono>    // `std::chrono::steady_clock`
-#include <concepts>  // `std::same_as`
-#include <format>    // `std::format`
-#include <span>      // `std::span`
-#include <string>    // `std::string`
+#include <algorithm>   // `std::lower_bound`, `std::sort`
+#include <chrono>      // `std::chrono::steady_clock`
+#include <concepts>    // `std::same_as`
+#include <format>      // `std::format`
+#include <span>        // `std::span`
+#include <string>      // `std::string`
+#include <type_traits> // `std::true_type`
+
+#include <forkunion.hpp> // `fu::portable_aligned_allocator`
 
 #include <smashtable/basic_vector.hpp>
 #include <smashtable/row_search.hpp>
@@ -28,6 +31,8 @@
 #include "harness.hpp"
 
 namespace ashvardanian::smashtable::bench {
+
+namespace fu = ashvardanian::forkunion;
 
 #pragma region Workloads
 
@@ -128,8 +133,8 @@ void bench_rows_of(environment_t const &env, char const *label, key_draw_t draw,
     }
 }
 
-/** The row widths the sweep walks: a common cache line, a block, and a common page. */
-constexpr std::size_t swept_row_bytes_k[] = {64u, 512u, 4096u};
+/** The row widths the sweep walks: two common cache lines, a block, and a common page. */
+constexpr std::size_t swept_row_bytes_k[] = {64u, 128u, 512u, 4096u};
 
 void bench_row_kits(environment_t const &env) {
     print_line(stdout, "\nRow kits over {} sorted rows, the speed-up against serial last", env.settings.rows);
@@ -142,6 +147,14 @@ void bench_row_kits(environment_t const &env) {
             bench_rows_of<key128_t, 4>(env, "key128.uniform", key_draw_t::uniform_k, "split");
             bench_rows_of<key128_t, 4>(env, "key128.identities", key_draw_t::integer_identities_k, "split");
             bench_rows_of<key128_t, 4>(env, "key128.uniform", key_draw_t::uniform_k, "interleaved");
+            break;
+        case 128u:
+            bench_rows_of<std::uint32_t, 32>(env, "u32", key_draw_t::uniform_k, "column");
+            bench_rows_of<std::uint64_t, 16>(env, "u64", key_draw_t::uniform_k, "column");
+            bench_rows_of<std::int64_t, 16>(env, "i64", key_draw_t::uniform_k, "column");
+            bench_rows_of<key128_t, 8>(env, "key128.uniform", key_draw_t::uniform_k, "split");
+            bench_rows_of<key128_t, 8>(env, "key128.identities", key_draw_t::integer_identities_k, "split");
+            bench_rows_of<key128_t, 8>(env, "key128.uniform", key_draw_t::uniform_k, "interleaved");
             break;
         case 512u:
             bench_rows_of<std::uint32_t, 128>(env, "u32", key_draw_t::uniform_k, "column");
@@ -181,6 +194,8 @@ void bench_layout(environment_t const &env, std::string const &prefix, char cons
     double const build_seconds = std::chrono::duration<double>(steady_clock_t::now() - built_at).count();
     run(env, name, binary, [&](loop_t &loop) noexcept {
         if (!layout) return loop.skip(name_of(layout.status()));
+        if (reinterpret_cast<std::uintptr_t>(layout->words().data()) % cache_line_bytes_k != 0)
+            return loop.skip("rows start off the cache line");
         loop.counter("MB", static_cast<double>(layout->size_bytes()) / (1 << 20));
         loop.counter("build seconds", build_seconds);
         search_queries(loop, queries.size(), [&](std::size_t query) noexcept { return layout->rank(queries[query]); });
@@ -190,9 +205,11 @@ void bench_layout(environment_t const &env, std::string const &prefix, char cons
 template <typename kit_type_, typename key_type_, std::size_t keys_per_row_>
 void bench_layouts_with(environment_t const &env, std::string const &prefix, std::span<key_type_ const> sorted,
                         std::span<key_type_ const> queries, double binary) {
-    bench_layout<immutable_b_tree<key_type_, keys_per_row_, kit_type_>>(env, prefix, "b_tree", sorted, queries, binary);
-    bench_layout<immutable_splus_tree<key_type_, keys_per_row_, kit_type_>>(env, prefix, "splus_tree", sorted, queries,
-                                                                            binary);
+    using allocator_t = fu::portable_aligned_allocator<key_type_>;
+    bench_layout<immutable_b_tree<key_type_, keys_per_row_, kit_type_, allocator_t>>(env, prefix, "b_tree", sorted,
+                                                                                     queries, binary);
+    bench_layout<immutable_splus_tree<key_type_, keys_per_row_, kit_type_, allocator_t>>(env, prefix, "splus_tree",
+                                                                                         sorted, queries, binary);
 }
 
 template <typename key_type_>
@@ -225,6 +242,8 @@ void bench_layouts_of(environment_t const &env, char const *label, key_draw_t dr
             if constexpr (std::same_as<key_type_, key128_t>) {
                 bench_layouts_with<kit_type_, key128_t, keys_per_row<key128_t>(64u)>(env, prefix, sorted_span,
                                                                                      query_span, binary);
+                bench_layouts_with<kit_type_, key128_t, keys_per_row<key128_t>(128u)>(env, prefix, sorted_span,
+                                                                                      query_span, binary);
                 bench_layouts_with<kit_type_, key128_t, keys_per_row<key128_t>(512u)>(env, prefix, sorted_span,
                                                                                       query_span, binary);
                 bench_layouts_with<kit_type_, key128_t, keys_per_row<key128_t>(4096u)>(env, prefix, sorted_span,
@@ -233,6 +252,8 @@ void bench_layouts_of(environment_t const &env, char const *label, key_draw_t dr
             else {
                 bench_layouts_with<kit_type_, key_type_, keys_per_row<key_type_>(64u)>(env, prefix, sorted_span,
                                                                                        query_span, binary);
+                bench_layouts_with<kit_type_, key_type_, keys_per_row<key_type_>(128u)>(env, prefix, sorted_span,
+                                                                                        query_span, binary);
                 bench_layouts_with<kit_type_, key_type_, keys_per_row<key_type_>(512u)>(env, prefix, sorted_span,
                                                                                         query_span, binary);
                 bench_layouts_with<kit_type_, key_type_, keys_per_row<key_type_>(4096u)>(env, prefix, sorted_span,
@@ -245,6 +266,7 @@ void bench_layouts_of(environment_t const &env, char const *label, key_draw_t dr
 void bench_layouts(environment_t const &env) {
     print_line(stdout, "\nLayouts over {} sorted keys, queries drawn from the keys, the speed-up against binary last",
                env.settings.keys);
+    bench_layouts_of<std::uint32_t>(env, "u32", key_draw_t::uniform_k);
     bench_layouts_of<std::uint64_t>(env, "u64", key_draw_t::uniform_k);
     bench_layouts_of<key128_t>(env, "key128.uniform", key_draw_t::uniform_k);
     bench_layouts_of<key128_t>(env, "key128.identities", key_draw_t::integer_identities_k);

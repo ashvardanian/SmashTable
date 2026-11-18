@@ -72,7 +72,7 @@ struct splus_tree_header_t {
  */
 template <typename value_type_,
           std::size_t keys_per_row_ =
-              keys_per_row<typename mapping_key_type_or_itself<value_type_>::type>(default_row_bytes_k),
+              keys_per_row<typename mapping_key_type_or_itself<value_type_>::type>(cache_line_bytes_k),
           row_kit row_kit_type_ = native_row_kit_t>
 class immutable_splus_tree_view {
   public:
@@ -312,11 +312,11 @@ class immutable_splus_tree_view {
  *      rows of @p keys_per_row_ keys searched by @p row_kit_type_. A set holds one allocation of
  *      rows; a map holds a second one of mapped values, indexed by rank.
  *
- *  @tparam keys_per_row_ Keys per node, which is @p default_row_bytes_k worth by default.
+ *  @tparam keys_per_row_ Keys per node, one cache line, @c cache_line_bytes_k, by default.
  */
 template <typename value_type_,
           std::size_t keys_per_row_ =
-              keys_per_row<typename mapping_key_type_or_itself<value_type_>::type>(default_row_bytes_k),
+              keys_per_row<typename mapping_key_type_or_itself<value_type_>::type>(cache_line_bytes_k),
           row_kit row_kit_type_ = native_row_kit_t, typename allocator_type_ = default_allocator<value_type_>>
 class immutable_splus_tree {
   public:
@@ -522,13 +522,13 @@ class immutable_splus_tree {
 };
 
 /** An immutable S+ tree of bare keys. */
-template <typename key_type_, std::size_t keys_per_row_ = keys_per_row<key_type_>(default_row_bytes_k),
+template <typename key_type_, std::size_t keys_per_row_ = keys_per_row<key_type_>(cache_line_bytes_k),
           row_kit row_kit_type_ = native_row_kit_t, typename allocator_type_ = default_allocator<key_type_>>
 using immutable_splus_set = immutable_splus_tree<key_type_, keys_per_row_, row_kit_type_, allocator_type_>;
 
 /** An immutable S+ tree pairing each key with a value the rank indexes. */
 template <typename key_type_, typename mapped_type_,
-          std::size_t keys_per_row_ = keys_per_row<key_type_>(default_row_bytes_k),
+          std::size_t keys_per_row_ = keys_per_row<key_type_>(cache_line_bytes_k),
           row_kit row_kit_type_ = native_row_kit_t,
           typename allocator_type_ = default_allocator<mapping<key_type_, mapped_type_>>>
 using immutable_splus_map =

@@ -68,14 +68,8 @@ concept row_searchable_key = std::same_as<key_type_, std::uint32_t> || std::same
                              std::same_as<key_type_, std::uint64_t> || std::same_as<key_type_, std::int64_t> ||
                              std::same_as<key_type_, key128_t>;
 
-/**
- *  @brief The row width the ordered layouts take when a caller names none: a 512-byte block.
- *
- *  Sized rather than measured: a cache line is 64 bytes on most cores and 128 on others, and a page
- *  is 4096 bytes until an operating system is configured otherwise, so neither is a constant this
- *  header could state. A block sits between them and divides evenly by every key width here.
- */
-inline constexpr std::size_t default_row_bytes_k = 512;
+static_assert(cache_line_bytes_k % sizeof(key128_t) == 0 && cache_line_bytes_k >= 2 * sizeof(key128_t),
+              "a cache line holds a whole number of keys of every width, and two at least");
 
 /** How many keys of @p key_type_ fill @p medium_bytes, counting both columns of a split 16-byte
  *  row. */

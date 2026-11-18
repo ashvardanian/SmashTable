@@ -629,7 +629,7 @@ Two 32-bit counters of pushes and pops wrap together, so their difference is the
 > `smashtable/immutable_b_tree.hpp` · `smashtable/immutable_splus_tree.hpp` · `smashtable/row_layout.hpp` · `smashtable/row_search.hpp`
 
 Both are built once from a sorted span and never written again, so any number of threads may read one at once with no synchronization at all.
-Both search a __row__ at a time rather than a key at a time — a row being a span wide enough to be worth one vectorized pass, 512 bytes by default, which is `default_row_bytes_k`.
+Both search a __row__ at a time rather than a key at a time — a row being a span wide enough to be worth one vectorized pass, one cache line by default, which is `cache_line_bytes_k`.
 `row_layout.hpp` says what a key may be and where each one sits in a row; `row_search.hpp` says how a row is searched.
 
 `immutable_b_tree` stores nodes breadth-first with implicit children: node `i` holds one row of `B` keys and its children are nodes `i*(B+1)+j+1`.

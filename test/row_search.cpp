@@ -298,18 +298,21 @@ void check_layouts_of(split_mix_generator_t &generator) {
 template <typename kit_type_>
 void check_kit_layouts(kit_type_) {
     split_mix_generator_t generator {case_stream_key()};
-    // Widths from each medium - a cache line, a 512-byte and a 4096-byte block - and a few odd ones for the arithmetic.
+    // Widths from each medium: both cache lines, a block and a page, and a few odd ones.
     check_layouts_of<kit_type_, key128_t, 2>(generator);
     check_layouts_of<kit_type_, key128_t, 3>(generator);
     check_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(64u)>(generator);
+    check_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(128u)>(generator);
     check_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(512u)>(generator);
     check_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(4096u)>(generator);
     check_layouts_of<kit_type_, std::uint64_t, 5>(generator);
     check_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(64u)>(generator);
+    check_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(128u)>(generator);
     check_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(512u)>(generator);
     check_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(4096u)>(generator);
     check_layouts_of<kit_type_, std::int64_t, keys_per_row<std::int64_t>(64u)>(generator);
     check_layouts_of<kit_type_, std::int32_t, keys_per_row<std::int32_t>(512u)>(generator);
+    check_layouts_of<kit_type_, std::uint32_t, keys_per_row<std::uint32_t>(128u)>(generator);
     check_layouts_of<kit_type_, std::uint32_t, keys_per_row<std::uint32_t>(512u)>(generator);
 }
 
@@ -357,7 +360,7 @@ void test_serial_matches_definitions() {
     using page_format_t = row_format<std::uint64_t, 512>;
     expect_equal(block_format_t::bytes_per_row_k, 512u);
     expect_equal(page_format_t::bytes_per_row_k, 4096u);
-    expect_equal(immutable_b_tree<key128_t>::keys_per_row_k, 32u);
+    expect_equal(immutable_b_tree<key128_t>::keys_per_row_k, cache_line_bytes_k / sizeof(key128_t));
 
     row_kit_t const detected = detect_row_kit();
     expect_true(row_kit_compiled(detected));
@@ -415,8 +418,8 @@ void test_saved_views() {
     expect_equal(map_t::view_t::make(bytes.subspan(1)).status(), status_t::invalid_argument_k, "a misaligned start");
     expect_equal(immutable_splus_set<std::uint64_t>::view_t::make(bytes).status(), status_t::invalid_argument_k,
                  "a set over a map's bytes");
-    expect_equal((immutable_splus_tree_view<pair_t, 8>::make(bytes).status()), status_t::invalid_argument_k,
-                 "another row width");
+    expect_equal((immutable_splus_tree_view<pair_t, map_t::keys_per_row_k + 1>::make(bytes).status()),
+                 status_t::invalid_argument_k, "another row width");
     std::span<std::byte> const short_bytes(reinterpret_cast<std::byte *>(words.data()), map->saved_bytes() - 1);
     expect_equal(map->save(short_bytes), status_t::invalid_argument_k);
 

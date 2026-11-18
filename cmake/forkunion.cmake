@@ -6,7 +6,7 @@ include(FetchContent)
 FetchContent_Declare(
     forkunion
     GIT_REPOSITORY https://github.com/ashvardanian/ForkUnion.git
-    GIT_TAG 59662d01e66ee40a87d8f5b28387a29d16c78ddd
+    GIT_TAG 32875b51beffda631acbe4ea24486d01fb4526f3
     EXCLUDE_FROM_ALL SYSTEM
 )
 FetchContent_MakeAvailable(forkunion)
