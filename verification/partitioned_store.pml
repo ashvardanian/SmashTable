@@ -31,7 +31,7 @@
 #define ring 2
 #define thread_count 3
 #define location_count 12
-#define history_depth 11
+#define history_depth 18
 #include <weak_memory.pml>
 #include <monitor_wait.pml>
 #include <spin_shared_mutex.pml>

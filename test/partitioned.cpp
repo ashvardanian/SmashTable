@@ -1566,6 +1566,126 @@ static void test_lock_cost_cursor_beats_stepping() {
                  "a cursor over a quiet store costs one partition acquisition per element");
 }
 
+/** Sixteen stamped partitions over the counting mutex, so a commit's holds can be counted. */
+using counted_snapshot_map_t = partitioned_map<snapshot_trivial_map_t, hash<trivial_key_t>, counting_mutex_t, 16>;
+using counted_member_t = counted_snapshot_map_t::value_t;
+
+/** A commit reaching one partition takes it once for the stage, the validation, the publication
+ *  and the prune together. */
+static void test_lock_cost_commit_holds_each_partition_once() {
+    auto built = counted_snapshot_map_t::make();
+    if (!expect_true(built.has_value(), "the counted map must build")) return;
+    auto transaction = built->transaction();
+    if (!expect_equal(transaction.status(), success_k)) return;
+    expect_equal(transaction->upsert(trivial_id_to_member<counted_member_t>(1)), success_k);
+
+    counting_mutex_t::reset();
+    expect_equal(commit_with_retries(*transaction, 1, [](auto &) noexcept { return success_k; }), success_k);
+    expect_equal(counting_mutex_t::taken(), 1u, "one hold of the one partition the commit reached");
+
+    bool found = false;
+    expect_equal(built->find(trivial_key_t {1}, [&](counted_member_t const &) noexcept { found = true; }), success_k);
+    expect_true(found, "the commit under one hold published what it staged");
+}
+
+/** A committed transaction pins no snapshot until its next operation asks for one. */
+static void test_commit_gives_its_claim_back() {
+    auto built = sharded_snapshot_map_t::make();
+    if (!expect_true(built.has_value(), "the sharded map must build")) return;
+    using member_t = sharded_snapshot_map_t::value_t;
+    auto transaction = built->transaction();
+    if (!expect_equal(transaction.status(), success_k)) return;
+    expect_equal(built->order().open_snapshots(), 1u);
+    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(transaction->stage(), success_k);
+    expect_equal(transaction->commit(), success_k);
+    expect_equal(built->order().open_snapshots(), 0u, "a commit leaves no claim for the mark to wait on");
+
+    bool found = false;
+    expect_equal(transaction->find(trivial_key_t {1}, [&](member_t const &) noexcept { found = true; }), success_k);
+    expect_true(found, "the next read settles on a snapshot covering the commit");
+    expect_equal(built->order().open_snapshots(), 1u);
+}
+
+/** An abort locks the partitions the transaction reached, never the other fifteen. */
+static void test_lock_cost_reset_locks_only_reached_partitions() {
+    auto built = counted_snapshot_map_t::make();
+    if (!expect_true(built.has_value(), "the counted map must build")) return;
+    auto transaction = built->transaction();
+    if (!expect_equal(transaction.status(), success_k)) return;
+    expect_equal(transaction->upsert(trivial_id_to_member<counted_member_t>(1)), success_k);
+    expect_equal(transaction->stage(), success_k);
+
+    counting_mutex_t::reset();
+    expect_equal(transaction->reset(), success_k);
+    expect_equal(counting_mutex_t::taken(), 1u, "only the reached partition holds anything to discard");
+
+    // Every partition reads at the snapshot the reset drew, the unreached ones included.
+    expect_equal(built->upsert(trivial_id_to_member<counted_member_t>(2)), success_k);
+    expect_equal(transaction->snapshot(), built->order().published_stamp() - 1);
+    bool staged_survived = false;
+    expect_equal(built->find(trivial_key_t {1}, [&](counted_member_t const &) noexcept { staged_survived = true; }),
+                 success_k);
+    expect_true(!staged_survived, "the reset dropped what the reached partition had staged");
+}
+
+/** A group keeps each partition it validated through its prune, taking it once per commit. */
+static void test_lock_cost_group_holds_each_partition_through_prune() {
+    counted_snapshot_map_t::order_t order;
+    counted_snapshot_map_t left {order}, right {order};
+    auto group = make_transaction_group(left, right);
+    if (!expect_equal(group.status(), success_k)) return;
+    auto [left_writes, right_writes] = group->participants();
+    expect_equal(left_writes.upsert(trivial_id_to_member<counted_member_t>(1)), success_k);
+    expect_equal(right_writes.upsert(trivial_id_to_member<counted_member_t>(2)), success_k);
+    expect_equal(group->stage(), success_k);
+
+    counting_mutex_t::reset();
+    expect_equal(group->commit(), success_k);
+    expect_equal(counting_mutex_t::taken(), 2u, "one hold per reached partition, from validation to prune");
+    expect_equal(left_writes.snapshot(), order.published_stamp(), "the group reopens at its own stamp");
+}
+
+/** Two groups over a locked and a partitioned store of one order, each holding both from its
+ *  validation through its prune, commit side by side and lose nothing. */
+static void test_group_over_locked_and_partitioned_commits_from_two_threads() {
+    using order_t = sharded_snapshot_map_t::order_t;
+    using locked_snapshot_map_t = locked_store<snapshot_trivial_map_t, spin_shared_mutex_t, order_t>;
+    using member_t = sharded_snapshot_map_t::value_t;
+    order_t order;
+    locked_snapshot_map_t locked {order};
+    sharded_snapshot_map_t sharded {order};
+
+    constexpr std::size_t committers_k = 2;
+    std::size_t const commits = scaled_iterations(512);
+    std::array<std::size_t, committers_k> landed {};
+    std::atomic<std::size_t> finished {0};
+    std::vector<std::thread> threads;
+    for (std::size_t committer = 0; committer != committers_k; ++committer)
+        threads.emplace_back([&, committer]() noexcept {
+            auto group = make_transaction_group(locked, sharded);
+            if (!expect_equal(group.status(), success_k)) return;
+            auto [locked_writes, sharded_writes] = group->participants();
+            for (std::size_t commit = 0; commit != commits; ++commit) {
+                std::size_t const identifier = commit * committers_k + committer;
+                expect_equal(locked_writes.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
+                expect_equal(sharded_writes.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
+                expect_equal(group->stage(), success_k);
+                if (succeeded(group->commit())) ++landed[committer];
+                else expect_equal(group->reset(), success_k);
+            }
+            finished.fetch_add(1);
+        });
+    expect_true(spin_until([&] { return finished.load() == committers_k; }), "two groups must not wait on each other");
+    for (std::thread &thread : threads) thread.join();
+
+    std::size_t landed_total = 0;
+    for (std::size_t const count : landed) landed_total += count;
+    expect_equal(landed_total, committers_k * commits, "disjoint keys conflict with nobody");
+    expect_equal(locked.size(), landed_total);
+    expect_equal(sharded.size(), landed_total);
+}
+
 #pragma endregion Lock Cost
 
 /**
@@ -1826,6 +1946,12 @@ int main(int argc, char **argv) {
     start_test_run(argc, argv);
 
     run_test_case("test_lock_cost_cursor_beats_stepping", test_lock_cost_cursor_beats_stepping);
+    run_test_case("test_lock_cost_commit_holds_each_partition_once", test_lock_cost_commit_holds_each_partition_once);
+    run_test_case("test_lock_cost_reset_locks_only_reached_partitions",
+                  test_lock_cost_reset_locks_only_reached_partitions);
+    run_test_case("test_lock_cost_group_holds_each_partition_through_prune",
+                  test_lock_cost_group_holds_each_partition_through_prune);
+    run_test_case("test_commit_gives_its_claim_back", test_commit_gives_its_claim_back);
     run_test_case("test_merged_order_range_ascends", test_merged_order_range_ascends);
     run_test_case("test_merged_order_range_matches_stepping", test_merged_order_range_matches_stepping);
     run_test_case("test_merged_order_inclusive_bound_is_one_probe", test_merged_order_inclusive_bound_is_one_probe);
@@ -1904,6 +2030,8 @@ int main(int argc, char **argv) {
 
     run_test_case("test_group_commits_participants_together", test_group_commits_participants_together);
     run_test_case("test_group_unwinds_every_participant_on_conflict", test_group_unwinds_every_participant_on_conflict);
+    run_test_case("test_group_over_locked_and_partitioned_commits_from_two_threads",
+                  test_group_over_locked_and_partitioned_commits_from_two_threads);
 
     run_test_case("test_find_does_not_watch", test_find_does_not_watch);
 

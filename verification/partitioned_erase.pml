@@ -23,7 +23,7 @@
 #define ring 2
 #define thread_count 3
 #define location_count (2 * partitions + 2 + ring)
-#define history_depth 6
+#define history_depth 10
 #include <weak_memory.pml>
 #include <monitor_wait.pml>
 #include <spin_shared_mutex.pml>

@@ -1384,21 +1384,30 @@ class partitioned_store {
             return success_k;
         }
 
-        /** Takes every reached partition, ascending, for a validation whose publication comes in a
-         *  later call. */
-        void hold_reached_parts_() noexcept {
-            for (marked_partition_t reached = touched_.first_marked();
-                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
-                store_->mutexes_[reached.index].lock();
+        /** Takes every partition @p reached marks, ascending, for a hold that outlives one step. */
+        void hold_parts_(touched_partitions_t const &reached) noexcept {
+            for (marked_partition_t held = reached.first_marked(); held.presence == marked_presence_t::one_marked_k;
+                 held = reached.next_marked(held.index))
+                store_->mutexes_[held.index].lock();
         }
 
-        /** Gives back every partition @c hold_reached_parts_ took, recording that each changed. */
-        void release_reached_parts_() noexcept {
-            for (marked_partition_t reached = touched_.first_marked();
-                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
-                note_written_(store_->epochs_[reached.index].writes);
-                store_->mutexes_[reached.index].unlock();
+        /** Gives back every partition @c hold_parts_ took, recording that each changed. */
+        void release_parts_(touched_partitions_t const &reached) noexcept {
+            for (marked_partition_t held = reached.first_marked(); held.presence == marked_presence_t::one_marked_k;
+                 held = reached.next_marked(held.index)) {
+                note_written_(store_->epochs_[held.index].writes);
+                store_->mutexes_[held.index].unlock();
             }
+        }
+
+        /** Pulls the staged writes of every partition @p staged marks back, which the caller holds,
+         *  keeping them for a retry. */
+        status_t rollback_parts_(touched_partitions_t const &staged) noexcept {
+            status_t unwound = success_k;
+            for (marked_partition_t landed = staged.first_marked(); landed.presence == marked_presence_t::one_marked_k;
+                 landed = staged.next_marked(landed.index))
+                unwound = first_failure(unwound, partitions_[landed.index].rollback());
+            return unwound;
         }
 
       public:
@@ -1471,9 +1480,9 @@ class partitioned_store {
             requires inner_transaction_splits_commit_k
         {
             settle_snapshot_();
-            hold_reached_parts_();
+            hold_parts_(touched_);
             status_t const refused = validate_reached_parts_();
-            if (failed(refused)) release_reached_parts_();
+            if (failed(refused)) release_parts_(touched_);
             return refused;
         }
 
@@ -1502,15 +1511,16 @@ class partitioned_store {
                 order.end_commit(in_flight);
 
                 // The claim on the old snapshot goes back at once, so a long-lived transaction
-                // committing in a loop stops pinning the very versions it is superseding.
-                [[maybe_unused]] generation_t const released = order.take_snapshot(claim_);
+                // committing in a loop stops pinning the very versions it is superseding. The next
+                // operation takes a fresh one in `settle_snapshot_`, where there is one.
+                claim_.retire();
 
                 // Reclaimed with the partitions still held: a group holds its later participants
                 // here, so taking one of these back would wait on a group waiting on those.
                 for (marked_partition_t reached = touched_.first_marked();
                      reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
                     partitions_[reached.index].prune_committed();
-                release_reached_parts_();
+                release_parts_(touched_);
 
                 // Released first on purpose: what the wait costs is the tail of whatever older
                 // commit is still writing itself out, and no partition lock is carried into that.
@@ -1523,21 +1533,20 @@ class partitioned_store {
                 for (marked_partition_t reached = touched_.first_marked();
                      reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
                     partitions_[reached.index].publish_under();
-                release_reached_parts_();
+                release_parts_(touched_);
             }
             touched_.clear();
             staging_ = staging_t::pending_k;
         }
 
-        /** Publishes every reached partition under @p stamp, which the group drew, and gives the
-         *  partitions back. */
+        /** Publishes every reached partition under @p stamp, which the group drew, and keeps them
+         *  for @c prune_committed: given up here and taken back there, they deadlock two groups. */
         void publish_under(commit_stamp_t stamp) noexcept
             requires draws_from_a_shared_order<inner_store_t>
         {
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
                 partitions_[reached.index].publish_under(stamp);
-            release_reached_parts_();
             committed_stamp_ = static_cast<generation_t>(stamp);
             staging_ = staging_t::pending_k;
         }
@@ -1550,7 +1559,7 @@ class partitioned_store {
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
                 partitions_[reached.index].release_validation();
-            release_reached_parts_();
+            release_parts_(touched_);
         }
 
         /** Reads every partition at @p stamp, which the group's claim pins, from here on. */
@@ -1568,16 +1577,15 @@ class partitioned_store {
             for (inner_transaction_t &part : partitions_) part.reopen_at(opened);
         }
 
-        /** Reclaims what a group commit superseded in every reached partition, then forgets which
-         *  partitions it reached. */
+        /** Reclaims what a group commit superseded in every reached partition, under the hold its
+         *  validation took, then gives the partitions back and forgets which it reached. */
         void prune_committed() noexcept
             requires draws_from_a_shared_order<inner_store_t>
         {
             for (marked_partition_t reached = touched_.first_marked();
-                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
-                writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index].writes};
+                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
                 partitions_[reached.index].prune_committed();
-            }
+            release_parts_(touched_);
             touched_.clear();
         }
 
@@ -1599,10 +1607,15 @@ class partitioned_store {
             // A reset discards the staged writes along with everything else, so the guard on them goes too.
             staging_ = staging_t::pending_k;
             if constexpr (draws_from_a_shared_order<inner_store_t>) {
-                // One snapshot for every partition, drawn once, exactly as opening the transaction did.
-                generation_t const snapshot = store_->order_->take_snapshot(claim_);
-                auto status =
-                    for_parts_([snapshot](inner_transaction_t &part) noexcept { return part.reset_at(snapshot); });
+                // One snapshot and one generation for every partition, as opening the transaction
+                // drew them. Only a reached partition holds anything to discard under its lock;
+                // where the rest read is this transaction's own state.
+                order_t &order = *store_->order_;
+                opened_at_t const reopened {.snapshot = order.take_snapshot(claim_),
+                                            .generation = order.next_generation()};
+                status_t const status = for_touched_parts_(
+                    [reopened](inner_transaction_t &part) noexcept { return part.reset_at(reopened); });
+                for (inner_transaction_t &part : partitions_) part.reopen_at(reopened);
                 touched_.clear();
                 return status;
             }
@@ -1663,17 +1676,54 @@ class partitioned_store {
                 return status;
             }
 
-            status_t unwound = success_k;
-            for (marked_partition_t landed = staged.first_marked(); landed.presence == marked_presence_t::one_marked_k;
-                 landed = staged.next_marked(landed.index)) {
-                writing_part_lock_t lock {store_->mutexes_[landed.index], store_->epochs_[landed.index].writes};
-                unwound = first_failure(unwound, partitions_[landed.index].rollback());
-            }
+            hold_parts_(staged);
+            status_t const unwound = rollback_parts_(staged);
+            release_parts_(staged);
             if (failed(unwound)) {
                 [[maybe_unused]] status_t const discarded = reset();
                 return unwound;
             }
             return status;
+        }
+
+        /**
+         *  @brief Stages and publishes every reached partition under one hold of each, or none.
+         *
+         *  What @c stage followed by @c commit answers, without giving the partitions back between
+         *  the two: a partition refusing its stage rolls the staged ones back and leaves the
+         *  transaction pending, and one refusing its validation leaves it staged, both with every
+         *  partition given back. Reaching no partition, it succeeds without drawing a stamp.
+         */
+        status_t stage_and_commit() noexcept
+            requires inner_transaction_splits_commit_k
+        {
+            settle_snapshot_();
+            if (touched_.first_marked().presence != marked_presence_t::one_marked_k) return success_k;
+            hold_parts_(touched_);
+            touched_partitions_t staged;
+            status_t status = success_k;
+            for (marked_partition_t reached = touched_.first_marked();
+                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
+                status = partitions_[reached.index].stage();
+                if (failed(status)) break;
+                staged.mark(reached.index);
+            }
+            if (failed(status)) {
+                status_t const unwound = rollback_parts_(staged);
+                release_parts_(touched_);
+                if (failed(unwound)) {
+                    [[maybe_unused]] status_t const discarded = reset();
+                    return unwound;
+                }
+                return status;
+            }
+            staging_ = staging_t::staged_k;
+            if (status_t const refused = validate_reached_parts_(); failed(refused)) {
+                release_parts_(touched_);
+                return refused;
+            }
+            publish_under();
+            return success_k;
         }
 
         /**

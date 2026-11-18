@@ -3320,6 +3320,13 @@ struct group_step {
     }
 };
 
+/** Whether an open transaction stages and commits in one call, under one hold of what it
+ *  reaches. */
+template <typename transaction_type_>
+concept stages_and_commits = requires(transaction_type_ &transaction) {
+    { transaction.stage_and_commit() } noexcept -> std::same_as<status_t>;
+};
+
 /**
  *  @brief Stages @p stage_changes into @p transaction and commits it, at most @p attempts times.
  *  @param[in,out] transaction The transaction to stage into and commit, reset on a failed try.
@@ -3344,8 +3351,13 @@ status_t commit_with_retries(transaction_type_ &transaction, std::size_t attempt
                              stage_changes_type_ &&stage_changes) noexcept {
     for (std::size_t attempt = 0; attempt != attempts; ++attempt) {
         status_t status = stage_changes(transaction);
-        if (succeeded(status)) status = transaction.stage();
-        if (succeeded(status)) status = transaction.commit();
+        if constexpr (stages_and_commits<transaction_type_>) {
+            if (succeeded(status)) status = transaction.stage_and_commit();
+        }
+        else {
+            if (succeeded(status)) status = transaction.stage();
+            if (succeeded(status)) status = transaction.commit();
+        }
         if (succeeded(status)) return status;
 
         status_t const discarded = transaction.reset();
@@ -3705,11 +3717,14 @@ class transaction_group {
             }
             order.end_commit(in_flight);
 
-            // No store lock is held here, so parking on an older commit's publication blocks nobody.
-            // Waited for at every level: the participants adopt the stamp at once, and one reading
-            // before the watermark covers it would see an older commit half-written.
-            order.await_published(in_flight.stamp());
-            opened_at_t const reopened {.snapshot = order.take_snapshot(claim_), .generation = order.next_generation()};
+            // The participants reopen at once, and one reading below its own stamp would miss what
+            // it wrote, so a snapshot behind the stamp is waited out. Every store is still held,
+            // which blocks nobody: each older commit lands without a lock this group holds.
+            opened_at_t reopened {.snapshot = order.take_snapshot(claim_), .generation = order.next_generation()};
+            if (reopened.snapshot < static_cast<generation_t>(in_flight.stamp())) {
+                order.await_published(in_flight.stamp());
+                reopened.snapshot = order.take_snapshot(claim_);
+            }
             for (std::size_t position = 0; position != participants_k; ++position) {
                 [[maybe_unused]] status_t const settled =
                     visit_at_(order_[position], [reopened](auto &transaction) noexcept {
@@ -4116,7 +4131,8 @@ class dynamic_transaction_group {
             }
             order.end_commit(in_flight);
 
-            // Parks with no store lock held, so the snapshot the next joins read covers this stamp.
+            // Parks only while the watermark is behind this stamp, so the snapshot the next joins
+            // read covers it. Every store is still held, and each older commit lands without one.
             order.await_published(in_flight.stamp());
             // Reclaimed under the old claim, since the participants are gone before it moves.
             for (std::size_t position = 0; position != joined_count_; ++position) {
@@ -4272,11 +4288,12 @@ using standard_waiting_policy_t = standard_waiting_policy<>;
  *      parks. The default spends nothing and parks on @c std::atomic::wait.
  *  @tparam atomic_reference_ The reference the word is owned through, for one operation at a time.
  *
- *  Both acquires are bounded adds rather than compare-exchange loops, which is what the word's
- *  layout buys: every writer bit sits above the reader tally, so @em no @em writer @em here and
- *  @em room @em for @em one @em more @em reader is the single question does the sum stay inside the
- *  tally. A reference satisfying @c extended_atomic_ref answers it in one instruction and, when the
- *  answer is no, without taking the line at all; @c atomic_ref answers it with the loop that
+ *  A writer takes an idle word with one compare-exchange, and an arriving reader with one add it
+ *  takes back where it was not admitted. A reader's retries are bounded adds, which is what the
+ *  word's layout buys: every writer bit sits above the reader tally, so @em no @em writer @em here
+ *  and @em room @em for @em one @em more @em reader is the single question does the sum stay within
+ *  the limit. A reference satisfying @c extended_atomic_ref answers it in one instruction and, when
+ *  the answer is no, without taking the line at all; @c atomic_ref answers it with the loop that
  *  question replaces. Dropping the held bit reads nothing back, so it is posted rather than waited
  *  on. Releasing a reader is the one path that cannot be either, since the count it returns is what
  *  tells the last reader out to wake a writer.
@@ -4302,8 +4319,12 @@ class spin_shared_mutex {
     /** Where the waiting-writer tally lives, capped at 32'767 writers parked at once. */
     static constexpr std::uint32_t writers_waiting_mask_k = 0x7FFF0000u;
 
-    /** Where the reader tally lives, capped at 65'535 readers holding at once. */
+    /** Where the reader tally lives, the units of admitted and of refused readers together. */
     static constexpr std::uint32_t readers_mask_k = 0x0000FFFFu;
+
+    /** How many readers hold at once: half the tally, the other half being room for the units of
+     *  refused readers, which would otherwise carry into the waiting writers. */
+    static constexpr std::uint32_t readers_limit_k = readers_mask_k >> 1;
 
     /** What turns an arriving reader away: an owning writer, or any writer queued ahead of it. */
     static constexpr std::uint32_t writer_bits_k = writer_held_k | writers_waiting_mask_k;
@@ -4328,22 +4349,35 @@ class spin_shared_mutex {
     spin_shared_mutex &operator=(spin_shared_mutex const &) = delete;
 
   private:
-    /** Takes the word from idle to held, which is the only sum that stays within the held bit. */
+    /** Takes the word from idle to held in one exchange, answering what the word held before. */
     [[nodiscard]] std::uint32_t take_as_writer_() noexcept {
-        return atomic_fetch_add_if_at_most<atomic_reference_>(state_, writer_held_k, writer_held_k,
-                                                              memory_order_acquire_k);
+        std::uint32_t observed = 0;
+        if (word_ref_t(state_).compare_exchange_strong(observed, writer_held_k, memory_order_acquire_k,
+                                                       memory_order_relaxed_k))
+            return 0;
+        return observed;
     }
 
-    /** Adds one reader while the sum stays inside the reader tally, which every writer bit
-     *  overflows. */
+    /** Adds one reader while the sum stays within the limit, which every writer bit overflows. */
     [[nodiscard]] std::uint32_t take_as_reader_() noexcept {
-        return atomic_fetch_add_if_at_most<atomic_reference_>(state_, 1u, readers_mask_k, memory_order_acquire_k);
+        return atomic_fetch_add_if_at_most<atomic_reference_>(state_, 1u, readers_limit_k, memory_order_acquire_k);
+    }
+
+    /** Adds one reader whatever the word holds, and takes the unit back where a writer bit or a
+     *  full tally turns it away, waking the parked threads when it is the last unit out. */
+    [[nodiscard]] std::uint32_t enter_as_reader_() noexcept {
+        std::uint32_t const before = word_ref_t(state_).fetch_add(1u, memory_order_acquire_k);
+        if (before >= readers_limit_k) {
+            std::uint32_t const left = word_ref_t(state_).fetch_sub(1u, memory_order_release_k);
+            if ((left & readers_mask_k) == 1) waiting_.notify_waiters(&state_);
+        }
+        return before;
     }
 
   public:
     [[nodiscard]] bool try_lock() noexcept { return take_as_writer_() == 0; }
 
-    [[nodiscard]] bool try_lock_shared() noexcept { return take_as_reader_() < readers_mask_k; }
+    [[nodiscard]] bool try_lock_shared() noexcept { return take_as_reader_() < readers_limit_k; }
 
     void lock() noexcept {
         for (std::size_t attempts_spent = 0; attempts_spent != spins_before_parking_k; ++attempts_spent) {
@@ -4379,16 +4413,18 @@ class spin_shared_mutex {
     }
 
     void lock_shared() noexcept {
+        // Only the first attempt is blind: refused units retried blind keep waking each other and
+        // the writer parked beside them, so every retry adds only where it is admitted.
+        std::uint32_t observed = enter_as_reader_();
         for (std::size_t attempts_spent = 0; attempts_spent != spins_before_parking_k; ++attempts_spent) {
-            std::uint32_t const observed = take_as_reader_();
-            if (observed < readers_mask_k) return;
+            if (observed < readers_limit_k) return;
             waiting_(&state_, observed, attempts_spent);
+            observed = take_as_reader_();
         }
 
-        while (true) {
-            std::uint32_t const observed = take_as_reader_();
-            if (observed < readers_mask_k) return;
+        while (observed >= readers_limit_k) {
             waiting_.wait_until_changed(&state_, observed);
+            observed = take_as_reader_();
         }
     }
 
@@ -4743,8 +4779,11 @@ class basic_commit_order {
     /** The ring: slot @c stamp % ring_k holds @c stamp once that commit has landed. */
     alignas(word_alignment_k) generation_t landed_[ring_k] {};
 
-    /** Snapshots each bucket holds open, under the head value that opened it. */
-    alignas(word_alignment_k) bucket_snapshots_t snapshots_[buckets_k] {};
+    /** How many words apart two buckets sit, so each contended one owns its line. */
+    static constexpr std::size_t bucket_stride_k = word_alignment_k / sizeof(bucket_snapshots_t);
+
+    /** Snapshots each bucket holds open, under the head value that opened it, one per stride. */
+    alignas(word_alignment_k) bucket_snapshots_t snapshots_[buckets_k * bucket_stride_k] {};
 
     /** The watermark each bucket was opened at, which is a floor for every snapshot in it. */
     alignas(word_alignment_k) generation_t floors_[buckets_k] {};
@@ -4766,7 +4805,7 @@ class basic_commit_order {
      *  at. */
     snapshot_recorded_t record_into_(std::size_t bucket, bucket_word_t opened) noexcept {
         if constexpr (sharing_ == order_sharing_t::solitary_k) {
-            ++snapshots_[bucket].bits;
+            ++snapshots_[bucket * bucket_stride_k].bits;
             return snapshot_recorded_t::recorded_k;
         }
         else {
@@ -4775,7 +4814,7 @@ class basic_commit_order {
             // older and therefore still bounds it.
             bucket_snapshots_t const ceiling = bucket_snapshots_t::admitting(opened);
             bucket_word_t const before = atomic_fetch_add_if_at_most<atomic_reference_>(
-                snapshots_[bucket].bits, bucket_word_t {1}, ceiling.bits, memory_order_acq_rel_k);
+                snapshots_[bucket * bucket_stride_k].bits, bucket_word_t {1}, ceiling.bits, memory_order_acq_rel_k);
             // Strictly below, because the add lands only where the sum still fits: at the ceiling itself
             // nothing is written, and reporting success would hand back a claim with nothing to retire.
             return before < ceiling.bits ? snapshot_recorded_t::recorded_k : snapshot_recorded_t::bucket_moved_on_k;
@@ -4799,13 +4838,13 @@ class basic_commit_order {
         bucket_word_t const next = opened + 1;
         std::size_t const bucket = bucket_of_(next);
         if constexpr (sharing_ == order_sharing_t::solitary_k) {
-            if (snapshots_[bucket].open_snapshots() != 0) return;
-            snapshots_[bucket] = bucket_snapshots_t::opened_by(next);
+            if (snapshots_[bucket * bucket_stride_k].open_snapshots() != 0) return;
+            snapshots_[bucket * bucket_stride_k] = bucket_snapshots_t::opened_by(next);
             floors_[bucket] = opened_at;
             if (head_ < next) head_ = next;
         }
         else {
-            atomic_reference_<bucket_word_t> holding(snapshots_[bucket].bits);
+            atomic_reference_<bucket_word_t> holding(snapshots_[bucket * bucket_stride_k].bits);
             bucket_word_t observed = holding.load(memory_order_acquire_k);
             if (bucket_snapshots_t {observed}.open_snapshots() != 0) return;
             // Another opener got here from the same head value: its floor store and this one would race
@@ -4823,13 +4862,13 @@ class basic_commit_order {
 
     /** Recomputes the mark from the watermark and every occupied bucket, and raises the published
      *  one to it. */
-    void republish_mark_() noexcept {
-        // The watermark first, then the buckets: a reader joining after this read draws at or above it.
-        generation_t const published_now = read_newest_(published_stamp_);
+    void republish_mark_(generation_t published_now) noexcept {
+        // The watermark was read first, then the buckets: a reader joining after that read draws at
+        // or above it.
         generation_t oldest_needed = published_now;
         bucket_word_t const opened = read_(head_);
         for (std::size_t bucket = 0; bucket != buckets_k; ++bucket) {
-            bucket_snapshots_t const observed {read_(snapshots_[bucket].bits)};
+            bucket_snapshots_t const observed {read_(snapshots_[bucket * bucket_stride_k].bits)};
             if (observed.open_snapshots() == 0) continue;
             if (generation_t const floor = read_(floors_[bucket]); floor < oldest_needed) oldest_needed = floor;
         }
@@ -4844,14 +4883,15 @@ class basic_commit_order {
     void retire_snapshot_(snapshot_claim_t &claim) noexcept {
         assert(claim.order_ == this && "a claim retires into the order that recorded it, or its bucket never drains");
         bucket_word_t before {};
-        if constexpr (sharing_ == order_sharing_t::solitary_k) before = snapshots_[claim.bucket_].bits--;
+        if constexpr (sharing_ == order_sharing_t::solitary_k)
+            before = snapshots_[claim.bucket_ * bucket_stride_k].bits--;
         else
             // Released, and every scan above acquires: whoever sees a bucket drain sees every claim its
             // members made first, so a snapshot adopted from one cannot be missed by the mark that follows.
-            before =
-                atomic_reference_<bucket_word_t>(snapshots_[claim.bucket_].bits).fetch_sub(1, memory_order_release_k);
+            before = atomic_reference_<bucket_word_t>(snapshots_[claim.bucket_ * bucket_stride_k].bits)
+                         .fetch_sub(1, memory_order_release_k);
         // Only a bucket that just drained can raise the mark, so the scan is spent on that departure alone.
-        if (bucket_snapshots_t {before}.open_snapshots() == 1) republish_mark_();
+        if (bucket_snapshots_t {before}.open_snapshots() == 1) republish_mark_(read_newest_(published_stamp_));
     }
 
   public:
@@ -4910,9 +4950,9 @@ class basic_commit_order {
     generation_t share_snapshot(snapshot_claim_t &held, snapshot_claim_t &claim) noexcept {
         assert(held.order_ == this && &held != &claim && "a shared snapshot is copied from another live claim");
         if (claim.order_) retire_snapshot_(claim);
-        if constexpr (sharing_ == order_sharing_t::solitary_k) ++snapshots_[held.bucket_].bits;
+        if constexpr (sharing_ == order_sharing_t::solitary_k) ++snapshots_[held.bucket_ * bucket_stride_k].bits;
         else
-            atomic_post_add<atomic_reference_>(snapshots_[held.bucket_].bits, bucket_word_t {1},
+            atomic_post_add<atomic_reference_>(snapshots_[held.bucket_ * bucket_stride_k].bits, bucket_word_t {1},
                                                memory_order_release_k);
         claim.order_ = this;
         claim.bucket_ = held.bucket_;
@@ -4941,7 +4981,7 @@ class basic_commit_order {
             while (landed_[ring_slot_(seen + 1)] == seen + 1) ++seen;
             if (seen == published_stamp_) return;
             published_stamp_ = seen;
-            republish_mark_();
+            republish_mark_(seen);
             return;
         }
         else {
@@ -4971,7 +5011,7 @@ class basic_commit_order {
             // A store wakes nobody, so anyone parked in `await_published` or in the wait above sleeps through
             // the very publication it waits for unless the wake goes out here.
             waiting_.notify_waiters(&published_stamp_);
-            republish_mark_();
+            republish_mark_(seen);
         }
     }
 
@@ -5000,8 +5040,8 @@ class basic_commit_order {
     /** How many readers currently hold a snapshot, summed over the buckets. */
     [[nodiscard]] std::size_t open_snapshots() const noexcept {
         std::size_t counted = 0;
-        for (bucket_snapshots_t const &bucket : snapshots_)
-            counted += bucket_snapshots_t {read_(bucket.bits)}.open_snapshots();
+        for (std::size_t bucket = 0; bucket != buckets_k; ++bucket)
+            counted += bucket_snapshots_t {read_(snapshots_[bucket * bucket_stride_k].bits)}.open_snapshots();
         return counted;
     }
 

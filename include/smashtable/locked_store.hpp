@@ -97,8 +97,8 @@ class locked_store {
         inner_transaction_t inner_transaction_;
 
         /** The hold a successful @c validate_for_commit leaves on the mutex for the publication,
-         *  rollback, reset or @c release_validation that answers it; empty between such pairs, and
-         *  released with the transaction. */
+         *  rollback, reset or @c release_validation that answers it, and a publication under a
+         *  stamp for the prune after it; empty between such pairs, and released with it. */
         unique_lock<mutex_t> validation_;
         static_assert(std::is_nothrow_move_constructible<inner_transaction_t>());
 
@@ -227,6 +227,13 @@ class locked_store {
         /** Validates and publishes everything staged, under the exclusive lock. */
         status_t commit() noexcept {
             unique_lock<mutex_t> const _ = held_();
+            return inner_transaction_.commit();
+        }
+
+        /** Validates, reserves and publishes under one exclusive hold. */
+        status_t stage_and_commit() noexcept {
+            unique_lock<mutex_t> const _ = held_();
+            if (status_t const staged = inner_transaction_.stage(); failed(staged)) return staged;
             return inner_transaction_.commit();
         }
 
@@ -571,11 +578,11 @@ class locked_store {
          *  validation takes this store's mutex exclusively and, where it answers success, keeps it
          *  until the publication, the rollback, the reset or the @c release_validation that
          *  follows: a writer slipping in between would move a watched key after the answer, which
-         *  is the lost update the watch was taken against. A refusal gives the mutex straight back,
-         *  since no publication will answer it. Callers take the stores in ascending address, so
-         *  two of them holding across the phases cannot deadlock; a shard set holds its partition
-         *  locks around all of this, and the two orders never cross, since a partition lock is
-         *  always taken first.
+         *  is the lost update the watch was taken against. A publication under a stamp keeps it for
+         *  the prune as well. A refusal gives the mutex straight back, since no publication will
+         *  answer it. Callers take the stores in ascending address, so two of them holding across
+         *  the phases cannot deadlock; a shard set holds its partition locks around all of this,
+         *  and the two orders never cross, since a partition lock is always taken first.
          */
         status_t validate_for_commit() noexcept
             requires(inner_transaction_shards_k || inner_transaction_splits_commit_k)
@@ -595,11 +602,12 @@ class locked_store {
         }
 
         /** Publishes everything staged under @p stamp, which the shard set drew for the whole
-         *  commit. */
+         *  commit, and keeps the mutex for @c prune_committed: given up here and taken back there,
+         *  it deadlocks two groups. */
         void publish_under(commit_stamp_t stamp) noexcept
             requires inner_transaction_shards_k
         {
-            unique_lock<mutex_t> const _ = held_();
+            if (!validation_) validation_ = unique_lock<mutex_t> {store_->mutex_};
             inner_transaction_.publish_under(stamp);
         }
 
@@ -625,11 +633,12 @@ class locked_store {
             inner_transaction_.reopen_at(opened);
         }
 
-        /** Frees whatever the commit just published left unreachable. */
+        /** Frees whatever the commit just published left unreachable, under the hold the
+         *  publication kept, and gives the mutex back. */
         void prune_committed() noexcept
             requires inner_transaction_shards_k
         {
-            unique_lock _ {store_->mutex_};
+            unique_lock<mutex_t> const _ = held_();
             inner_transaction_.prune_committed();
         }
 

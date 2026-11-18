@@ -59,6 +59,9 @@
 #ifndef relock_to_reclaim
 #define relock_to_reclaim false
 #endif
+#ifndef hold_through_prune
+#define hold_through_prune false
+#endif
 
 /** The store a group visits at a position: ascending, or with @c address_order off, the second
  *  group descending. */
@@ -195,7 +198,10 @@ inline stage_and_commit(t) {
             if
             :: shared_clock && one_stamp ->
                 store(t, stamp_at(reached), order_relaxed, drawn);
-                unlock(t, mutex(reached))
+                if
+                :: hold_through_prune -> skip
+                :: else -> unlock(t, mutex(reached))
+                fi
             :: shared_clock && !one_stamp ->
                 // A stamp per store, drawn and published as that store's own commit would
                 lock(t, order_mutex);
@@ -222,7 +228,13 @@ inline stage_and_commit(t) {
         :: shared_clock && one_stamp ->
             lock(t, order_mutex);
             store(t, published_stamp, order_relaxed, drawn);
-            unlock(t, order_mutex)
+            unlock(t, order_mutex);
+            // `prune_committed`, where the publication kept the hold for it to give up
+            if
+            :: hold_through_prune ->
+                for (position : 0 .. stores - 1) { unlock(t, mutex(visited(t, position))) }
+            :: else
+            fi
         :: else
         fi;
         staging[t] = pending

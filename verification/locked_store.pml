@@ -15,8 +15,9 @@
  *  - A reader sees a commit whole, the value with its stamp, and never the reservation as a value.
  *  - No commit is lost: once both writers are done, the value counts both commits.
  *
+ *  @budget 6144
  *  @verify pass sc,rc11
- *  @verify pass sc,rc11 queued=true
+ *  @verify pass sc queued=true
  *  @verify fail rc11 unlock_order=order_relaxed: relaxed, the next writer reads the value from
  *      before that commit and writes the same next value over it, and one commit is lost
  *  @verify fail rc11 lock_shared_order=order_relaxed: relaxed, a reader inside its shared lock
@@ -30,10 +31,23 @@
  *      reader's refused attempt and its arming, and the reader sleeps through the handoff for good
  *  @verify stuck sc queued=true last_reader_notify=false: without the wake, a writer parked behind
  *      the readers sleeps once they are gone, since nothing else writes the word
+ *  @verify pass sc,rc11 blind_entry=false: every attempt the bounded add, as the retries are
+ *  @verify pass sc,rc11 blind_entry=false queued=true: the blind entry beside the tally overflows
+ *      the budget under views
+ *  @verify stuck sc queued=true back_out_notify=false: without the wake, a writer that parked on a
+ *      refused reader's unit sleeps once the unit is gone, with the lock free
+ *  @verify pass sc queued=true attempts_bound=10: no call is refused more often than the unlocks
+ *      and last units out that can wake it
+ *  @verify fail sc queued=true blind_retries=true attempts_bound=10: retrying blind, two readers
+ *      behind a writer keep waking each other and the writer parked beside them
+ *  @verify pass sc queued=true readers_limit=1: one reader fills the tally, and the other's refused
+ *      unit stays inside the bits above the limit
+ *  @verify fail sc queued=true readers_mask=1 readers_limit=1: admitting readers up to the whole
+ *      tally, a refused reader's unit carries into the waiting writers and the readers read as none
  */
 #define thread_count 4
 #define location_count 4
-#define history_depth 14
+#define history_depth 20
 #include <weak_memory.pml>
 #include <monitor_wait.pml>
 #include <spin_shared_mutex.pml>

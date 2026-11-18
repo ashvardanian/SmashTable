@@ -2515,6 +2515,34 @@ static void test_unbounded_read_refuses_any_commit() {
 }
 
 /**
+ *  @brief A read of one store's whole keyspace is refused by a commit to that store only.
+ *
+ *  Two stores sharing an order share its stamps, not their keys, so a commit to the sibling moves
+ *  nothing the walker read, however many times the walker commits and reads again.
+ */
+static void test_unbounded_read_ignores_a_commit_to_a_sibling_store() {
+    using store_t = grouped_serializable_map_t;
+    using member_t = typename store_t::value_type;
+    commit_order_t order;
+    store_t walked {order}, sibling {order};
+    commit_write(walked, 1, 1);
+
+    auto walker = walked.transaction();
+    if (!expect_true(walker.has_value())) return;
+    for (trivial_id_t round = 0; round != 3; ++round) {
+        expect_equal(walker->for_each(no_op_t {}), success_k);
+        expect_equal(walker->upsert(trivial_id_to_member<member_t>(2, static_cast<int>(round))), success_k);
+        commit_write(sibling, 999, static_cast<int>(round));
+        expect_equal(walker->stage(), success_k, "the sibling's commit wrote none of the walked keys");
+        expect_equal(walker->commit(), success_k);
+    }
+
+    expect_equal(walker->for_each(no_op_t {}), success_k);
+    commit_write(walked, 999, 1);
+    expect_equal(walker->stage(), status_t::phantom_conflict_k);
+}
+
+/**
  *  @brief A read that cannot be recorded reports it where it happened, not only at the commit.
  *
  *  A validated read has to be written down before it can be validated, and writing it down
@@ -2689,6 +2717,36 @@ template <typename transaction_type_>
 [[nodiscard]] static status_t stage_and_commit(transaction_type_ &transaction) noexcept {
     status_t const staged = transaction.stage();
     return failed(staged) ? staged : transaction.commit();
+}
+
+/** Tests that a locked transaction's one-hold commit publishes and refuses as its two steps do. */
+static void test_one_hold_commit_matches_stage_then_commit() {
+    using store_t = locked_snapshot_map_t;
+    using member_t = typename store_t::value_type;
+    store_t store;
+
+    auto joined = store.transaction();
+    auto split = store.transaction();
+    if (!expect_true(joined.has_value() && split.has_value())) return;
+    expect_equal(joined->upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
+    expect_equal(joined->stage_and_commit(), success_k);
+    expect_equal(mapped_or_absent(store, 1), 10);
+    expect_true(joined->commit_stamp() > 0);
+
+    expect_equal(joined->upsert(trivial_id_to_member<member_t>(7, 70)), success_k);
+    expect_equal(split->upsert(trivial_id_to_member<member_t>(7, 72)), success_k);
+    commit_write(store, 7, 71);
+    status_t const refusal = stage_and_commit(*split);
+    expect_equal(refusal, status_t::write_conflict_k);
+    expect_equal(joined->stage_and_commit(), refusal);
+    expect_equal(mapped_or_absent(store, 7), 71, "a refused validation publishes nothing");
+    expect_equal(store.size(), 2u);
+
+    expect_equal(joined->reset(), success_k);
+    expect_equal(joined->upsert(trivial_id_to_member<member_t>(7, 73)), success_k);
+    expect_equal(joined->stage_and_commit(), success_k, "the refusal kept neither the hold nor a staged version");
+    expect_equal(mapped_or_absent(store, 7), 73);
+    expect_equal(store.size(), 2u);
 }
 
 /** Tests that a transaction's commit stamp follows the order commits went out in, whichever
@@ -3788,6 +3846,8 @@ int main(int argc, char **argv) {
     run_test_case("test_phantom_insert_refuses_the_walker", test_phantom_insert_refuses_the_walker);
     run_test_case("test_phantom_erase_refuses_the_walker", test_phantom_erase_refuses_the_walker);
     run_test_case("test_unbounded_read_refuses_any_commit", test_unbounded_read_refuses_any_commit);
+    run_test_case("test_unbounded_read_ignores_a_commit_to_a_sibling_store",
+                  test_unbounded_read_ignores_a_commit_to_a_sibling_store);
     run_test_case("test_phantom_refuses_a_bounded_scan", test_phantom_refuses_a_bounded_scan);
     run_test_case("test_ordinal_window_ignores_a_commit_above_it", test_ordinal_window_ignores_a_commit_above_it);
     run_test_case("test_each_refusal_names_its_cause", test_each_refusal_names_its_cause);
@@ -4081,6 +4141,7 @@ int main(int argc, char **argv) {
     run_test_case("test_an_accepted_group_publishes_everything<grouped_snapshot_map_t, grouped_serializable_map_t>",
                   test_an_accepted_group_publishes_everything<grouped_snapshot_map_t, grouped_serializable_map_t>);
 
+    run_test_case("test_one_hold_commit_matches_stage_then_commit", test_one_hold_commit_matches_stage_then_commit);
     run_test_case("test_commit_stamp_follows_commit_order<snapshot_avl_map_t>",
                   test_commit_stamp_follows_commit_order<snapshot_avl_map_t>);
     run_test_case("test_commit_stamp_follows_commit_order<strict_serializable_avl_map_t>",

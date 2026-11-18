@@ -12,7 +12,7 @@ Model checking for the protocols the stores promise, with [Spin](https://spinroo
 - `partitioned_store.pml`: a cursor stepping past a store-wide write, and a commit over one partition beside them.
 - `snapshot_reader/`: `snapshot_store::reader_t` and a transaction adopting its stamp, against a commit that prunes behind them.
 - `spin_shared_mutex.pml`: `spin_shared_mutex_t` as one word, readers counted in the low bits and a writer's hold as one high bit.
-- `transaction_group/`: `transaction_group` over two locked stores, in turn, in two passes, and on one stamp; `one_stamp.pml` runs only with `VERIFY_BACKGROUND=1`.
+- `transaction_group/`: `transaction_group` over two locked stores, in turn, in two passes, and on one stamp, then over a locked and a partitioned store held through the prune; `one_stamp.pml` runs only with `VERIFY_BACKGROUND=1`.
 
 ## Running
 
@@ -26,9 +26,12 @@ Model checking for the protocols the stores promise, with [Spin](https://spinroo
 - Two groups holding across their phases take the stores ascending, or they deadlock: [`transaction_group/`](transaction_group/).
 - A refused validation gives its hold straight back, and so do the stores asked before it: [`transaction_group/`](transaction_group/).
 - A store reclaims what it published before giving its hold up, since taking it back while later stores are held deadlocks two groups: [`transaction_group/`](transaction_group/).
+- A store keeping its hold from the publication to the prune needs every store of the group to keep it: a locked store given up at its publication and taken back at its prune deadlocks two groups, and a group against a reader of a locked store over a partitioned one: [`transaction_group/held_prune.pml`](transaction_group/held_prune.pml).
+- A group awaiting its own publication under its holds waits on no commit that needs them, a full ring included, and without the wait it reopens below its own stamp: [`transaction_group/held_prune.pml`](transaction_group/held_prune.pml).
 - The atomic hash table counts a slot populated under the slot's lock, and its slot lock acquires: [`atomic_hash_table/`](atomic_hash_table/).
 - A push onto the intrusive stack lands with a releasing compare-exchange and a take with an acquiring exchange, or the taker meets a record whose payload and link it is not ordered after: [`atomic_intrusive_stack.cpp`](atomic_intrusive_stack.cpp).
 - A locked store's writers acquire its mutex and its readers acquire the shared side, and `unlock_shared` wakes parked writers only when the last reader leaves: [`locked_store.pml`](locked_store.pml).
+- A reader entering the mutex with one blind add wakes the parked threads when it takes the last unit back out, retries with the bounded add, and needs room in the tally above the admission limit, since a refused unit added to a full tally reads as a waiting writer over no readers: [`locked_store.pml`](locked_store.pml).
 - The commit order stands on three orderings in place of a mutex: a reader joins a bucket and reads the watermark through a read-modify-write, a mark reads the watermark before scanning the buckets, and a landing commit reads the watermark through a read-modify-write before walking the ring: [`commit_order/`](commit_order/), [`commit_order_publication.pml`](commit_order_publication.pml).
 - `end_commit` wakes parked committers once its walk moves the watermark: [`commit_order_publication.pml`](commit_order_publication.pml).
 - A store-level window write over partitions sharing a clock publishes every partition under one stamp: [`partitioned_erase.pml`](partitioned_erase.pml), [`partitioned_erase.cpp`](partitioned_erase.cpp).

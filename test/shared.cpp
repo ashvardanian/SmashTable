@@ -285,6 +285,30 @@ static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::
 static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
               "the mutex word is narrower than a stamp, and must reach the same verbs");
 
+/** Readers are admitted up to half the tally, and a reader refused at a full one takes its unit
+ *  back, so the word reads idle once everyone has left. */
+template <typename mutex_type_>
+static void test_shared_mutex_keeps_room_above_its_readers() {
+    mutex_type_ mutex;
+    constexpr std::uint32_t readers_limit_k = 0xFFFFu >> 1;
+    std::uint32_t admitted = 0;
+    while (admitted != readers_limit_k && mutex.try_lock_shared()) ++admitted;
+    expect_equal(admitted, readers_limit_k);
+    expect_true(!mutex.try_lock_shared(), "the upper half of the tally is room for refused units");
+
+    std::atomic<bool> entered {false};
+    std::thread late([&]() noexcept {
+        mutex.lock_shared();
+        entered.store(true);
+        mutex.unlock_shared();
+    });
+    for (; admitted != 0; --admitted) mutex.unlock_shared();
+    late.join();
+    expect_true(entered.load(), "the reader turned away at a full tally gets in once it drains");
+    expect_true(mutex.try_lock(), "every refused unit was taken back");
+    mutex.unlock();
+}
+
 /** Exclusion holds: a writer never overlaps a reader or another writer. */
 template <typename mutex_type_>
 static void test_shared_mutex_excludes() {
@@ -481,6 +505,10 @@ struct counting_extended_ref : extended_ref_tallies {
                                std::memory_order failure) const noexcept {
         return std::atomic_ref<value_type_>(*word).compare_exchange_weak(expected, wanted, success, failure);
     }
+    bool compare_exchange_strong(value_type_ &expected, value_type_ wanted, std::memory_order success,
+                                 std::memory_order failure) const noexcept {
+        return std::atomic_ref<value_type_>(*word).compare_exchange_strong(expected, wanted, success, failure);
+    }
 
     void store_add(value_type_ addend, std::memory_order order) const noexcept {
         posted_writes.fetch_add(1, std::memory_order_relaxed);
@@ -579,7 +607,8 @@ static_assert(sizeof(extended_mutex_t) == sizeof(spin_shared_mutex_t),
 static_assert(sizeof(extended_table_t) == sizeof(atomic_hash_set<std::uint64_t>),
               "and costs the pinned table none either");
 
-/** A reference spelling the extended shapes is the one the mutex drives its acquires through. */
+/** A reference spelling the extended shapes is the one the mutex drives its bounded acquires
+ *  through, which are the ones that may be refused. */
 static void test_extended_atomics_take_the_bounded_path() {
 
     counting_extended_ref<std::uint32_t>::bounded_adds.store(0);
@@ -587,16 +616,19 @@ static void test_extended_atomics_take_the_bounded_path() {
 
     extended_mutex_t mutex;
     mutex.lock();
+    expect_equal(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {0},
+                 "a writer takes an idle word with one exchange, which no bound decides");
+    expect_equal(mutex.try_lock_shared(), false, "a reader is refused while a writer holds");
     expect_equal(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {1},
-                 "a writer takes the lock with one bounded add, not a compare-exchange loop");
+                 "a reader that may be refused asks with the bounded add, which writes nothing when it loses");
     mutex.unlock();
     expect_equal(counting_extended_ref<std::uint32_t>::posted_writes.load(), std::size_t {1},
                  "and drops the held bit by posting it, since nothing reads what the word held");
 
     mutex.lock_shared();
     mutex.lock_shared();
-    expect_equal(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {3},
-                 "every reader arrives by the same bounded add");
+    expect_equal(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {1},
+                 "an arriving reader's first attempt is one blind add");
     expect_equal(mutex.try_lock(), false, "a writer is refused while readers hold");
     mutex.unlock_shared();
     mutex.unlock_shared();
@@ -1719,6 +1751,10 @@ int main(int argc, char **argv) {
 
     run_test_case("test_shared_mutex_excludes<spin_shared_mutex_t>", test_shared_mutex_excludes<spin_shared_mutex_t>);
     run_test_case("test_shared_mutex_excludes<forkunion_mutex_t>", test_shared_mutex_excludes<forkunion_mutex_t>);
+    run_test_case("test_shared_mutex_keeps_room_above_its_readers<spin_shared_mutex_t>",
+                  test_shared_mutex_keeps_room_above_its_readers<spin_shared_mutex_t>);
+    run_test_case("test_shared_mutex_keeps_room_above_its_readers<forkunion_mutex_t>",
+                  test_shared_mutex_keeps_room_above_its_readers<forkunion_mutex_t>);
     run_test_case("test_shared_mutex_admits_every_writer<spin_shared_mutex_t>",
                   test_shared_mutex_admits_every_writer<spin_shared_mutex_t>);
     run_test_case("test_shared_mutex_admits_every_writer<forkunion_mutex_t>",

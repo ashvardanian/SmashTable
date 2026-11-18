@@ -28,7 +28,7 @@
 #endif
 #define thread_count (committers + 1)
 #define location_count 9
-#define history_depth (4 * committers + 5)
+#define history_depth (4 * committers + 10)
 #include <snapshot_reader/protocol.pml>
 
 proctype committer(byte t) { commit(t) }

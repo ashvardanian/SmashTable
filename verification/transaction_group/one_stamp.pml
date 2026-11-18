@@ -12,6 +12,8 @@
  *
  *  @budget 65536
  *  @verify pass sc,rc11
+ *  @verify pass sc hold_through_prune=true: every store held until the watermark moved, as a
+ *      publication that leaves the hold to its prune keeps it
  *  @verify fail sc one_stamp=false: drawing and publishing a stamp per store, as each store's own
  *      commit would, the reader's snapshot covers a group's stamp on one store while the other
  *      still holds an older one

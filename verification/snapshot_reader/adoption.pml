@@ -17,7 +17,7 @@
 #define committers 1
 #define thread_count 2
 #define location_count 9
-#define history_depth 7
+#define history_depth 12
 #include <snapshot_reader/protocol.pml>
 
 proctype committer(byte t) { commit(t) }

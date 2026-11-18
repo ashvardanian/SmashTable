@@ -692,10 +692,10 @@ class snapshot_store {
         status_t validate_accesses_() const noexcept {
             auto const &store = store_ref();
 
-            // Nothing has been drawn above this transaction's snapshot, so nothing can have moved
-            // under it. Compared against the drawn stamp and not the watermark: a commit in flight
-            // has already written its stamp onto its versions while the watermark still lags.
-            if (store.drawn_stamp_() == snapshot_) return success_k;
+            // Nothing here is stamped above this transaction's snapshot, so nothing can have moved
+            // under it. Compared against the stamps written and not the watermark: a commit in
+            // flight has already written its stamp onto its versions while the watermark lags.
+            if (store.newest_stamped_ <= snapshot_) return success_k;
 
             // A read this transaction cannot name cannot be proven untouched, so any commit conflicts.
             // A walk of the whole keyspace is a window nobody can spell, which is the phantom case.
@@ -2555,6 +2555,10 @@ class snapshot_store {
     /** Keys whose newest published version says they are there. */
     std::size_t live_count_ {0};
 
+    /** The newest stamp written onto any version here, read and raised only by whoever holds this
+     *  store exclusively. */
+    generation_t newest_stamped_ {0};
+
     friend class transaction_t;
 
 #pragma region Stamps and Snapshots
@@ -2572,9 +2576,6 @@ class snapshot_store {
 
     /** The newest stamp every part of which is written, which is what a fresh read answers at. */
     [[nodiscard]] generation_t published_stamp_() const noexcept { return order_().published_stamp(); }
-
-    /** The newest stamp drawn, which is what a validator compares against. */
-    [[nodiscard]] generation_t drawn_stamp_() const noexcept { return order_().drawn_stamp(); }
 
     /** The stamp as a plain number, which is how two versions are ordered by recency. */
     static constexpr generation_t stamp_of(commit_stamp_t stamp) noexcept { return static_cast<generation_t>(stamp); }
@@ -2959,6 +2960,7 @@ class snapshot_store {
         if (!staged) return false;
         versioned_t const *const previously_visible = readable_version_(identifier, latest_snapshot_k);
         mutable_ref_(*staged).committed = stamp;
+        if (newest_stamped_ < stamp_of(stamp)) newest_stamped_ = stamp_of(stamp);
         versioned_t const *const now_visible = readable_version_(identifier, latest_snapshot_k);
         live_count_ +=
             static_cast<std::size_t>(now_visible != nullptr) - static_cast<std::size_t>(previously_visible != nullptr);
@@ -3161,7 +3163,7 @@ class snapshot_store {
      *  pointing at it; one whose order is its own copies the counters across, since the moved-from
      *  object it lives in is about to stop speaking for anything. */
     snapshot_store(snapshot_store &&other) noexcept
-        : entries_(std::move(other.entries_)), live_count_(other.live_count_) {
+        : entries_(std::move(other.entries_)), live_count_(other.live_count_), newest_stamped_(other.newest_stamped_) {
         adopt_order_of_(other);
     }
 
@@ -3170,6 +3172,7 @@ class snapshot_store {
         entries_ = std::move(other.entries_);
         adopt_order_of_(other);
         live_count_ = other.live_count_;
+        newest_stamped_ = other.newest_stamped_;
         return *this;
     }
 
