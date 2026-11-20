@@ -367,6 +367,10 @@ class reference_store {
         }
 
       public:
+        transaction_t() noexcept(std::is_nothrow_default_constructible_v<entry_set_t>)
+            requires std::is_default_constructible_v<comparator_t>
+        = default;
+
         /**
          *  @brief Takes over @p other entirely, leaving it owning nothing.
          *
@@ -436,10 +440,10 @@ class reference_store {
             static_assert(is_safe_callback_for<callback_inserted_type_, value_t const &>,
                           "callback_inserted must be noexcept invocable with value_t const &");
 
-            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself(element));
-            if (!maybe_identifier) return maybe_identifier.status();
-            if (transaction_sees_key_(*maybe_identifier, callback_existing)) return key_already_exists_k;
-            return stage_(std::move(element), presence_t::present_k, std::move(*maybe_identifier), callback_inserted);
+            auto [identifier, status] = copy_safely<identifier_t>(mapping_key_or_itself(element));
+            if (failed(status)) return status;
+            if (transaction_sees_key_(identifier, callback_existing)) return key_already_exists_k;
+            return stage_(std::move(element), presence_t::present_k, std::move(identifier), callback_inserted);
         }
 
         /**
@@ -463,10 +467,10 @@ class reference_store {
             static_assert(is_safe_callback_for<callback_inserted_type_, value_t const &>,
                           "callback_inserted must be noexcept invocable with value_t const &");
 
-            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself(element));
-            if (!maybe_identifier) return maybe_identifier.status();
-            if (transaction_sees_key_(*maybe_identifier, callback_existing)) return success_k;
-            return stage_(std::move(element), presence_t::present_k, std::move(*maybe_identifier), callback_inserted);
+            auto [identifier, status] = copy_safely<identifier_t>(mapping_key_or_itself(element));
+            if (failed(status)) return status;
+            if (transaction_sees_key_(identifier, callback_existing)) return success_k;
+            return stage_(std::move(element), presence_t::present_k, std::move(identifier), callback_inserted);
         }
 
         /**
@@ -491,12 +495,12 @@ class reference_store {
             static_assert(is_safe_callback_for<callback_inserted_type_, value_t const &>,
                           "callback_inserted must be noexcept invocable with value_t const &");
 
-            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself(element));
-            if (!maybe_identifier) return maybe_identifier.status();
+            auto [identifier, status] = copy_safely<identifier_t>(mapping_key_or_itself(element));
+            if (failed(status)) return status;
             // The element being replaced is reported before the write, which is the last moment it
             // is still there to report - staging overwrites this transaction's own version in place.
-            bool const replacing = transaction_sees_key_(*maybe_identifier, callback_existing);
-            return stage_(std::move(element), presence_t::present_k, std::move(*maybe_identifier),
+            bool const replacing = transaction_sees_key_(identifier, callback_existing);
+            return stage_(std::move(element), presence_t::present_k, std::move(identifier),
                           [&](value_t const &staged) noexcept {
                               if (!replacing) callback_inserted(staged);
                           });
@@ -524,9 +528,9 @@ class reference_store {
          *  - Any status the key's @c copy returns passes through unchanged.
          */
         status_t update(value_t &&element) noexcept {
-            expected<bool> const key_is_present = contains(mapping_key_or_itself(element));
-            if (!key_is_present) return key_is_present.status();
-            if (!*key_is_present) return key_not_found_k;
+            auto const [key_is_present, status] = contains(mapping_key_or_itself(element));
+            if (failed(status)) return status;
+            if (!key_is_present) return key_not_found_k;
             return insert_or_assign_(std::move(element));
         }
 
@@ -564,11 +568,11 @@ class reference_store {
 
             // The tombstone and the change list each keep their own identifier, and a heavy key
             // only copies through `.copy()`.
-            auto maybe_identifier = copy_safely<identifier_t>(identifier);
-            if (!maybe_identifier) return maybe_identifier.status();
-            auto maybe_tombstone = copy_safely<identifier_t>(identifier);
-            if (!maybe_tombstone) return maybe_tombstone.status();
-            return stage_(value_t {std::move(*maybe_tombstone)}, presence_t::erased_k, std::move(*maybe_identifier));
+            auto [copied_identifier, identifier_status] = copy_safely<identifier_t>(identifier);
+            if (failed(identifier_status)) return identifier_status;
+            auto [tombstone, tombstone_status] = copy_safely<identifier_t>(identifier);
+            if (failed(tombstone_status)) return tombstone_status;
+            return stage_(value_t {std::move(tombstone)}, presence_t::erased_k, std::move(copied_identifier));
         }
 
         /**
@@ -600,14 +604,15 @@ class reference_store {
             store_ref().find_committed_entry_(
                 identifier,
                 [&](versioned_entry_t const &entry) noexcept {
-                    auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself(entry.payload));
-                    if (!maybe_identifier) status = maybe_identifier.status();
-                    else remember(std::move(*maybe_identifier), watch_shape_of(&entry));
+                    auto [copied_identifier, copy_status] =
+                        copy_safely<identifier_t>(mapping_key_or_itself(entry.payload));
+                    if (failed(copy_status)) status = copy_status;
+                    else remember(std::move(copied_identifier), watch_shape_of(&entry));
                 },
                 [&]() noexcept {
-                    auto maybe_identifier = copy_safely<identifier_t>(identifier);
-                    if (!maybe_identifier) status = maybe_identifier.status();
-                    else remember(std::move(*maybe_identifier), missing_watch());
+                    auto [copied_identifier, copy_status] = copy_safely<identifier_t>(identifier);
+                    if (failed(copy_status)) status = copy_status;
+                    else remember(std::move(copied_identifier), missing_watch());
                 });
             return status;
         }
@@ -622,9 +627,9 @@ class reference_store {
          *  - Any status the key's @c copy returns passes through unchanged.
          */
         status_t watch(versioned_entry_t const &entry) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself(entry.payload));
-            if (!maybe_identifier) return maybe_identifier.status();
-            return invoke_safely([&] { watches_.push_back({std::move(*maybe_identifier), watch_shape_of(&entry)}); });
+            auto [identifier, status] = copy_safely<identifier_t>(mapping_key_or_itself(entry.payload));
+            if (failed(status)) return status;
+            return invoke_safely([&] { watches_.push_back({std::move(identifier), watch_shape_of(&entry)}); });
         }
 
         /**
@@ -671,9 +676,9 @@ class reference_store {
                   typename callback_missing_type_ = no_op_t>
         status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                 callback_missing_type_ &&callback_missing = {}) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(comparable);
-            if (!maybe_identifier) return maybe_identifier.status();
-            status_t const recorded = watch(*maybe_identifier);
+            auto [identifier, status] = copy_safely<identifier_t>(comparable);
+            if (failed(status)) return status;
+            status_t const recorded = watch(identifier);
             if (failed(recorded)) return recorded;
             return find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
                         std::forward<callback_missing_type_>(callback_missing));
@@ -962,9 +967,9 @@ class reference_store {
         /** How many members equal @p comparable, which for a unique key is nought or one. */
         template <typename comparable_type_ = identifier_t>
         expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
-            expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
-            if (!present) return present.status();
-            return *present ? std::size_t {1} : std::size_t {0};
+            auto const [present, status] = contains(std::forward<comparable_type_>(comparable));
+            if (failed(status)) return status;
+            return present ? std::size_t {1} : std::size_t {0};
         }
 
         /**
@@ -1544,7 +1549,9 @@ class reference_store {
 
   public:
     /** Empty and nothrow where the set's sentinel allocates nothing, so a failed @c make binds. */
-    reference_store() noexcept(std::is_nothrow_default_constructible_v<entry_set_t>) {}
+    reference_store() noexcept(std::is_nothrow_default_constructible_v<entry_set_t>)
+        requires std::is_default_constructible_v<comparator_t>
+    {}
 
     /** Seeds the comparator, which an instance carrying state or a dispatch pointer needs. */
     explicit reference_store(comparator_t const &comparator) noexcept(false)

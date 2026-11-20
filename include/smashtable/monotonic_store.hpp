@@ -324,11 +324,15 @@ class monotonic_store {
          */
         template <typename comparable_type_>
         [[nodiscard]] bool stages_(comparable_type_ const &comparable) const noexcept {
-            expected<bool> const staged = changes_.contains(comparable);
-            return staged && *staged;
+            auto const [staged, status] = changes_.contains(comparable);
+            return succeeded(status) && staged;
         }
 
       public:
+        transaction_t() noexcept(std::is_nothrow_default_constructible_v<comparator_t>)
+            requires std::is_default_constructible_v<comparator_t>
+        = default;
+
         /**
          *  @brief Takes over @p other entirely, leaving it owning nothing.
          *
@@ -391,9 +395,9 @@ class monotonic_store {
          *  - @c operation_not_permitted_k The transaction is already staged.
          */
         status_t insert(value_t &&value) noexcept {
-            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
-            if (!key_is_present) return key_is_present.status();
-            if (*key_is_present) return key_already_exists_k;
+            auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(value));
+            if (failed(status)) return status;
+            if (key_is_present) return key_already_exists_k;
             return upsert(std::move(value));
         }
 
@@ -409,9 +413,9 @@ class monotonic_store {
          *  - @c operation_not_permitted_k The key is free and the transaction is already staged.
          */
         status_t insert_if_missing(value_t &&value) noexcept {
-            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
-            if (!key_is_present) return key_is_present.status();
-            if (*key_is_present) return success_k;
+            auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(value));
+            if (failed(status)) return status;
+            if (key_is_present) return success_k;
             return upsert(std::move(value));
         }
 
@@ -426,11 +430,11 @@ class monotonic_store {
          *  - @c operation_not_permitted_k The transaction is already staged.
          */
         status_t upsert(value_t &&value) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_identifier) return out_of_memory_heap_k;
+            auto [identifier, status] = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+            if (failed(status)) return out_of_memory_heap_k;
             versioned_t versioned(std::move(value));
             versioned.presence = presence_t::present_k;
-            return stage_(std::move(*maybe_identifier), std::move(versioned));
+            return stage_(std::move(identifier), std::move(versioned));
         }
 
         /**
@@ -447,9 +451,9 @@ class monotonic_store {
          *  - @c operation_not_permitted_k The transaction is already staged.
          */
         status_t update(value_t &&value) noexcept {
-            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
-            if (!key_is_present) return key_is_present.status();
-            if (!*key_is_present) return key_not_found_k;
+            auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(value));
+            if (failed(status)) return status;
+            if (!key_is_present) return key_not_found_k;
             return upsert(std::move(value));
         }
 
@@ -483,14 +487,14 @@ class monotonic_store {
 
             // The tombstone owns its own identifier, and the list of changed identifiers owns another,
             // so a move-only key needs two safe copies rather than one copy and one implicit one.
-            auto maybe_identifier = copy_safely<identifier_t>(identifier);
-            if (!maybe_identifier) return maybe_identifier.status();
-            auto maybe_payload = copy_safely<identifier_t>(identifier);
-            if (!maybe_payload) return maybe_payload.status();
+            auto [copied_identifier, identifier_status] = copy_safely<identifier_t>(identifier);
+            if (failed(identifier_status)) return identifier_status;
+            auto [payload, payload_status] = copy_safely<identifier_t>(identifier);
+            if (failed(payload_status)) return payload_status;
 
-            versioned_t versioned(value_t {std::move(*maybe_payload)});
+            versioned_t versioned(value_t {std::move(payload)});
             versioned.presence = presence_t::erased_k;
-            return stage_(std::move(*maybe_identifier), std::move(versioned));
+            return stage_(std::move(copied_identifier), std::move(versioned));
         }
 
         status_t reserve(std::size_t size) noexcept { return watches_.reserve(size); }
@@ -506,15 +510,15 @@ class monotonic_store {
          *  - Any status the key's @c copy returns passes through unchanged.
          */
         status_t watch(identifier_t const &identifier) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(identifier);
-            if (!maybe_identifier) return maybe_identifier.status();
+            auto [copied_identifier, status] = copy_safely<identifier_t>(identifier);
+            if (failed(status)) return status;
 
             watch_t shape = missing_watch();
             // The finder validation uses, so both ends of the watch resolve a tombstone the same way.
             store_ref().find_committed_entry_(
                 identifier, [&](versioned_t const &versioned) noexcept { shape = watch_shape_of(&versioned); },
                 no_op_t {});
-            return watches_.push_back({std::move(*maybe_identifier), shape});
+            return watches_.push_back({std::move(copied_identifier), shape});
         }
 
         /**
@@ -529,9 +533,9 @@ class monotonic_store {
                   typename callback_missing_type_ = no_op_t>
         status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                 callback_missing_type_ &&callback_missing = {}) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(comparable);
-            if (!maybe_identifier) return maybe_identifier.status();
-            status_t const recorded = watch(*maybe_identifier);
+            auto [identifier, status] = copy_safely<identifier_t>(comparable);
+            if (failed(status)) return status;
+            status_t const recorded = watch(identifier);
             if (failed(recorded)) return recorded;
             return find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
                         std::forward<callback_missing_type_>(callback_missing));
@@ -546,9 +550,9 @@ class monotonic_store {
         status_t watch(versioned_t const &versioned) noexcept {
             // Through `copy_safely` rather than a braced `identifier_t`, so a move-only identifier
             // compiles here and an identifier that allocates reports instead of throwing.
-            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(versioned.payload));
-            if (!maybe_identifier) return maybe_identifier.status();
-            return watches_.push_back({std::move(*maybe_identifier), watch_shape_of(&versioned)});
+            auto [identifier, status] = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(versioned.payload));
+            if (failed(status)) return status;
+            return watches_.push_back({std::move(identifier), watch_shape_of(&versioned)});
         }
 
         /**
@@ -788,9 +792,9 @@ class monotonic_store {
         status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires ordered_collection<versioned_chains_t>
         {
-            expected<value_t> lowest = smallest_copy_();
-            if (!lowest) return lowest.status() == key_not_found_k ? success_k : lowest.status();
-            return walk_from_(mapping_key_or_itself<value_t>(*lowest), upper, std::forward<callback_type_>(callback));
+            auto [lowest, status] = smallest_copy_();
+            if (failed(status)) return status == key_not_found_k ? success_k : status;
+            return walk_from_(mapping_key_or_itself<value_t>(lowest), upper, std::forward<callback_type_>(callback));
         }
 
         /** Copies the lowest member this transaction reads, so a walk has a key to start from. */
@@ -819,13 +823,13 @@ class monotonic_store {
             status_t collecting = success_k;
             [[maybe_unused]] status_t const walked = walk([&](value_t const &value) noexcept {
                 if (failed(collecting)) return;
-                auto owned = copy_identifier<identifier_t>(mapping_key_or_itself<value_t>(value));
-                if (!owned) {
-                    collecting = owned.status();
+                auto [owned, status] = copy_identifier<identifier_t>(mapping_key_or_itself<value_t>(value));
+                if (failed(status)) {
+                    collecting = status;
                     return;
                 }
                 callback(value);
-                if (status_t const kept = doomed.push_back(std::move(*owned)); failed(kept)) collecting = kept;
+                if (status_t const kept = doomed.push_back(std::move(owned)); failed(kept)) collecting = kept;
             });
             if (failed(collecting)) return collecting;
 
@@ -1034,9 +1038,9 @@ class monotonic_store {
             auto local_target = changes_.find(comparable);
             if (local_target != changes_.end() && local_target->presence == presence_t::present_k) { found = true; }
             else {
-                expected<bool> const seen = store_ref().contains(comparable);
-                if (!seen) return seen.status();
-                found = *seen;
+                auto const [seen, status] = store_ref().contains(comparable);
+                if (failed(status)) return status;
+                found = seen;
             }
 
             if (!found) {
@@ -1082,9 +1086,9 @@ class monotonic_store {
         /** How many members equal @p comparable, which for a unique key is nought or one. */
         template <typename comparable_type_ = identifier_t>
         expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
-            expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
-            if (!present) return present.status();
-            return *present ? std::size_t {1} : std::size_t {0};
+            auto const [present, status] = contains(std::forward<comparable_type_>(comparable));
+            if (failed(status)) return status;
+            return present ? std::size_t {1} : std::size_t {0};
         }
 
         /**
@@ -1172,10 +1176,10 @@ class monotonic_store {
         {
             // The walk needs a key to start from and there is no smallest key to name, so the lowest
             // member this transaction reads is asked for and used as the bound.
-            expected<value_t> lowest = smallest_copy_();
-            if (!lowest) return lowest.status() == key_not_found_k ? success_k : lowest.status();
+            auto [lowest, status] = smallest_copy_();
+            if (failed(status)) return status == key_not_found_k ? success_k : status;
             return erase_walked_(
-                [&](auto &&step) noexcept { return walk_from_(mapping_key_or_itself<value_t>(*lowest), upper, step); },
+                [&](auto &&step) noexcept { return walk_from_(mapping_key_or_itself<value_t>(lowest), upper, step); },
                 std::forward<callback_type_>(callback));
         }
 
@@ -1211,12 +1215,12 @@ class monotonic_store {
             [[maybe_unused]] status_t const walked = range(
                 std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), [&](value_t const &value) noexcept {
                     if (failed(collecting)) return;
-                    auto duplicate = copy_safely(value);
-                    if (!duplicate) {
-                        collecting = duplicate.status();
+                    auto [duplicate, status] = copy_safely(value);
+                    if (failed(status)) {
+                        collecting = status;
                         return;
                     }
-                    if (status_t const kept = revised.push_back(std::move(*duplicate)); failed(kept)) collecting = kept;
+                    if (status_t const kept = revised.push_back(std::move(duplicate)); failed(kept)) collecting = kept;
                 });
             if (failed(collecting)) return collecting;
 
@@ -1304,12 +1308,12 @@ class monotonic_store {
                     ++spare_versions_needed;
                     continue;
                 }
-                auto reserved_identifier = copy_safely<identifier_t>(identifier);
-                if (!reserved_identifier) {
+                auto [reserved_identifier, status] = copy_safely<identifier_t>(identifier);
+                if (failed(status)) {
                     unstage_(reserved);
                     return out_of_memory_heap_k;
                 }
-                versioned_t reservation(value_t {std::move(*reserved_identifier)});
+                versioned_t reservation(value_t {std::move(reserved_identifier)});
                 reservation.generation = generation_;
                 reservation.presence = presence_t::present_k;
                 auto result = storage_shape_t::upsert(store.entries_, versioned_chain_t {std::move(reservation)});
@@ -1852,7 +1856,9 @@ class monotonic_store {
 #pragma region Constructors and Assignment
 
   public:
-    monotonic_store() noexcept {}
+    monotonic_store() noexcept(std::is_nothrow_default_constructible_v<comparator_t>)
+        requires std::is_default_constructible_v<comparator_t>
+    {}
 
     /** Seeds the underlying tree's allocator, which a stateful allocator needs. */
     explicit monotonic_store(allocator_t const &allocator) noexcept
@@ -1909,9 +1915,9 @@ class monotonic_store {
      */
     template <typename comparable_type_ = identifier_t>
     expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
-        expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
-        if (!present) return present.status();
-        return *present ? std::size_t {1} : std::size_t {0};
+        auto const [present, status] = contains(std::forward<comparable_type_>(comparable));
+        if (failed(status)) return status;
+        return present ? std::size_t {1} : std::size_t {0};
     }
 
     /**
@@ -2042,9 +2048,9 @@ class monotonic_store {
      *  - @c key_already_exists_k The key exists.
      */
     status_t insert(value_t &&value) noexcept {
-        expected<bool> const key_is_present = contains(value);
-        if (!key_is_present) return key_is_present.status();
-        if (*key_is_present) return key_already_exists_k;
+        auto const [key_is_present, status] = contains(value);
+        if (failed(status)) return status;
+        if (key_is_present) return key_already_exists_k;
         return upsert(std::move(value));
     }
 
@@ -2082,12 +2088,12 @@ class monotonic_store {
 
         // The identifier has to be taken before the move, or the lookup below searches by a
         // moved-from key - which compares wrongly rather than failing loudly.
-        auto maybe_identifier = copy_safely(mapping_key_or_itself<value_t>(value));
-        if (!maybe_identifier) return maybe_identifier.status();
+        auto [identifier, identifier_status] = copy_safely(mapping_key_or_itself<value_t>(value));
+        if (failed(identifier_status)) return identifier_status;
 
         auto status = upsert(std::move(value));
         if (failed(status)) return status;
-        [[maybe_unused]] status_t const reported = find(*maybe_identifier, callback_inserted, no_op_t {});
+        [[maybe_unused]] status_t const reported = find(identifier, callback_inserted, no_op_t {});
         return status;
     }
 
@@ -2124,9 +2130,9 @@ class monotonic_store {
      *  - @c key_not_found_k The key doesn't exist.
      */
     status_t update(value_t &&value) noexcept {
-        expected<bool> const key_is_present = contains(value);
-        if (!key_is_present) return key_is_present.status();
-        if (!*key_is_present) return key_not_found_k;
+        auto const [key_is_present, status] = contains(value);
+        if (failed(status)) return status;
+        if (!key_is_present) return key_not_found_k;
         return upsert(std::move(value));
     }
 
@@ -2149,9 +2155,9 @@ class monotonic_store {
         // Duplicates inside the range collapse onto a single staged version, so the strictness is
         // about the store's own keys rather than about the range repeating itself.
         return commit_each_(first, last, [this](transaction_t &staging, value_t &&candidate) noexcept {
-            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(candidate));
-            if (!key_is_present) return key_is_present.status();
-            if (*key_is_present) return key_already_exists_k;
+            auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(candidate));
+            if (failed(status)) return status;
+            if (key_is_present) return key_already_exists_k;
             return staging.insert_if_missing(std::move(candidate));
         });
     }
@@ -2210,9 +2216,9 @@ class monotonic_store {
     template <readable_iterator input_iterator_type_>
     status_t update(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [this](transaction_t &staging, value_t &&candidate) noexcept {
-            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(candidate));
-            if (!key_is_present) return key_is_present.status();
-            if (!*key_is_present) return key_not_found_k;
+            auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(candidate));
+            if (failed(status)) return status;
+            if (!key_is_present) return key_not_found_k;
             return staging.upsert(std::move(candidate));
         });
     }
@@ -2543,10 +2549,10 @@ class monotonic_store {
                 changed_identifiers_allocator_t(storage_shape_t::allocator_of(entries_)));
             for (auto cursor = entries_.begin(); cursor != entries_.end(); ++cursor) {
                 if (!is_reclaimable_(*cursor)) continue;
-                auto reclaimed_identifier =
+                auto [reclaimed_identifier, status] =
                     copy_safely<identifier_t>(mapping_key_or_itself<value_t>((*cursor).head.payload));
-                if (!reclaimed_identifier) return out_of_memory_heap_k;
-                if (failed(doomed.push_back(std::move(*reclaimed_identifier)))) return out_of_memory_heap_k;
+                if (failed(status)) return out_of_memory_heap_k;
+                if (failed(doomed.push_back(std::move(reclaimed_identifier)))) return out_of_memory_heap_k;
             }
             for (identifier_t const &identifier : doomed) entries_.erase(identifier);
             return doomed.size();

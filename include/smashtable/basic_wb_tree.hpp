@@ -1174,9 +1174,9 @@ class basic_wb_tree {
      */
     template <typename comparable_type_ = value_t>
     expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
-        expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
-        if (!present) return present.status();
-        return *present ? std::size_t {1} : std::size_t {0};
+        auto const [present, status] = contains(std::forward<comparable_type_>(comparable));
+        if (failed(status)) return status;
+        return present ? std::size_t {1} : std::size_t {0};
     }
 
 #pragma endregion Lookup

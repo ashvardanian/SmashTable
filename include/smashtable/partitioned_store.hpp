@@ -326,9 +326,9 @@ class partitioned_store {
             return success_k;
         }
         else {
-            expected<identifier_t> copied = mapping_key_or_itself(element).copy();
-            if (!copied) return copied.status();
-            front = std::move(*copied);
+            auto [copied, status] = mapping_key_or_itself(element).copy();
+            if (failed(status)) return status;
+            front = std::move(copied);
             return success_k;
         }
     }
@@ -514,20 +514,20 @@ class partitioned_store {
         {
             every_part_lock<unique_lock_t> _ {mutexes_};
             // Declared inside the hold, so a refusal's publications roll back before the partitions go.
-            auto opened = generate_array_safely<publication_t, partitions_k>(
+            auto [opened, opened_status] = generate_array_safely<publication_t, partitions_k>(
                 [&](std::size_t partition_index) { return partitions_[partition_index].publication(); });
-            if (!opened) published = opened.status();
+            published = opened_status;
             for (std::size_t partition_index = 0; succeeded(published) && partition_index != partitions_k;
                  ++partition_index) {
-                published = stage((*opened)[partition_index]);
-                staged += (*opened)[partition_index].staged_count();
+                published = stage(opened[partition_index]);
+                staged += opened[partition_index].staged_count();
             }
             if (succeeded(published) && staged != 0) {
                 typename order_t::commit_in_flight_t in_flight;
                 order_->begin_commit(in_flight);
-                for (publication_t &part : *opened) part.publish_under(in_flight.stamp());
+                for (publication_t &part : opened) part.publish_under(in_flight.stamp());
                 order_->end_commit(in_flight);
-                for (publication_t &part : *opened) part.prune_published();
+                for (publication_t &part : opened) part.prune_published();
                 stamp = in_flight.stamp();
             }
         }
@@ -1167,7 +1167,7 @@ class partitioned_store {
         /** The shard set this transaction reaches through, held by pointer rather than reference. A
          *  reference member deletes the defaulted move assignment, and a transaction that moves but
          *  cannot be move-assigned is one no container can hold. */
-        partitioned_store *store_;
+        partitioned_store *store_ {nullptr};
 
         /** One inner transaction per partition, opened on one snapshot and generation where
          *  @c draws_from_a_shared_order<inner_store_t>, and otherwise each under its own lock at
@@ -1411,6 +1411,9 @@ class partitioned_store {
         }
 
       public:
+        transaction_t() noexcept(std::is_nothrow_default_constructible_v<comparator_t>)
+            requires std::is_default_constructible_v<comparator_t>
+        = default;
         transaction_t(partitioned_store &db, partition_transactions_t &&partition_transactions,
                       typename order_t::snapshot_claim_t &&claim = {}) noexcept
             : store_(&db), partitions_(std::move(partition_transactions)), claim_(std::move(claim)) {}
@@ -2561,7 +2564,11 @@ class partitioned_store {
     }
 
   public:
-    partitioned_store() noexcept { seat_order_in_parts_(); }
+    partitioned_store() noexcept(std::is_nothrow_default_constructible_v<comparator_t>)
+        requires std::is_default_constructible_v<comparator_t>
+    {
+        seat_order_in_parts_();
+    }
 
     /** Builds an empty store into @p order, which it shares with every other store built into it,
      *  so a @c transaction_group over them publishes under one stamp. */
@@ -2592,9 +2599,9 @@ class partitioned_store {
 
     /** Builds a store with every partition allocated, reporting a failed allocation as a status. */
     static expected<partitioned_store> make() noexcept {
-        expected<partitions_t> parts = new_parts();
-        if (!parts) return parts.status();
-        return partitioned_store {std::move(*parts)};
+        auto [parts, status] = new_parts();
+        if (failed(status)) return status;
+        return partitioned_store {std::move(parts)};
     }
 
     /**
@@ -2623,9 +2630,9 @@ class partitioned_store {
     template <typename allocator_type_>
         requires requires(allocator_type_ const &allocator) { inner_store_t::make(allocator); }
     static expected<partitioned_store> make(allocator_type_ const &allocator) noexcept {
-        expected<partitions_t> parts = new_parts_sharing(allocator);
-        if (!parts) return parts.status();
-        return partitioned_store {std::move(*parts)};
+        auto [parts, status] = new_parts_sharing(allocator);
+        if (failed(status)) return status;
+        return partitioned_store {std::move(parts)};
     }
 
     /**
@@ -2793,9 +2800,9 @@ class partitioned_store {
     /** Number of elements matching @p comparable, which is 0 or 1 for unique keys. */
     template <typename comparable_type_ = identifier_t>
     expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
-        expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
-        if (!present) return present.status();
-        return *present ? std::size_t {1} : std::size_t {0};
+        auto const [present, status] = contains(std::forward<comparable_type_>(comparable));
+        if (failed(status)) return status;
+        return present ? std::size_t {1} : std::size_t {0};
     }
 
     /** Inserts one element only if its key is absent, leaving an incumbent untouched. */
@@ -3233,12 +3240,9 @@ class partitioned_store {
         // Ascending order, one partition at a time, like every other all-partition walk here.
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
             writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index].writes};
-            auto one = partitions_[partition_index].vacuum();
-            if constexpr (std::is_same<decltype(one), std::size_t>()) reclaimed += one;
-            else {
-                if (!one) return one.status();
-                reclaimed += *one;
-            }
+            auto const [one, status] = partitions_[partition_index].vacuum();
+            if (failed(status)) return status;
+            reclaimed += one;
         }
         return reclaimed;
     }
@@ -3258,12 +3262,9 @@ class partitioned_store {
         std::size_t reclaimed = 0;
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
             writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index].writes};
-            auto one = partitions_[partition_index].vacuum(lower, upper);
-            if constexpr (std::is_same<decltype(one), std::size_t>()) reclaimed += one;
-            else {
-                if (!one) return one.status();
-                reclaimed += *one;
-            }
+            auto const [one, status] = partitions_[partition_index].vacuum(lower, upper);
+            if (failed(status)) return status;
+            reclaimed += one;
         }
         return reclaimed;
     }

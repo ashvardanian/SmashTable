@@ -102,9 +102,9 @@ class basic_flat_set {
      *  - Any status an element's @c copy returns passes through unchanged.
      */
     expected<basic_flat_set> copy() const noexcept {
-        auto copied = elements_.copy();
-        if (!copied) return copied.status();
-        return expected<basic_flat_set>(basic_flat_set(std::move(*copied), comparator_), success_k);
+        auto [copied, status] = elements_.copy();
+        if (failed(status)) return status;
+        return expected<basic_flat_set>(basic_flat_set(std::move(copied), comparator_), success_k);
     }
 
 #pragma endregion Constructors and Assignment
@@ -416,13 +416,13 @@ class basic_flat_set {
             }
         }
 
-        expected<elements_t> merged =
+        auto [merged, status] =
             elements_t::make(elements_.size() + staged.elements_.size() - shared, elements_.get_allocator());
-        if (!merged) return merged.status();
+        if (failed(status)) return status;
 
         // Every write below moves into room already secured, so none of them can refuse.
         auto take = [&](value_t &&element) noexcept {
-            [[maybe_unused]] status_t const placed = merged->push_back(assume_reserved, std::move(element));
+            [[maybe_unused]] status_t const placed = merged.push_back(assume_reserved, std::move(element));
         };
         std::size_t here = 0, there = 0;
         while (here != elements_.size() || there != staged.elements_.size()) {
@@ -437,7 +437,7 @@ class basic_flat_set {
                 ++there;
             }
         }
-        elements_ = *std::move(merged);
+        elements_ = std::move(merged);
         return success_k;
     }
 

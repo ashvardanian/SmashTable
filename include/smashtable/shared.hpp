@@ -521,11 +521,11 @@ struct mapping {
 
     /** Deep-copies both halves, so a mapping is copyable exactly when its members are. */
     expected<mapping> copy() const noexcept {
-        auto copied_key = copy_safely(key);
-        if (!copied_key) return copied_key.status();
-        auto copied_mapped = copy_safely(mapped);
-        if (!copied_mapped) return copied_mapped.status();
-        return expected<mapping>(mapping {std::move(*copied_key), std::move(*copied_mapped)}, success_k);
+        auto [copied_key, key_status] = copy_safely(key);
+        if (failed(key_status)) return key_status;
+        auto [copied_mapped, mapped_status] = copy_safely(mapped);
+        if (failed(mapped_status)) return mapped_status;
+        return expected<mapping>(mapping {std::move(copied_key), std::move(copied_mapped)}, success_k);
     }
 };
 
@@ -993,8 +993,8 @@ concept promises_something = promises_about_the_range<type_> || promises_about_t
  *
  *  Storage is a @c union, so the value exists only on success and @p value_type_ needs no default
  *  constructor. That is what lets one type cover both what @c std::optional carried and what a
- *  status carried, including the move-only transaction types that have no empty state to sit in. A
- *  default-constructed @c expected reports @b failure, since there is nothing in it.
+ *  status carried, move-only transactions included. A default-constructed @c expected reports
+ *  @b failure, since there is nothing in it.
  *
  *  Decomposes as <tt>auto [value, status]</tt>, for value types that can be default-constructed to
  *  hand something back on the failure path; see @c get.
@@ -1071,8 +1071,9 @@ class [[nodiscard]] expected {
      *
      *  A reference would bind into storage that was never constructed when the status is a failure,
      *  which reads as garbage and trips no sanitizer, so the failure path default-constructs
-     *  instead. Offered only where that is possible: a transaction cannot be decomposed, and has
-     *  nothing worth binding when it fails anyway, so callers check it and dereference.
+     *  instead. Offered only where that is possible: a type a factory returns default-constructs to
+     *  the empty state a move leaves behind, unless it is a store or transaction over a comparator
+     *  that has no default constructor, which callers check and dereference instead.
      */
     template <std::size_t index_>
         requires(std::is_nothrow_default_constructible_v<value_t>)
@@ -3536,6 +3537,7 @@ class transaction_group {
     }
 
   public:
+    transaction_group() noexcept = default;
     transaction_group(transaction_group &&) noexcept = default;
     transaction_group &operator=(transaction_group &&) noexcept = default;
     transaction_group(transaction_group const &) = delete;
@@ -3883,8 +3885,6 @@ class dynamic_transaction_group {
     generation_t committed_stamp_ {0};
     staging_t staging_ {staging_t::pending_k};
 
-    dynamic_transaction_group() noexcept = default;
-
     /** Where @p store_type_ sits among the kinds, or @c kinds_k where it is none of them. */
     template <typename store_type_>
     static constexpr std::size_t kind_of_() noexcept {
@@ -4011,6 +4011,8 @@ class dynamic_transaction_group {
     }
 
   public:
+    dynamic_transaction_group() noexcept = default;
+
     /** Takes over @p other's participants and claim, leaving it with neither. */
     dynamic_transaction_group(dynamic_transaction_group &&other) noexcept
         : joined_(std::exchange(other.joined_, nullptr)), joined_count_(std::exchange(other.joined_count_, 0)),
@@ -5269,6 +5271,20 @@ concept resumes_from_a_key = requires(side_type_ &side, typename side_type_::tra
     requires std::is_nothrow_default_constructible_v<typename side_type_::value_t>;
 };
 
+/** Hands @p visitor every member of @p chunk with whether @p probing holds it too, answering
+ *  @c halt_k where the visitor settled the answer. */
+template <typename member_type_, typename probing_type_, typename visitor_type_>
+expected<walk_control_t> visit_chunk_(probing_type_ &probing, std::span<member_type_ const> chunk,
+                                      visitor_type_ &visitor) noexcept {
+    for (member_type_ const &member : chunk) {
+        auto const [shared, shared_status] = probing.contains(mapping_key_or_itself<member_type_>(member));
+        if (failed(shared_status)) return shared_status;
+        membership_t const membership = shared ? membership_t::on_both_sides_k : membership_t::on_one_side_k;
+        if (visitor(member, membership) == walk_control_t::halt_k) return walk_control_t::halt_k;
+    }
+    return walk_control_t::resume_k;
+}
+
 /**
  *  @brief Hands @p visitor every member of @p walked with whether @p probing holds it too, stopping
  *      where the visitor calls the answer settled.
@@ -5297,9 +5313,9 @@ status_t compare_crossed_(walked_type_ &walked, probing_type_ &probing, visitor_
         member_t next_resume {};
         status_t copied = success_k;
         auto take = [&](member_t &target, member_t const &member) noexcept {
-            auto copy = copy_safely(member);
-            if (!copy) return void(copied = copy.status());
-            target = std::move(*copy);
+            auto [duplicate, copy_status] = copy_safely(member);
+            if (failed(copy_status)) return void(copied = copy_status);
+            target = std::move(duplicate);
         };
 
         // The walk needs a key to start from and no level names a floor, so the smallest member is one.
@@ -5321,25 +5337,22 @@ status_t compare_crossed_(walked_type_ &walked, probing_type_ &probing, visitor_
             if (failed(copied)) return copied;
 
             std::size_t const filled = seen < algebra_chunk_k ? seen : algebra_chunk_k;
-            for (std::size_t index = 0; index != filled; ++index) {
-                expected<bool> const shared = reading_probing->contains(mapping_key_or_itself<member_t>(chunk[index]));
-                if (!shared) return shared.status();
-                membership_t const membership = *shared ? membership_t::on_both_sides_k : membership_t::on_one_side_k;
-                if (visitor(chunk[index], membership) == walk_control_t::halt_k) return success_k;
-            }
-            if (seen <= algebra_chunk_k) return success_k;
+            auto const [control, visit_status] =
+                visit_chunk_(*reading_probing, std::span<member_t const>(chunk, filled), visitor);
+            if (failed(visit_status)) return visit_status;
+            if (control == walk_control_t::halt_k || seen <= algebra_chunk_k) return success_k;
             resume = std::move(next_resume);
         }
     }
     else {
         status_t probed = success_k;
         status_t const swept = walked.for_each([&](auto const &member) noexcept -> walk_control_t {
-            expected<bool> const shared = probing.contains(member);
-            if (!shared) {
-                probed = shared.status();
+            auto const [shared, shared_status] = probing.contains(member);
+            if (failed(shared_status)) {
+                probed = shared_status;
                 return walk_control_t::halt_k;
             }
-            membership_t const membership = *shared ? membership_t::on_both_sides_k : membership_t::on_one_side_k;
+            membership_t const membership = shared ? membership_t::on_both_sides_k : membership_t::on_one_side_k;
             return visitor(member, membership);
         });
         if (failed(swept)) return swept;

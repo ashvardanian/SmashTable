@@ -89,9 +89,9 @@ class locked_store {
     class transaction_t {
         friend class locked_store;
 
-        /** The store this transaction reaches through, null only once it was moved from. A pointer
+        /** The store this transaction reaches through, null while it holds nothing. A pointer
          *  rather than a reference, which would delete the move assignment. */
-        locked_store *store_;
+        locked_store *store_ {nullptr};
 
         /** The inner store's own transaction, which stages entirely outside the mutex. */
         inner_transaction_t inner_transaction_;
@@ -115,6 +115,9 @@ class locked_store {
         }
 
       public:
+        transaction_t() noexcept(std::is_nothrow_default_constructible_v<comparator_t>)
+            requires std::is_default_constructible_v<comparator_t>
+        = default;
         transaction_t(locked_store &db, inner_transaction_t &&inner_transaction) noexcept
             : store_(&db), inner_transaction_(std::move(inner_transaction)) {}
         transaction_t(transaction_t &&other) noexcept
@@ -724,7 +727,11 @@ class locked_store {
     }
 
   public:
-    locked_store() noexcept { seat_order_(); }
+    locked_store() noexcept(std::is_nothrow_default_constructible_v<comparator_t>)
+        requires std::is_default_constructible_v<comparator_t>
+    {
+        seat_order_();
+    }
 
     /** Builds a store that is a member of @p order rather than of one it made for itself. */
     explicit locked_store(order_t &order) noexcept : order_(&order) { seat_order_(); }
@@ -881,9 +888,9 @@ class locked_store {
     /** Number of elements matching @p comparable, which is 0 or 1 for unique keys. */
     template <typename comparable_type_ = identifier_t>
     expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
-        expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
-        if (!present) return present.status();
-        return *present ? std::size_t {1} : std::size_t {0};
+        auto const [present, status] = contains(std::forward<comparable_type_>(comparable));
+        if (failed(status)) return status;
+        return present ? std::size_t {1} : std::size_t {0};
     }
 
     /** Inherits the inner store's all-or-nothing batch, held under this store's write lock

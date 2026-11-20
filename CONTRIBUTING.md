@@ -309,6 +309,8 @@ For example, in this codebase:
   It has a `key` member for the lack of a better name, but the second one isn't a `value` - it's in the `mapped` variable.
 - `expected` replaces `std::optional` augmenting the semantics with error codes.
   It has an `outcome` always initialized member instead of a generic `value` or `object`, often nested inside some union for uninitialized states.
+  Callers take it apart as `auto [value, status] = call()` and check the status before using the value.
+  Every type a factory returns has a `noexcept` empty state, its moved-from state, so it can be taken apart.
 
 ## Documentation Styling Guidelines
 

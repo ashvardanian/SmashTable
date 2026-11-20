@@ -442,12 +442,11 @@ class basic_hash_table {
     template <multipass_iterator begin_iterator_type_, iterator_sentinel<begin_iterator_type_> end_iterator_type_>
     static expected<basic_hash_table> make(begin_iterator_type_ begin, end_iterator_type_ end, hasher_t hasher = {},
                                            equals_t equals = {}, allocator_t allocator = {}) noexcept {
-        auto table = make(hash_slots_count_t {static_cast<std::size_t>(distance_between(begin, end))},
-                          std::move(hasher), std::move(equals), std::move(allocator));
-        if (!table) return table;
-        if (status_t const filled = table->upsert(begin, end, assume_reserved_t {}); failed(filled))
-            return expected<basic_hash_table>(filled);
-        return table;
+        auto [table, status] = make(hash_slots_count_t {static_cast<std::size_t>(distance_between(begin, end))},
+                                    std::move(hasher), std::move(equals), std::move(allocator));
+        if (failed(status)) return status;
+        if (status_t const filled = table.upsert(begin, end, assume_reserved_t {}); failed(filled)) return filled;
+        return std::move(table);
     }
 
     /** Surrenders the allocation, leaving this table empty. */
@@ -771,9 +770,9 @@ class basic_hash_table {
      */
     template <typename comparable_key_type_ = key_t const &>
     expected<std::size_t> count(comparable_key_type_ &&key) const noexcept {
-        expected<bool> const present = contains(std::forward<comparable_key_type_>(key));
-        if (!present) return present.status();
-        return *present ? std::size_t {1} : std::size_t {0};
+        auto const [present, status] = contains(std::forward<comparable_key_type_>(key));
+        if (failed(status)) return status;
+        return present ? std::size_t {1} : std::size_t {0};
     }
 
 #pragma endregion Lookups

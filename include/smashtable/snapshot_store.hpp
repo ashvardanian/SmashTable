@@ -676,12 +676,12 @@ class snapshot_store {
         status_t record_read_(comparable_type_ const &comparable) const noexcept {
             if constexpr (!at_least(isolation_k, isolation_t::serializable_k)) return success_k;
             else {
-                auto owned = copy_identifier<identifier_t>(comparable);
-                if (!owned) {
+                auto [identifier, status] = copy_identifier<identifier_t>(comparable);
+                if (failed(status)) {
                     read_set_ = read_set_t::unrecorded_k;
-                    return owned.status();
+                    return status;
                 }
-                status_t const recorded = accesses_.push_back({std::move(*owned), access_t::read_k});
+                status_t const recorded = accesses_.push_back({std::move(identifier), access_t::read_k});
                 if (failed(recorded)) read_set_ = read_set_t::unrecorded_k;
                 return recorded;
             }
@@ -707,15 +707,15 @@ class snapshot_store {
         /** Records the window between @p lower and @p upper at every level, which a watch needs. */
         template <typename lower_type_, typename upper_type_>
         status_t record_window_(lower_type_ const &lower, upper_type_ const &upper, access_t ends) const noexcept {
-            auto lower_copy = copy_identifier<identifier_t>(lower);
-            if (!lower_copy) {
+            auto [lower_identifier, lower_status] = copy_identifier<identifier_t>(lower);
+            if (failed(lower_status)) {
                 read_set_ = read_set_t::unrecorded_k;
-                return lower_copy.status();
+                return lower_status;
             }
-            auto upper_copy = copy_identifier<identifier_t>(upper);
-            if (!upper_copy) {
+            auto [upper_identifier, upper_status] = copy_identifier<identifier_t>(upper);
+            if (failed(upper_status)) {
                 read_set_ = read_set_t::unrecorded_k;
-                return upper_copy.status();
+                return upper_status;
             }
             if (status_t const reserved = accesses_.reserve(accesses_.size() + 2); failed(reserved)) {
                 read_set_ = read_set_t::unrecorded_k;
@@ -728,9 +728,9 @@ class snapshot_store {
                                         ? access_t::closes_k | access_t::to_the_highest_k
                                         : access_t::closes_k;
             [[maybe_unused]] status_t const opened =
-                accesses_.push_back(assume_reserved, {std::move(*lower_copy), opens});
+                accesses_.push_back(assume_reserved, {std::move(lower_identifier), opens});
             [[maybe_unused]] status_t const closed =
-                accesses_.push_back(assume_reserved, {std::move(*upper_copy), closes});
+                accesses_.push_back(assume_reserved, {std::move(upper_identifier), closes});
             return success_k;
         }
 
@@ -896,9 +896,10 @@ class snapshot_store {
             if constexpr (relinks_staged_nodes_k)
                 if (succeeded(status)) status = staged_nodes_.reserve(sorted.size());
             for (std::size_t index = 0; succeeded(status) && index != sorted.size(); ++index) {
-                auto identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(sorted[index].payload));
-                if (!identifier) status = identifier.status();
-                else status = changed_identifiers_.push_back(assume_reserved, std::move(*identifier));
+                auto [identifier, identifier_status] =
+                    copy_safely<identifier_t>(mapping_key_or_itself<value_t>(sorted[index].payload));
+                if (failed(identifier_status)) status = identifier_status;
+                else status = changed_identifiers_.push_back(assume_reserved, std::move(identifier));
             }
             if (succeeded(status))
                 status = changes_.upsert(moving_pointer<versioned_t> {sorted.begin()},
@@ -909,6 +910,10 @@ class snapshot_store {
         }
 
       public:
+        transaction_t() noexcept(std::is_nothrow_default_constructible_v<comparator_t>)
+            requires std::is_default_constructible_v<comparator_t>
+        = default;
+
         /** Takes over @p other entirely, leaving it owning nothing. Written out rather than
          *  defaulted: a defaulted move would leave both objects pointing at the store, so the
          *  destructor would retire one snapshot twice. */
@@ -973,9 +978,9 @@ class snapshot_store {
          *    passes through unchanged.
          */
         status_t insert(value_t &&value) noexcept {
-            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
-            if (!key_is_present) return key_is_present.status();
-            if (*key_is_present) return key_already_exists_k;
+            auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(value));
+            if (failed(status)) return status;
+            if (key_is_present) return key_already_exists_k;
             return upsert(std::move(value));
         }
 
@@ -989,9 +994,9 @@ class snapshot_store {
          *    passes through unchanged.
          */
         status_t insert_if_missing(value_t &&value) noexcept {
-            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
-            if (!key_is_present) return key_is_present.status();
-            if (*key_is_present) return success_k;
+            auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(value));
+            if (failed(status)) return status;
+            if (key_is_present) return success_k;
             return upsert(std::move(value));
         }
 
@@ -1003,11 +1008,11 @@ class snapshot_store {
          *  - @c operation_not_permitted_k The transaction is already staged.
          */
         status_t upsert(value_t &&value) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_identifier) return out_of_memory_heap_k;
+            auto [identifier, status] = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+            if (failed(status)) return out_of_memory_heap_k;
             versioned_t versioned(std::move(value));
             versioned.presence = presence_t::present_k;
-            return stage_(std::move(*maybe_identifier), std::move(versioned));
+            return stage_(std::move(identifier), std::move(versioned));
         }
 
         /**
@@ -1048,9 +1053,9 @@ class snapshot_store {
          *    passes through unchanged.
          */
         status_t update(value_t &&value) noexcept {
-            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
-            if (!key_is_present) return key_is_present.status();
-            if (!*key_is_present) return key_not_found_k;
+            auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(value));
+            if (failed(status)) return status;
+            if (!key_is_present) return key_not_found_k;
             return upsert(std::move(value));
         }
 
@@ -1085,14 +1090,14 @@ class snapshot_store {
 
             // The tombstone owns its own identifier and the changed list owns another, so a move-only
             // key needs two safe copies rather than one copy and one implicit one.
-            auto maybe_identifier = copy_safely<identifier_t>(identifier);
-            if (!maybe_identifier) return out_of_memory_heap_k;
-            auto maybe_payload = copy_safely<identifier_t>(identifier);
-            if (!maybe_payload) return out_of_memory_heap_k;
+            auto [copied_identifier, identifier_status] = copy_safely<identifier_t>(identifier);
+            if (failed(identifier_status)) return out_of_memory_heap_k;
+            auto [payload, payload_status] = copy_safely<identifier_t>(identifier);
+            if (failed(payload_status)) return out_of_memory_heap_k;
 
-            versioned_t versioned(value_t {std::move(*maybe_payload)});
+            versioned_t versioned(value_t {std::move(payload)});
             versioned.presence = presence_t::erased_k;
-            return stage_(std::move(*maybe_identifier), std::move(versioned));
+            return stage_(std::move(copied_identifier), std::move(versioned));
         }
 
         /**
@@ -1297,12 +1302,12 @@ class snapshot_store {
          *  - Any status the key's @c copy returns passes through unchanged.
          */
         status_t watch(identifier_t const &identifier) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(identifier);
-            if (!maybe_identifier) {
+            auto [copied_identifier, status] = copy_safely<identifier_t>(identifier);
+            if (failed(status)) {
                 read_set_ = read_set_t::unrecorded_k;
-                return maybe_identifier.status();
+                return status;
             }
-            status_t const recorded = accesses_.push_back({std::move(*maybe_identifier), access_t::read_k});
+            status_t const recorded = accesses_.push_back({std::move(copied_identifier), access_t::read_k});
             if (failed(recorded)) read_set_ = read_set_t::unrecorded_k;
             return recorded;
         }
@@ -1316,12 +1321,12 @@ class snapshot_store {
         status_t watch(versioned_t const &versioned) noexcept {
             // Through `copy_safely` rather than a braced `identifier_t`, so a move-only identifier
             // compiles here and an identifier that allocates reports instead of throwing.
-            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(versioned.payload));
-            if (!maybe_identifier) {
+            auto [identifier, status] = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(versioned.payload));
+            if (failed(status)) {
                 read_set_ = read_set_t::unrecorded_k;
-                return maybe_identifier.status();
+                return status;
             }
-            status_t const recorded = accesses_.push_back({std::move(*maybe_identifier), access_t::read_k});
+            status_t const recorded = accesses_.push_back({std::move(identifier), access_t::read_k});
             if (failed(recorded)) read_set_ = read_set_t::unrecorded_k;
             return recorded;
         }
@@ -1339,9 +1344,9 @@ class snapshot_store {
                   typename callback_missing_type_ = no_op_t>
         status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                 callback_missing_type_ &&callback_missing = {}) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(comparable);
-            if (!maybe_identifier) return maybe_identifier.status();
-            status_t const recorded = watch(*maybe_identifier);
+            auto [identifier, status] = copy_safely<identifier_t>(comparable);
+            if (failed(status)) return status;
+            status_t const recorded = watch(identifier);
             if (failed(recorded)) return recorded;
             return find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
                         std::forward<callback_missing_type_>(callback_missing));
@@ -1794,9 +1799,9 @@ class snapshot_store {
                           "callback_found must be noexcept invocable with std::size_t");
             static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
-            expected<bool> const key_is_present = contains(comparable);
-            if (!key_is_present) return key_is_present.status();
-            if (!*key_is_present) {
+            auto const [key_is_present, status] = contains(comparable);
+            if (failed(status)) return status;
+            if (!key_is_present) {
                 callback_missing();
                 return success_k;
             }
@@ -1823,9 +1828,9 @@ class snapshot_store {
          */
         template <typename comparable_type_ = identifier_t>
         expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
-            expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
-            if (!present) return present.status();
-            return *present ? std::size_t {1} : std::size_t {0};
+            auto const [present, status] = contains(std::forward<comparable_type_>(comparable));
+            if (failed(status)) return status;
+            return present ? std::size_t {1} : std::size_t {0};
         }
 
         /**
@@ -1957,12 +1962,12 @@ class snapshot_store {
             [[maybe_unused]] status_t const walked = range(
                 std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), [&](value_t const &value) noexcept {
                     if (failed(collecting)) return;
-                    auto duplicate = copy_safely(value);
-                    if (!duplicate) {
-                        collecting = duplicate.status();
+                    auto [duplicate, status] = copy_safely(value);
+                    if (failed(status)) {
+                        collecting = status;
                         return;
                     }
-                    if (status_t const kept = revised.push_back(std::move(*duplicate)); failed(kept)) collecting = kept;
+                    if (status_t const kept = revised.push_back(std::move(duplicate)); failed(kept)) collecting = kept;
                 });
             if (failed(collecting)) return collecting;
 
@@ -2047,13 +2052,13 @@ class snapshot_store {
             status_t collecting = success_k;
             [[maybe_unused]] status_t const walked = walk([&](value_t const &value) noexcept {
                 if (failed(collecting)) return;
-                auto owned = copy_identifier<identifier_t>(mapping_key_or_itself<value_t>(value));
-                if (!owned) {
-                    collecting = owned.status();
+                auto [identifier, status] = copy_identifier<identifier_t>(mapping_key_or_itself<value_t>(value));
+                if (failed(status)) {
+                    collecting = status;
                     return;
                 }
                 callback(value);
-                if (status_t const kept = doomed.push_back(std::move(*owned)); failed(kept)) collecting = kept;
+                if (status_t const kept = doomed.push_back(std::move(identifier)); failed(kept)) collecting = kept;
             });
             if (failed(collecting)) return collecting;
 
@@ -2146,12 +2151,12 @@ class snapshot_store {
                 // only then does the second pass move the payloads onto slots already paid for,
                 // where it cannot fail.
                 for (std::size_t reserved = 0; reserved != changed_identifiers_.size(); ++reserved) {
-                    auto reserved_identifier = copy_safely<identifier_t>(changed_identifiers_[reserved]);
-                    if (!reserved_identifier) {
+                    auto [reserved_identifier, status] = copy_safely<identifier_t>(changed_identifiers_[reserved]);
+                    if (failed(status)) {
                         unstage_(reserved);
                         return out_of_memory_heap_k;
                     }
-                    versioned_t placeholder(value_t {std::move(*reserved_identifier)});
+                    versioned_t placeholder(value_t {std::move(reserved_identifier)});
                     placeholder.generation = generation_;
                     placeholder.presence = presence_t::present_k;
                     if (failed(storage_shape_t::upsert(store.entries_, std::move(placeholder)))) {
@@ -2415,7 +2420,7 @@ class snapshot_store {
         friend store_t;
 
         store_t *store_ {nullptr};
-        changed_identifiers_vector_t staged_identifiers_;
+        changed_identifiers_vector_t staged_identifiers_ {};
 
         /** The generation every version staged by this publication carries. */
         generation_t generation_ {0};
@@ -2446,9 +2451,9 @@ class snapshot_store {
                                     kept_type_ &&on_kept = {}) noexcept {
             status_t collecting = success_k;
             walk([&](value_t const &value) noexcept {
-                auto duplicate = copy_one(value);
-                if (duplicate) collecting = collected.push_back(std::move(*duplicate));
-                else collecting = duplicate.status();
+                auto [duplicate, status] = copy_one(value);
+                if (succeeded(status)) collecting = collected.push_back(std::move(duplicate));
+                else collecting = status;
                 if (failed(collecting)) return walk_control_t::halt_k;
                 on_kept(value);
                 return walk_control_t::resume_k;
@@ -2479,6 +2484,8 @@ class snapshot_store {
         }
 
       public:
+        publication_t() noexcept = default;
+
         publication_t(publication_t &&other) noexcept
             : store_(std::exchange(other.store_, nullptr)), staged_identifiers_(std::move(other.staged_identifiers_)),
               generation_(other.generation_) {}
@@ -2520,11 +2527,11 @@ class snapshot_store {
          *  - @c operation_not_permitted_k The publication was moved from.
          */
         status_t upsert(value_t &&value) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_identifier) return out_of_memory_heap_k;
+            auto [identifier, status] = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+            if (failed(status)) return out_of_memory_heap_k;
             versioned_t versioned(std::move(value));
             versioned.presence = presence_t::present_k;
-            return stage_(std::move(*maybe_identifier), std::move(versioned));
+            return stage_(std::move(identifier), std::move(versioned));
         }
 
         /**
@@ -2538,14 +2545,14 @@ class snapshot_store {
          *  - @c operation_not_permitted_k The publication was moved from.
          */
         status_t erase(identifier_t const &identifier) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(identifier);
-            if (!maybe_identifier) return out_of_memory_heap_k;
-            auto maybe_payload = copy_safely<identifier_t>(identifier);
-            if (!maybe_payload) return out_of_memory_heap_k;
+            auto [copied_identifier, identifier_status] = copy_safely<identifier_t>(identifier);
+            if (failed(identifier_status)) return out_of_memory_heap_k;
+            auto [payload, payload_status] = copy_safely<identifier_t>(identifier);
+            if (failed(payload_status)) return out_of_memory_heap_k;
 
-            versioned_t versioned(value_t {std::move(*maybe_payload)});
+            versioned_t versioned(value_t {std::move(payload)});
             versioned.presence = presence_t::erased_k;
-            return stage_(std::move(*maybe_identifier), std::move(versioned));
+            return stage_(std::move(copied_identifier), std::move(versioned));
         }
 
         /**
@@ -3385,10 +3392,10 @@ class snapshot_store {
      */
     template <typename stage_type_>
     status_t publish_group_(stage_type_ &&stage) noexcept {
-        auto opened = publication();
-        if (!opened) return out_of_memory_heap_k;
-        if (status_t const staged = stage(*opened); failed(staged)) return staged;
-        return opened->publish();
+        auto [group, status] = publication();
+        if (failed(status)) return out_of_memory_heap_k;
+        if (status_t const staged = stage(group); failed(staged)) return staged;
+        return group.publish();
     }
 
 #pragma endregion Version Lifecycle
@@ -3398,7 +3405,9 @@ class snapshot_store {
   public:
 #pragma region Constructors and Assignment
 
-    snapshot_store() noexcept : entries_(build_entries_(comparator_t {}, allocator_t {})) {}
+    snapshot_store() noexcept(std::is_nothrow_default_constructible_v<comparator_t>)
+        requires std::is_default_constructible_v<comparator_t>
+        : entries_(build_entries_(comparator_t {}, allocator_t {})) {}
 
     /** Builds a store into @p order, which every stamp and every snapshot then comes from. */
     explicit snapshot_store(order_type_ &order) noexcept
@@ -3499,9 +3508,9 @@ class snapshot_store {
     /** How many members equal @p comparable, which for a unique-key store is zero or one. */
     template <typename comparable_type_ = identifier_t>
     expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
-        expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
-        if (!present) return present.status();
-        return *present ? std::size_t {1} : std::size_t {0};
+        auto const [present, status] = contains(std::forward<comparable_type_>(comparable));
+        if (failed(status)) return status;
+        return present ? std::size_t {1} : std::size_t {0};
     }
 
 #pragma endregion Capacity
@@ -3852,11 +3861,11 @@ class snapshot_store {
      *  @param[in] value Element to write, moved into the store.
      */
     status_t upsert(value_t &&value) noexcept {
-        auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-        if (!maybe_identifier) return out_of_memory_heap_k;
+        auto [identifier, status] = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+        if (failed(status)) return out_of_memory_heap_k;
         versioned_t versioned(std::move(value));
         versioned.presence = presence_t::present_k;
-        return publish_directly_(*maybe_identifier, std::move(versioned));
+        return publish_directly_(identifier, std::move(versioned));
     }
 
     /**
@@ -3867,9 +3876,9 @@ class snapshot_store {
      *  - @c key_already_exists_k The key is readable now.
      */
     status_t insert(value_t &&value) noexcept {
-        expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
-        if (!key_is_present) return key_is_present.status();
-        if (*key_is_present) return key_already_exists_k;
+        auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(value));
+        if (failed(status)) return status;
+        if (key_is_present) return key_already_exists_k;
         return upsert(std::move(value));
     }
 
@@ -3905,13 +3914,13 @@ class snapshot_store {
 
         // The identifier has to be taken before the move, or the lookup below searches by a
         // moved-from key - which compares wrongly rather than failing loudly.
-        auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-        if (!maybe_identifier) return out_of_memory_heap_k;
+        auto [identifier, status] = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+        if (failed(status)) return out_of_memory_heap_k;
         versioned_t versioned(std::move(value));
         versioned.presence = presence_t::present_k;
-        if (status_t const published = publish_directly_(*maybe_identifier, std::move(versioned)); failed(published))
+        if (status_t const published = publish_directly_(identifier, std::move(versioned)); failed(published))
             return published;
-        if (versioned_t const *stored = readable_version_(*maybe_identifier, published_stamp_()))
+        if (versioned_t const *stored = readable_version_(identifier, published_stamp_()))
             callback_inserted(stored->payload);
         return success_k;
     }
@@ -3923,9 +3932,9 @@ class snapshot_store {
      *  - @c key_not_found_k The key is not readable now.
      */
     status_t update(value_t &&value) noexcept {
-        expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
-        if (!key_is_present) return key_is_present.status();
-        if (!*key_is_present) return key_not_found_k;
+        auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(value));
+        if (failed(status)) return status;
+        if (!key_is_present) return key_not_found_k;
         return upsert(std::move(value));
     }
 
@@ -3950,9 +3959,9 @@ class snapshot_store {
     template <readable_iterator input_iterator_type_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [this](transaction_t &staging, value_t &&candidate) noexcept {
-            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(candidate));
-            if (!key_is_present) return key_is_present.status();
-            if (*key_is_present) return key_already_exists_k;
+            auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(candidate));
+            if (failed(status)) return status;
+            if (key_is_present) return key_already_exists_k;
             return staging.insert_if_missing(std::move(candidate));
         });
     }
@@ -4028,14 +4037,14 @@ class snapshot_store {
         }
         callback_found(readable->payload);
 
-        auto maybe_identifier = copy_safely<identifier_t>(identifier_of(*readable));
-        if (!maybe_identifier) return out_of_memory_heap_k;
-        auto maybe_payload = copy_safely<identifier_t>(*maybe_identifier);
-        if (!maybe_payload) return out_of_memory_heap_k;
+        auto [identifier, identifier_status] = copy_safely<identifier_t>(identifier_of(*readable));
+        if (failed(identifier_status)) return out_of_memory_heap_k;
+        auto [payload, payload_status] = copy_safely<identifier_t>(identifier);
+        if (failed(payload_status)) return out_of_memory_heap_k;
 
-        versioned_t tombstone(value_t {std::move(*maybe_payload)});
+        versioned_t tombstone(value_t {std::move(payload)});
         tombstone.presence = presence_t::erased_k;
-        return publish_directly_(*maybe_identifier, std::move(tombstone));
+        return publish_directly_(identifier, std::move(tombstone));
     }
 
     /** Grows the core to hold @p size more versions, so later writes cannot run out of memory. A

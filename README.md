@@ -398,10 +398,12 @@ using id_t = std::uint64_t;
 using by_id_t = st::monotonic_avl_map<id_t, record_t>;      // id   → record
 using by_name_t = st::monotonic_avl_map<name_t, id_t>;      // name → id
 
-auto by_id = *by_id_t::make();
-auto by_name = *by_name_t::make();
+auto [by_id, by_id_status] = by_id_t::make();
+auto [by_name, by_name_status] = by_name_t::make();
+if (st::failed(by_id_status) || st::failed(by_name_status)) return;
 
-auto group = *st::make_transaction_group(by_id, by_name);
+auto [group, group_status] = st::make_transaction_group(by_id, by_name);
+if (st::failed(group_status)) return;
 auto [ids, names] = group.participants();
 
 _ = ids.upsert({id, record});
@@ -722,8 +724,8 @@ Both return `status_t`, because a read that cannot write down what it read has t
 An erase leaves a tombstone that readers skip, and `vacuum()` is what returns that space:
 
 ```cpp
-expected<std::size_t> const reclaimed = store.vacuum();          // everything no reader can name
-expected<std::size_t> const window = store.vacuum(lower, upper); // ordered cores, one slice at a time
+auto const [reclaimed, vacuum_status] = store.vacuum();          // everything no reader can name
+auto const [window, window_status] = store.vacuum(lower, upper); // ordered cores, one slice at a time
 ```
 
 ### Snapshot Isolation
