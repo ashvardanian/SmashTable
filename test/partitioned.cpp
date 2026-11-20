@@ -103,9 +103,9 @@ struct unerasable_ordered_set_t : tree_trivial_set_t {
     unerasable_ordered_set_t &operator=(unerasable_ordered_set_t &&) noexcept = default;
 
     [[nodiscard]] static expected<unerasable_ordered_set_t> make() noexcept {
-        expected<base_t> built = base_t::make();
-        if (!built) return built.status();
-        return unerasable_ordered_set_t {std::move(*built)};
+        auto [store, status] = base_t::make();
+        if (failed(status)) return status;
+        return unerasable_ordered_set_t {std::move(store)};
     }
 
     /** Hides the inherited window erase, so the composite is false while the bounds stay true. */
@@ -155,9 +155,9 @@ struct enumerable_set_t : tree_trivial_set_t {
     enumerable_set_t &operator=(enumerable_set_t &&) noexcept = default;
 
     [[nodiscard]] static expected<enumerable_set_t> make() noexcept {
-        expected<base_t> built = base_t::make();
-        if (!built) return built.status();
-        return enumerable_set_t {std::move(*built)};
+        auto [store, status] = base_t::make();
+        if (failed(status)) return status;
+        return enumerable_set_t {std::move(store)};
     }
 
     template <typename callback_type_>
@@ -624,14 +624,6 @@ static void test_find_does_not_watch() {
 
 #pragma region Forwarded Surface
 
-/** Builds a store through its own @c make, since a wrapper has no other public constructor. */
-template <typename store_type_>
-static expected<store_type_> built_store() {
-    expected<store_type_> made = store_type_::make();
-    expect_true(made.has_value(), "the store under test must build");
-    return made;
-}
-
 /**
  *  @brief A strict insert through a wrapper refuses an occupied key with the bare store's status.
  *
@@ -642,17 +634,15 @@ template <typename wrapper_type_, typename inner_type_>
 static void check_forwarded_strict_insert() {
 
     using member_t = typename wrapper_type_::value_type;
-    using bare_transaction_t = typename inner_type_::transaction_t;
-    using wrapped_transaction_t = typename wrapper_type_::transaction_t;
 
-    expected<inner_type_> bare_made = built_store<inner_type_>();
-    inner_type_ &bare = *bare_made;
+    auto [bare, bare_status] = inner_type_::make();
+    if (!expect_equal(bare_status, success_k, "the store under test must build")) return;
     expect_equal(bare.upsert(trivial_id_to_member<member_t>(7)), success_k);
     status_t const bare_refusal = bare.insert(trivial_id_to_member<member_t>(7));
     expect_equal(bare_refusal, status_t::key_already_exists_k);
 
-    expected<wrapper_type_> wrapped_made = built_store<wrapper_type_>();
-    wrapper_type_ &wrapped = *wrapped_made;
+    auto [wrapped, wrapped_status] = wrapper_type_::make();
+    if (!expect_equal(wrapped_status, success_k, "the store under test must build")) return;
     expect_equal(wrapped.upsert(trivial_id_to_member<member_t>(7)), success_k);
     expect_equal(wrapped.insert(trivial_id_to_member<member_t>(7)), bare_refusal);
     expect_equal(wrapped.size(), 1u);
@@ -660,17 +650,17 @@ static void check_forwarded_strict_insert() {
     expect_equal(wrapped.size(), 2u);
 
     // The same refusal staged rather than published, which is the level a binding reaches for.
-    expected<bare_transaction_t> bare_writer = bare.transaction();
-    if (!expect_true(bare_writer.has_value(), "the bare store must open a transaction")) return;
-    status_t const bare_staged_refusal = bare_writer->insert(trivial_id_to_member<member_t>(7));
+    auto [bare_writer, bare_writer_status] = bare.transaction();
+    if (!expect_equal(bare_writer_status, success_k, "the bare store must open a transaction")) return;
+    status_t const bare_staged_refusal = bare_writer.insert(trivial_id_to_member<member_t>(7));
     expect_equal(bare_staged_refusal, status_t::key_already_exists_k);
 
-    expected<wrapped_transaction_t> wrapped_writer = wrapped.transaction();
-    if (!expect_true(wrapped_writer.has_value(), "the wrapped store must open a transaction")) return;
-    expect_equal(wrapped_writer->insert(trivial_id_to_member<member_t>(7)), bare_staged_refusal);
-    expect_equal(wrapped_writer->insert(trivial_id_to_member<member_t>(9)), success_k);
-    expect_equal(wrapped_writer->stage(), success_k);
-    expect_equal(wrapped_writer->commit(), success_k);
+    auto [wrapped_writer, wrapped_writer_status] = wrapped.transaction();
+    if (!expect_equal(wrapped_writer_status, success_k, "the wrapped store must open a transaction")) return;
+    expect_equal(wrapped_writer.insert(trivial_id_to_member<member_t>(7)), bare_staged_refusal);
+    expect_equal(wrapped_writer.insert(trivial_id_to_member<member_t>(9)), success_k);
+    expect_equal(wrapped_writer.stage(), success_k);
+    expect_equal(wrapped_writer.commit(), success_k);
     expect_equal(wrapped.size(), 3u);
 }
 
@@ -679,15 +669,14 @@ template <typename wrapper_type_, typename inner_type_>
 static void check_forwarded_strict_update() {
 
     using member_t = typename wrapper_type_::value_type;
-    using transaction_t = typename wrapper_type_::transaction_t;
 
-    expected<inner_type_> bare_made = built_store<inner_type_>();
-    inner_type_ &bare = *bare_made;
+    auto [bare, bare_status] = inner_type_::make();
+    if (!expect_equal(bare_status, success_k, "the store under test must build")) return;
     status_t const bare_refusal = bare.update(trivial_id_to_member<member_t>(3));
     expect_equal(bare_refusal, status_t::key_not_found_k);
 
-    expected<wrapper_type_> wrapped_made = built_store<wrapper_type_>();
-    wrapper_type_ &wrapped = *wrapped_made;
+    auto [wrapped, wrapped_status] = wrapper_type_::make();
+    if (!expect_equal(wrapped_status, success_k, "the store under test must build")) return;
     expect_equal(wrapped.update(trivial_id_to_member<member_t>(3)), bare_refusal);
     expect_equal(wrapped.size(), 0u);
 
@@ -695,10 +684,10 @@ static void check_forwarded_strict_update() {
     expect_equal(wrapped.update(trivial_id_to_member<member_t>(3)), success_k);
     expect_equal(wrapped.size(), 1u);
 
-    expected<transaction_t> writer = wrapped.transaction();
-    if (!expect_true(writer.has_value(), "the wrapped store must open a transaction")) return;
-    expect_equal(writer->update(trivial_id_to_member<member_t>(4)), status_t::key_not_found_k);
-    expect_equal(writer->update(trivial_id_to_member<member_t>(3)), success_k);
+    auto [writer, writer_status] = wrapped.transaction();
+    if (!expect_equal(writer_status, success_k, "the wrapped store must open a transaction")) return;
+    expect_equal(writer.update(trivial_id_to_member<member_t>(4)), status_t::key_not_found_k);
+    expect_equal(writer.update(trivial_id_to_member<member_t>(3)), success_k);
 }
 
 /** Ordinals through a wrapper must name the same elements the merged order does. */
@@ -707,8 +696,8 @@ static void check_forwarded_order_statistics(std::size_t count = 64) {
 
     using member_t = typename wrapper_type_::value_type;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &container = *made;
+    auto [container, status] = wrapper_type_::make();
+    if (!expect_equal(status, success_k, "the store under test must build")) return;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
@@ -753,15 +742,14 @@ static void check_forwarded_vacuum(std::size_t count = 32) {
 
     using member_t = typename wrapper_type_::value_type;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &container = *made;
+    auto [container, status] = wrapper_type_::make();
+    if (!expect_equal(status, success_k, "the store under test must build")) return;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
     for (std::size_t identifier = 0; identifier < count; identifier += 2)
         expect_equal(container.erase(trivial_id_to_key<member_t>(identifier)), success_k);
 
-    expected<std::size_t> const reclaimed = container.vacuum();
-    expect_true(reclaimed.has_value(), "a sweep that cannot refuse must still answer with a count");
+    expect_equal(container.vacuum().status(), success_k, "a sweep that cannot refuse must still answer with a count");
     expect_equal(container.size(), count / 2);
     for (std::size_t identifier = 1; identifier < count; identifier += 2) {
         expect_equal(container.contains(trivial_id_to_key<member_t>(identifier)), true);
@@ -777,16 +765,15 @@ static void check_forwarded_windowed_vacuum(std::size_t count = 32) {
 
     using member_t = typename wrapper_type_::value_type;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &container = *made;
+    auto [container, status] = wrapper_type_::make();
+    if (!expect_equal(status, success_k, "the store under test must build")) return;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
     for (std::size_t identifier = 0; identifier != count; ++identifier)
         expect_equal(container.erase(trivial_id_to_key<member_t>(identifier)), success_k);
 
-    expected<std::size_t> const reclaimed =
-        container.vacuum(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(count / 2));
-    expect_true(reclaimed.has_value(), "a windowed sweep must answer with a count");
+    expect_equal(container.vacuum(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(count / 2)).status(),
+                 success_k, "a windowed sweep must answer with a count");
     expect_equal(container.size(), 0u);
 }
 
@@ -798,8 +785,8 @@ static void check_forwarded_update_range(std::size_t count = 32) {
     using key_t = typename member_t::key_type;
     using mapped_t = typename member_t::mapped_type;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &container = *made;
+    auto [container, status] = wrapper_type_::make();
+    if (!expect_equal(status, success_k, "the store under test must build")) return;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
@@ -828,8 +815,8 @@ static void check_forwarded_smallest(std::size_t count = 64) {
 
     using member_t = typename wrapper_type_::value_type;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &container = *made;
+    auto [container, status] = wrapper_type_::make();
+    if (!expect_equal(status, success_k, "the store under test must build")) return;
 
     bool empty_answered = false;
     expect_equal(container.smallest(no_op_t {}, [&]() noexcept { empty_answered = true; }), success_k);
@@ -850,8 +837,8 @@ static void check_forwarded_pop_smallest(std::size_t count = 64) {
 
     using member_t = typename wrapper_type_::value_type;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &container = *made;
+    auto [container, status] = wrapper_type_::make();
+    if (!expect_equal(status, success_k, "the store under test must build")) return;
 
     bool empty_answered = false;
     expect_equal(container.pop_smallest(no_op_t {}, [&]() noexcept { empty_answered = true; }),
@@ -878,8 +865,8 @@ static void check_forwarded_open_ended_erase(std::size_t count = 32) {
 
     using member_t = typename wrapper_type_::value_type;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &container = *made;
+    auto [container, status] = wrapper_type_::make();
+    if (!expect_equal(status, success_k, "the store under test must build")) return;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
@@ -908,8 +895,8 @@ static void check_forwarded_for_each(std::size_t count = 200) {
 
     using member_t = typename wrapper_type_::value_type;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &container = *made;
+    auto [container, status] = wrapper_type_::make();
+    if (!expect_equal(status, success_k, "the store under test must build")) return;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
@@ -944,15 +931,15 @@ static void check_forwarded_transaction_moves_as_a_value() {
     using member_t = typename wrapper_type_::value_type;
     using transaction_t = typename wrapper_type_::transaction_t;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &store = *made;
+    auto [store, store_status] = wrapper_type_::make();
+    if (!expect_equal(store_status, success_k, "the store under test must build")) return;
 
     basic_vector<transaction_t> writers;
     expect_equal(writers.reserve(2), success_k);
     for (std::size_t opened = 0; opened != 2; ++opened) {
-        expected<transaction_t> writer = store.transaction();
-        if (!expect_true(writer.has_value(), "the wrapped store must open a transaction")) return;
-        expect_equal(writers.push_back(std::move(*writer)), success_k);
+        auto [writer, writer_status] = store.transaction();
+        if (!expect_equal(writer_status, success_k, "the wrapped store must open a transaction")) return;
+        expect_equal(writers.push_back(std::move(writer)), success_k);
     }
     if (!expect_equal(writers.size(), 2u)) return;
 
@@ -979,10 +966,9 @@ template <typename wrapper_type_>
 static void check_forwarded_equal_range() {
 
     using member_t = typename wrapper_type_::value_type;
-    using transaction_t = typename wrapper_type_::transaction_t;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &store = *made;
+    auto [store, store_status] = wrapper_type_::make();
+    if (!expect_equal(store_status, success_k, "the store under test must build")) return;
     for (std::size_t identifier = 0; identifier != 8; ++identifier)
         expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
@@ -996,10 +982,10 @@ static void check_forwarded_equal_range() {
                  success_k);
     expect_equal(matched, 0u);
 
-    expected<transaction_t> writer = store.transaction();
-    if (!expect_true(writer.has_value(), "the wrapped store must open a transaction")) return;
+    auto [writer, writer_status] = store.transaction();
+    if (!expect_equal(writer_status, success_k, "the wrapped store must open a transaction")) return;
     matched = 0;
-    expect_equal(writer->equal_range(trivial_id_to_key<member_t>(3), [&](member_t const &) noexcept { ++matched; }),
+    expect_equal(writer.equal_range(trivial_id_to_key<member_t>(3), [&](member_t const &) noexcept { ++matched; }),
                  success_k);
     expect_equal(matched, 1u);
 }
@@ -1012,8 +998,8 @@ static void check_forwarded_heterogeneous_erase() {
 
     using member_t = typename wrapper_type_::value_type;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &store = *made;
+    auto [store, status] = wrapper_type_::make();
+    if (!expect_equal(status, success_k, "the store under test must build")) return;
     for (std::size_t identifier = 0; identifier != 6; ++identifier)
         expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
@@ -1035,35 +1021,34 @@ template <typename wrapper_type_>
 static void check_forwarded_transaction_staged_surface() {
 
     using member_t = typename wrapper_type_::value_type;
-    using transaction_t = typename wrapper_type_::transaction_t;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &store = *made;
+    auto [store, store_status] = wrapper_type_::make();
+    if (!expect_equal(store_status, success_k, "the store under test must build")) return;
     expect_equal(store.upsert(trivial_id_to_member<member_t>(1)), success_k);
 
-    expected<transaction_t> writer = store.transaction();
-    if (!expect_true(writer.has_value(), "the wrapped store must open a transaction")) return;
-    expect_true(!writer->has_changes());
-    expect_equal(writer->changes_count(), 0u);
+    auto [writer, writer_status] = store.transaction();
+    if (!expect_equal(writer_status, success_k, "the wrapped store must open a transaction")) return;
+    expect_true(!writer.has_changes());
+    expect_equal(writer.changes_count(), 0u);
 
-    expect_equal(writer->reserve(4), success_k);
-    expect_equal(writer->insert_if_missing(trivial_id_to_member<member_t>(2)), success_k);
-    expect_equal(writer->insert_if_missing(trivial_id_to_member<member_t>(1)), success_k);
-    expect_true(writer->has_changes());
-    expect_equal(writer->changes_count(), 1u);
+    expect_equal(writer.reserve(4), success_k);
+    expect_equal(writer.insert_if_missing(trivial_id_to_member<member_t>(2)), success_k);
+    expect_equal(writer.insert_if_missing(trivial_id_to_member<member_t>(1)), success_k);
+    expect_true(writer.has_changes());
+    expect_equal(writer.changes_count(), 1u);
 
     std::size_t walked = 0;
-    expect_equal(writer->for_each([&](member_t const &) noexcept { ++walked; }), success_k);
+    expect_equal(writer.for_each([&](member_t const &) noexcept { ++walked; }), success_k);
     expect_equal(walked, 2u);
 
     std::size_t within = 0;
-    expect_equal(writer->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(2),
-                               [&](member_t const &) noexcept { ++within; }),
+    expect_equal(writer.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(2),
+                              [&](member_t const &) noexcept { ++within; }),
                  success_k);
     expect_equal(within, 1u);
 
-    expect_equal(writer->stage(), success_k);
-    expect_equal(writer->commit(), success_k);
+    expect_equal(writer.stage(), success_k);
+    expect_equal(writer.commit(), success_k);
     expect_equal(store.size(), 2u);
 }
 
@@ -1080,14 +1065,15 @@ static void check_forwarded_version_bookkeeping(std::size_t count = 4) {
     using member_t = typename wrapper_type_::value_type;
     using transaction_t = typename wrapper_type_::transaction_t;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &store = *made;
+    auto [store, store_status] = wrapper_type_::make();
+    if (!expect_equal(store_status, success_k, "the store under test must build")) return;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
         expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
     // One version per key, and the overwrite below adds the only second one.
-    expected<transaction_t> reader = store.transaction();
-    if (!expect_true(reader.has_value(), "a reader must open to pin the version the overwrite supersedes")) return;
+    auto [reader, reader_status] = store.transaction();
+    if (!expect_equal(reader_status, success_k, "a reader must open to pin the version the overwrite supersedes"))
+        return;
     auto const pinned_mark = store.low_water_mark();
     expect_equal(store.upsert(trivial_id_to_member<member_t>(0)), success_k);
 
@@ -1096,15 +1082,15 @@ static void check_forwarded_version_bookkeeping(std::size_t count = 4) {
     expect_equal(store.low_water_mark(), pinned_mark, "an open snapshot holds the mark a sweep prunes to");
 
     // A sweep cannot take what the reader still holds, and must take it once the reader lets go.
-    [[maybe_unused]] expected<std::size_t> const held = store.vacuum();
+    [[maybe_unused]] status_t const held = store.vacuum().status();
     expect_equal(store.versions_count(), count + 1, "a sweep must keep what an open snapshot still reads");
     {
-        transaction_t closing = std::move(*reader);
+        transaction_t closing = std::move(reader);
         expect_equal(closing.reset(), success_k);
     }
     expect_true(store.low_water_mark() > pinned_mark, "the mark must move once nothing holds it down");
 
-    [[maybe_unused]] expected<std::size_t> const reclaimed = store.vacuum();
+    [[maybe_unused]] status_t const reclaimed = store.vacuum().status();
     expect_equal(store.versions_count(), count, "a sweep must take the version nothing reads any more");
     expect_equal(store.versions_count(trivial_id_to_key<member_t>(0)), 1u);
     expect_equal(store.size(), count);
@@ -1225,12 +1211,11 @@ static void test_failure_policy_bulk_methods() { check_bulk_methods_match_declar
 
 /** A store holding @p size members, keyed by identifier, spread across every partition. */
 static transactional_trivial_set_t seeded_sharded_set(std::size_t size) {
-    auto built = transactional_trivial_set_t::make();
-    if (!expect_true(built.has_value(), "the sharded set must build")) return {};
-    transactional_trivial_set_t store = std::move(*built);
+    auto [store, status] = transactional_trivial_set_t::make();
+    if (!expect_equal(status, success_k, "the sharded set must build")) return {};
     for (std::size_t identifier = 0; identifier != size; ++identifier)
         expect_equal(store.upsert(trivial_id_to_member<trivial_key_t>(identifier)), success_k);
-    return store;
+    return std::move(store);
 }
 
 /**
@@ -1373,8 +1358,8 @@ static void check_cursor_stops_at_its_bound(std::size_t count = 64) {
 
     using member_t = typename wrapper_type_::value_type;
 
-    expected<wrapper_type_> made = built_store<wrapper_type_>();
-    wrapper_type_ &container = *made;
+    auto [container, status] = wrapper_type_::make();
+    if (!expect_equal(status, success_k, "the store under test must build")) return;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
@@ -1432,9 +1417,8 @@ static void test_ordered_cursor_survives_its_own_key_erased() {
  *  leaves every other test here passing and this one failing.
  */
 static void test_ordered_cursor_sees_a_key_inserted_ahead() {
-    auto built = transactional_trivial_set_t::make();
-    if (!expect_true(built.has_value(), "the sharded set must build")) return;
-    transactional_trivial_set_t store = std::move(*built);
+    auto [store, status] = transactional_trivial_set_t::make();
+    if (!expect_equal(status, success_k, "the sharded set must build")) return;
     for (std::size_t identifier = 0; identifier != 64; identifier += 2)
         expect_equal(store.upsert(trivial_id_to_member<trivial_key_t>(identifier)), success_k);
 
@@ -1518,9 +1502,8 @@ constexpr std::size_t partitions_of_v = store_type_::partitions_k;
  *  quietly stopped working would still pass every correctness test above it.
  */
 static void test_lock_cost_cursor_beats_stepping() {
-    auto built = counted_sharded_set_t::make();
-    if (!expect_true(built.has_value(), "the counted set must build")) return;
-    counted_sharded_set_t store = std::move(*built);
+    auto [store, status] = counted_sharded_set_t::make();
+    if (!expect_equal(status, success_k, "the counted set must build")) return;
 
     constexpr std::size_t size_k = 256;
     for (std::size_t identifier = 0; identifier != size_k; ++identifier)
@@ -1573,58 +1556,58 @@ using counted_member_t = counted_snapshot_map_t::value_t;
 /** A commit reaching one partition takes it once for the stage, the validation, the publication
  *  and the prune together. */
 static void test_lock_cost_commit_holds_each_partition_once() {
-    auto built = counted_snapshot_map_t::make();
-    if (!expect_true(built.has_value(), "the counted map must build")) return;
-    auto transaction = built->transaction();
-    if (!expect_equal(transaction.status(), success_k)) return;
-    expect_equal(transaction->upsert(trivial_id_to_member<counted_member_t>(1)), success_k);
+    auto [store, store_status] = counted_snapshot_map_t::make();
+    if (!expect_equal(store_status, success_k, "the counted map must build")) return;
+    auto [transaction, transaction_status] = store.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<counted_member_t>(1)), success_k);
 
     counting_mutex_t::reset();
-    expect_equal(commit_with_retries(*transaction, 1, [](auto &) noexcept { return success_k; }), success_k);
+    expect_equal(commit_with_retries(transaction, 1, [](auto &) noexcept { return success_k; }), success_k);
     expect_equal(counting_mutex_t::taken(), 1u, "one hold of the one partition the commit reached");
 
     bool found = false;
-    expect_equal(built->find(trivial_key_t {1}, [&](counted_member_t const &) noexcept { found = true; }), success_k);
+    expect_equal(store.find(trivial_key_t {1}, [&](counted_member_t const &) noexcept { found = true; }), success_k);
     expect_true(found, "the commit under one hold published what it staged");
 }
 
 /** A committed transaction pins no snapshot until its next operation asks for one. */
 static void test_commit_gives_its_claim_back() {
-    auto built = sharded_snapshot_map_t::make();
-    if (!expect_true(built.has_value(), "the sharded map must build")) return;
+    auto [store, store_status] = sharded_snapshot_map_t::make();
+    if (!expect_equal(store_status, success_k, "the sharded map must build")) return;
     using member_t = sharded_snapshot_map_t::value_t;
-    auto transaction = built->transaction();
-    if (!expect_equal(transaction.status(), success_k)) return;
-    expect_equal(built->order().open_snapshots(), 1u);
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
-    expect_equal(built->order().open_snapshots(), 0u, "a commit leaves no claim for the mark to wait on");
+    auto [transaction, transaction_status] = store.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(store.order().open_snapshots(), 1u);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
+    expect_equal(store.order().open_snapshots(), 0u, "a commit leaves no claim for the mark to wait on");
 
     bool found = false;
-    expect_equal(transaction->find(trivial_key_t {1}, [&](member_t const &) noexcept { found = true; }), success_k);
+    expect_equal(transaction.find(trivial_key_t {1}, [&](member_t const &) noexcept { found = true; }), success_k);
     expect_true(found, "the next read settles on a snapshot covering the commit");
-    expect_equal(built->order().open_snapshots(), 1u);
+    expect_equal(store.order().open_snapshots(), 1u);
 }
 
 /** An abort locks the partitions the transaction reached, never the other fifteen. */
 static void test_lock_cost_reset_locks_only_reached_partitions() {
-    auto built = counted_snapshot_map_t::make();
-    if (!expect_true(built.has_value(), "the counted map must build")) return;
-    auto transaction = built->transaction();
-    if (!expect_equal(transaction.status(), success_k)) return;
-    expect_equal(transaction->upsert(trivial_id_to_member<counted_member_t>(1)), success_k);
-    expect_equal(transaction->stage(), success_k);
+    auto [store, store_status] = counted_snapshot_map_t::make();
+    if (!expect_equal(store_status, success_k, "the counted map must build")) return;
+    auto [transaction, transaction_status] = store.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<counted_member_t>(1)), success_k);
+    expect_equal(transaction.stage(), success_k);
 
     counting_mutex_t::reset();
-    expect_equal(transaction->reset(), success_k);
+    expect_equal(transaction.reset(), success_k);
     expect_equal(counting_mutex_t::taken(), 1u, "only the reached partition holds anything to discard");
 
     // Every partition reads at the snapshot the reset drew, the unreached ones included.
-    expect_equal(built->upsert(trivial_id_to_member<counted_member_t>(2)), success_k);
-    expect_equal(transaction->snapshot(), built->order().published_stamp() - 1);
+    expect_equal(store.upsert(trivial_id_to_member<counted_member_t>(2)), success_k);
+    expect_equal(transaction.snapshot(), store.order().published_stamp() - 1);
     bool staged_survived = false;
-    expect_equal(built->find(trivial_key_t {1}, [&](counted_member_t const &) noexcept { staged_survived = true; }),
+    expect_equal(store.find(trivial_key_t {1}, [&](counted_member_t const &) noexcept { staged_survived = true; }),
                  success_k);
     expect_true(!staged_survived, "the reset dropped what the reached partition had staged");
 }
@@ -1633,15 +1616,15 @@ static void test_lock_cost_reset_locks_only_reached_partitions() {
 static void test_lock_cost_group_holds_each_partition_through_prune() {
     counted_snapshot_map_t::order_t order;
     counted_snapshot_map_t left {order}, right {order};
-    auto group = make_transaction_group(left, right);
-    if (!expect_equal(group.status(), success_k)) return;
-    auto [left_writes, right_writes] = group->participants();
+    auto [group, status] = make_transaction_group(left, right);
+    if (!expect_equal(status, success_k)) return;
+    auto [left_writes, right_writes] = group.participants();
     expect_equal(left_writes.upsert(trivial_id_to_member<counted_member_t>(1)), success_k);
     expect_equal(right_writes.upsert(trivial_id_to_member<counted_member_t>(2)), success_k);
-    expect_equal(group->stage(), success_k);
+    expect_equal(group.stage(), success_k);
 
     counting_mutex_t::reset();
-    expect_equal(group->commit(), success_k);
+    expect_equal(group.commit(), success_k);
     expect_equal(counting_mutex_t::taken(), 2u, "one hold per reached partition, from validation to prune");
     expect_equal(left_writes.snapshot(), order.published_stamp(), "the group reopens at its own stamp");
 }
@@ -1663,16 +1646,16 @@ static void test_group_over_locked_and_partitioned_commits_from_two_threads() {
     std::vector<std::thread> threads;
     for (std::size_t committer = 0; committer != committers_k; ++committer)
         threads.emplace_back([&, committer]() noexcept {
-            auto group = make_transaction_group(locked, sharded);
-            if (!expect_equal(group.status(), success_k)) return;
-            auto [locked_writes, sharded_writes] = group->participants();
+            auto [group, status] = make_transaction_group(locked, sharded);
+            if (!expect_equal(status, success_k)) return;
+            auto [locked_writes, sharded_writes] = group.participants();
             for (std::size_t commit = 0; commit != commits; ++commit) {
                 std::size_t const identifier = commit * committers_k + committer;
                 expect_equal(locked_writes.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
                 expect_equal(sharded_writes.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
-                expect_equal(group->stage(), success_k);
-                if (succeeded(group->commit())) ++landed[committer];
-                else expect_equal(group->reset(), success_k);
+                expect_equal(group.stage(), success_k);
+                if (succeeded(group.commit())) ++landed[committer];
+                else expect_equal(group.reset(), success_k);
             }
             finished.fetch_add(1);
         });
@@ -1701,41 +1684,40 @@ static void test_move_only_key_reaches_a_partition() {
     using heavy_set_t = monotonic_avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
     using sharded_t = partitioned_store<heavy_set_t, hash<heavy_key_t>>;
 
-    auto made = sharded_t::make(std::less<void> {}, hash<heavy_key_t> {});
-    if (!expect_equal(made.status(), success_k)) return;
-    sharded_t &store = *made;
+    auto [store, store_status] = sharded_t::make(std::less<void> {}, hash<heavy_key_t> {});
+    if (!expect_equal(store_status, success_k)) return;
 
     for (trivial_id_t identifier = 0; identifier != 64; ++identifier) {
-        auto key = heavy_key_t::make(identifier);
-        if (!expect_equal(key.status(), success_k)) return;
-        expect_equal(store.upsert(std::move(*key)), success_k);
+        auto [key, key_status] = heavy_key_t::make(identifier);
+        if (!expect_equal(key_status, success_k)) return;
+        expect_equal(store.upsert(std::move(key)), success_k);
     }
     expect_equal(store.size(), 64u);
 
     for (trivial_id_t identifier = 0; identifier != 64; ++identifier) {
-        auto probe = heavy_key_t::make(identifier);
-        if (!expect_equal(probe.status(), success_k)) return;
+        auto [probe, probe_status] = heavy_key_t::make(identifier);
+        if (!expect_equal(probe_status, success_k)) return;
         bool seen = false;
-        expect_equal(store.find(*probe, [&](heavy_key_t const &) noexcept { seen = true; }, no_op_t {}), success_k);
+        expect_equal(store.find(probe, [&](heavy_key_t const &) noexcept { seen = true; }, no_op_t {}), success_k);
         expect_true(seen, "a key that reached a partition must be findable in it");
     }
 
-    auto doomed = heavy_key_t::make(7);
-    if (!expect_equal(doomed.status(), success_k)) return;
-    expect_equal(store.erase(*doomed), success_k);
+    auto [doomed, doomed_status] = heavy_key_t::make(7);
+    if (!expect_equal(doomed_status, success_k)) return;
+    expect_equal(store.erase(doomed), success_k);
     expect_equal(store.size(), 63u);
 
     // The hex spelling orders as the integers do, so a merged walk hands them over ascending
-    auto lower = heavy_key_t::make(trivial_id_t {0});
-    auto upper = heavy_key_t::make(trivial_id_t {64});
-    if (!expect_true(lower && upper)) return;
+    auto [lower, lower_status] = heavy_key_t::make(trivial_id_t {0});
+    auto [upper, upper_status] = heavy_key_t::make(trivial_id_t {64});
+    if (!expect_equal(first_failure(lower_status, upper_status), success_k)) return;
     trivial_id_t expected_next = 0;
     std::size_t walked = 0;
-    expect_equal(store.range(*lower, *upper,
+    expect_equal(store.range(lower, upper,
                              [&](heavy_key_t const &key) noexcept {
                                  if (expected_next == 7) ++expected_next;
-                                 auto wanted = heavy_key_t::make(expected_next++);
-                                 walked += wanted && *wanted == key;
+                                 auto [wanted, wanted_status] = heavy_key_t::make(expected_next++);
+                                 walked += succeeded(wanted_status) && wanted == key;
                              }),
                  success_k);
     expect_equal(walked, 63u, "a merged walk hands over every key once, in order");
@@ -1743,26 +1725,25 @@ static void test_move_only_key_reaches_a_partition() {
     using heavy_map_t =
         strict_serializable_avl_map<heavy_key_t, int, std::less<void>, std::allocator<mapping<heavy_key_t, int>>>;
     using sharded_map_t = partitioned_store<heavy_map_t, hash<heavy_key_t>>;
-    auto made_map = sharded_map_t::make(std::less<void> {}, hash<heavy_key_t> {});
-    if (!expect_equal(made_map.status(), success_k)) return;
-    sharded_map_t &map = *made_map;
-    auto transaction = map.transaction();
-    if (!expect_equal(transaction.status(), success_k)) return;
+    auto [map, map_status] = sharded_map_t::make(std::less<void> {}, hash<heavy_key_t> {});
+    if (!expect_equal(map_status, success_k)) return;
+    auto [transaction, transaction_status] = map.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
     for (trivial_id_t identifier = 0; identifier != 16; ++identifier) {
-        auto key = heavy_key_t::make(identifier);
-        if (!expect_equal(key.status(), success_k)) return;
-        expect_equal(transaction->upsert(mapping<heavy_key_t, int> {std::move(*key), static_cast<int>(identifier)}),
+        auto [key, key_status] = heavy_key_t::make(identifier);
+        if (!expect_equal(key_status, success_k)) return;
+        expect_equal(transaction.upsert(mapping<heavy_key_t, int> {std::move(key), static_cast<int>(identifier)}),
                      success_k);
     }
     std::size_t recorded = 0;
-    expect_equal(transaction->range(*lower, *upper, [&](mapping<heavy_key_t, int> const &) noexcept { ++recorded; }),
+    expect_equal(transaction.range(lower, upper, [&](mapping<heavy_key_t, int> const &) noexcept { ++recorded; }),
                  success_k);
     expect_equal(recorded, 16u);
-    auto probe = heavy_key_t::make(trivial_id_t {3});
-    if (!expect_equal(probe.status(), success_k)) return;
-    expect_equal(transaction->find(*probe, no_op_t {}, no_op_t {}), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
+    auto [probe, probe_status] = heavy_key_t::make(trivial_id_t {3});
+    if (!expect_equal(probe_status, success_k)) return;
+    expect_equal(transaction.find(probe, no_op_t {}, no_op_t {}), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
     expect_equal(map.size(), 16u);
 }
 
@@ -1797,22 +1778,22 @@ static void check_commit_publishes_all_or_nothing() {
 
     expect_equal(store.upsert(trivial_id_to_member<member_t>(watched, 1)), success_k);
 
-    auto writer = store.transaction();
-    if (!expect_equal(writer.status(), success_k)) return;
-    expect_equal(writer->watch(trivial_id_to_key<member_t>(watched)), success_k);
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(written, 42)), success_k);
-    expect_equal(writer->stage(), success_k);
+    auto [writer, writer_status] = store.transaction();
+    if (!expect_equal(writer_status, success_k)) return;
+    expect_equal(writer.watch(trivial_id_to_key<member_t>(watched)), success_k);
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(written, 42)), success_k);
+    expect_equal(writer.stage(), success_k);
 
     // The watch is invalidated after staging, which is the window the engines re-check for.
     expect_equal(store.upsert(trivial_id_to_member<member_t>(watched, 2)), success_k);
 
-    expect_equal(writer->commit(), status_t::read_conflict_k);
+    expect_equal(writer.commit(), status_t::read_conflict_k);
 
     // Nothing this transaction wrote may be readable, since its caller was told it did not commit.
-    expected<bool> const landed = store.contains(trivial_id_to_key<member_t>(written));
-    if (!expect_equal(landed.status(), success_k)) return;
-    expect_equal(*landed, false, "a refused commit must leave none of its writes readable");
-    expect_equal(writer->rollback(), success_k);
+    auto const [landed, landed_status] = store.contains(trivial_id_to_key<member_t>(written));
+    if (!expect_equal(landed_status, success_k)) return;
+    expect_equal(landed, false, "a refused commit must leave none of its writes readable");
+    expect_equal(writer.rollback(), success_k);
 }
 
 static void test_commit_publishes_all_or_nothing() {
@@ -1836,9 +1817,9 @@ struct transaction_refusing_set_t : tree_trivial_set_t {
     transaction_refusing_set_t &operator=(transaction_refusing_set_t &&) noexcept = default;
 
     [[nodiscard]] static expected<transaction_refusing_set_t> make() noexcept {
-        expected<base_t> built = base_t::make();
-        if (!built) return built.status();
-        return transaction_refusing_set_t {std::move(*built)};
+        auto [store, status] = base_t::make();
+        if (failed(status)) return status;
+        return transaction_refusing_set_t {std::move(store)};
     }
 
     [[nodiscard]] expected<transaction_t> transaction() noexcept { return status_t::out_of_memory_heap_k; }
@@ -1861,22 +1842,20 @@ struct construction_refusing_set_t : tree_trivial_set_t {
 /** A wrapper that cannot build its store reports why, rather than a default-constructed reason. */
 template <typename wrapper_type_>
 static void check_make_reports_why_it_could_not_build() {
-    expected<wrapper_type_> made = wrapper_type_::make();
-    expect_true(!made, "the inner store refused to be built, so the wrapper must refuse too");
-    expect_equal(made.status(), status_t::capacity_exhausted_k,
+    status_t const status = wrapper_type_::make().status();
+    expect_true(failed(status), "the inner store refused to be built, so the wrapper must refuse too");
+    expect_equal(status, status_t::capacity_exhausted_k,
                  "the wrapper must relay the reason rather than lose it to a default");
 }
 
 /** A wrapper that cannot open a transaction reports why, not a default-constructed reason. */
 template <typename wrapper_type_>
 static void check_transaction_reports_why_it_could_not_open() {
-
-    using transaction_t = typename wrapper_type_::transaction_t;
-    expected<wrapper_type_> made = wrapper_type_::make();
-    if (!expect_equal(made.status(), success_k)) return;
-    expected<transaction_t> opened = made->transaction();
-    expect_true(!opened, "the inner store refused, so the wrapper must refuse too");
-    expect_equal(opened.status(), status_t::out_of_memory_heap_k,
+    auto [store, status] = wrapper_type_::make();
+    if (!expect_equal(status, success_k)) return;
+    status_t const open_status = store.transaction().status();
+    expect_true(failed(open_status), "the inner store refused, so the wrapper must refuse too");
+    expect_equal(open_status, status_t::out_of_memory_heap_k,
                  "the wrapper must relay the reason rather than lose it to a default");
 }
 
@@ -1902,20 +1881,19 @@ static void test_read_reports_what_it_could_not_record() {
 
     allocation_ledger_t ledger;
     {
-        expected<store_t> made = store_t::make(typename inner_t::allocator_t(ledger));
-        if (!expect_equal(made.status(), success_k)) return;
-        store_t &store = *made;
+        auto [store, store_status] = store_t::make(typename inner_t::allocator_t(ledger));
+        if (!expect_equal(store_status, success_k)) return;
         expect_equal(store.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
 
-        auto reader = store.transaction();
-        if (!expect_equal(reader.status(), success_k)) return;
+        auto [reader, reader_status] = store.transaction();
+        if (!expect_equal(reader_status, success_k)) return;
 
         // Everything the transaction needed is already allocated, so the next request is the read set's.
         ledger.refuse_everything();
-        status_t const answered = reader->find(trivial_key_t {1}, no_op_t {}, no_op_t {});
+        status_t const answered = reader.find(trivial_key_t {1}, no_op_t {}, no_op_t {});
         expect_equal(answered, status_t::out_of_memory_heap_k, "a wrapper must relay what the read could not record");
         ledger.allow(unlimited_budget_k);
-        expect_equal(reader->reset(), success_k);
+        expect_equal(reader.reset(), success_k);
     }
     ledger.check_balanced();
 }

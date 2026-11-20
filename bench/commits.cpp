@@ -95,8 +95,8 @@ void bench_transaction_group(environment_t const &env, std::string const &name, 
     double const loaded_bytes_per_key = live_bytes_per_key(keys.size());
     run(env, name, std_maps, [&](loop_t &loop) noexcept {
         split_mix_generator_t generator {stream_key(env.settings.seed, name, loop.thread())};
-        auto group = make_transaction_group(forward, backward);
-        if (!group) return loop.skip(name_of(group.status()));
+        auto [group, status] = make_transaction_group(forward, backward);
+        if (failed(status)) return loop.skip(name_of(status));
         std::size_t aborts = 0, calls = 0;
         std::uint64_t allocated_before = 0;
         for (std::size_t call : loop) {
@@ -104,7 +104,7 @@ void bench_transaction_group(environment_t const &env, std::string const &name, 
             calls = call + 1;
             key_t const key = keys[generator.below(keys.size())];
             status_t committed = success_k;
-            while (conflicted(committed = group->commit_with([&](auto &forward_writes, auto &backward_writes) noexcept {
+            while (conflicted(committed = group.commit_with([&](auto &forward_writes, auto &backward_writes) noexcept {
                 status_t const filed = forward_writes.upsert({key, call});
                 return failed(filed) ? filed : backward_writes.upsert({key, call});
             })))

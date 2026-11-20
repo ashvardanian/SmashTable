@@ -69,15 +69,15 @@ double bench_increments(environment_t const &env, std::string const &name, std::
     double const loaded_bytes_per_key = live_bytes_per_key(keys.size());
     return run(env, name, baseline, [&](loop_t &loop) noexcept {
         split_mix_generator_t generator {stream_key(env.settings.seed, name, loop.thread())};
-        auto transaction = store.transaction();
-        if (!transaction) return loop.skip(name_of(transaction.status()));
+        auto [transaction, status] = store.transaction();
+        if (failed(status)) return loop.skip(name_of(status));
         std::size_t aborts = 0, calls = 0;
         for (std::size_t call : loop) {
             if (call == 0) aborts = 0;
             calls = call + 1;
             key_t const key = keys[generator.below(keys.size())];
             std::size_t attempts = 0;
-            status_t const committed = commit_with_retries(*transaction, ~std::size_t {0}, [&](auto &writes) noexcept {
+            status_t const committed = commit_with_retries(transaction, ~std::size_t {0}, [&](auto &writes) noexcept {
                 ++attempts;
                 key_t count = 0;
                 status_t const read = writes.find(key, [&](auto const &entry) noexcept { count = entry.mapped; });

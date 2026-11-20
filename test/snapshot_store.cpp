@@ -231,30 +231,30 @@ static expected<std::size_t> ranked_or_absent(readable_type_ const &readable, tr
 /** How many versions a sweep reclaimed, insisting the sweep could run at all. */
 template <typename store_type_, typename... bounds_types_>
 [[nodiscard]] static std::size_t vacuumed(store_type_ &store, bounds_types_ &&...bounds) {
-    expected<std::size_t> const reclaimed = store.vacuum(std::forward<bounds_types_>(bounds)...);
-    if (!expect_true(reclaimed.has_value())) return 0;
-    return *reclaimed;
+    auto const [reclaimed, status] = store.vacuum(std::forward<bounds_types_>(bounds)...);
+    if (!expect_equal(status, success_k)) return 0;
+    return reclaimed;
 }
 
 /** Publishes @p value under @p identifier through a committed transaction. */
 template <typename store_type_>
 static void commit_write(store_type_ &store, trivial_id_t identifier, int value) {
     using member_t = typename store_type_::value_type;
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
-    expect_equal(writer->stage(), success_k);
-    expect_equal(writer->commit(), success_k);
+    auto [writer, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
+    expect_equal(writer.stage(), success_k);
+    expect_equal(writer.commit(), success_k);
 }
 
 /** Erases @p identifier through a committed transaction. */
 template <typename store_type_>
 static void commit_erase(store_type_ &store, trivial_id_t identifier) {
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
-    expect_equal(writer->erase(trivial_key_t {identifier}), success_k);
-    expect_equal(writer->stage(), success_k);
-    expect_equal(writer->commit(), success_k);
+    auto [writer, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(writer.erase(trivial_key_t {identifier}), success_k);
+    expect_equal(writer.stage(), success_k);
+    expect_equal(writer.commit(), success_k);
 }
 
 #pragma endregion Helpers
@@ -285,9 +285,9 @@ static void test_repeated_read_is_stable() {
     commit_write(store, 1, 100);
     commit_write(store, 2, 200);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
-    expect_equal(mapped_or_absent(*reader, 1), 100);
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(mapped_or_absent(reader, 1), 100);
 
     commit_write(store, 1, 111);
     commit_erase(store, 2);
@@ -295,9 +295,9 @@ static void test_repeated_read_is_stable() {
     expect_equal(mapped_or_absent(store, 2), status_t::key_not_found_k);
 
     // The snapshot was fixed when the reader opened, so neither commit reaches it.
-    expect_equal(mapped_or_absent(*reader, 1), 100);
-    expect_equal(mapped_or_absent(*reader, 2), 200);
-    expect_equal(reader->contains(trivial_key_t {2}), true);
+    expect_equal(mapped_or_absent(reader, 1), 100);
+    expect_equal(mapped_or_absent(reader, 2), 200);
+    expect_equal(reader.contains(trivial_key_t {2}), true);
 }
 
 /** Tests that a transaction reads its own writes before and after they are published */
@@ -307,16 +307,16 @@ static void test_reads_own_writes() {
     store_type_ store;
     commit_write(store, 1, 100);
 
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(1, 101)), success_k);
-    expect_equal(mapped_or_absent(*writer, 1), 101);
+    auto [writer, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(1, 101)), success_k);
+    expect_equal(mapped_or_absent(writer, 1), 101);
     expect_equal(mapped_or_absent(store, 1), 100);
 
-    expect_equal(writer->stage(), success_k);
-    expect_equal(writer->commit(), success_k);
+    expect_equal(writer.stage(), success_k);
+    expect_equal(writer.commit(), success_k);
     expect_equal(mapped_or_absent(store, 1), 101);
-    expect_equal(mapped_or_absent(*writer, 1), 101);
+    expect_equal(mapped_or_absent(writer, 1), 101);
 }
 
 /** Tests that a range walked twice inside one transaction admits no phantom */
@@ -325,13 +325,13 @@ static void test_range_admits_no_phantoms() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != 10; identifier += 2) commit_write(store, identifier, 10);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
 
     auto collect = [&]() {
         std::vector<trivial_id_t> seen;
-        expect_equal(reader->range(trivial_key_t {0}, trivial_key_t {10},
-                                   [&](auto const &member) noexcept { seen.push_back(member.key.unique_id); }),
+        expect_equal(reader.range(trivial_key_t {0}, trivial_key_t {10},
+                                  [&](auto const &member) noexcept { seen.push_back(member.key.unique_id); }),
                      success_k);
         return seen;
     };
@@ -346,7 +346,7 @@ static void test_range_admits_no_phantoms() {
 
     std::vector<trivial_id_t> const second = collect();
     expect_true(first == second);
-    expect_equal(mapped_or_absent(*reader, 4), 10);
+    expect_equal(mapped_or_absent(reader, 4), 10);
 
     std::vector<trivial_id_t> outside;
     expect_equal(store.range(trivial_key_t {0}, trivial_key_t {10},
@@ -362,19 +362,19 @@ static void test_bounds_follow_the_snapshot() {
     commit_write(store, 2, 20);
     commit_write(store, 6, 60);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
     commit_write(store, 4, 40);
 
     trivial_id_t after_two = 0;
-    expect_equal(reader->upper_bound(
+    expect_equal(reader.upper_bound(
                      trivial_key_t {2}, [&](auto const &member) noexcept { after_two = member.key.unique_id; },
                      []() noexcept { expect_true(false, "the reader's snapshot still holds key 6"); }),
                  success_k);
     expect_equal(after_two, 6);
 
     trivial_id_t from_three = 0;
-    expect_equal(reader->lower_bound(
+    expect_equal(reader.lower_bound(
                      trivial_key_t {3}, [&](auto const &member) noexcept { from_three = member.key.unique_id; },
                      []() noexcept { expect_true(false, "the reader's snapshot still holds key 6"); }),
                  success_k);
@@ -399,18 +399,19 @@ static void test_first_committer_wins() {
     store_type_ store;
     commit_write(store, 1, 100);
 
-    auto early = store.transaction();
-    auto late = store.transaction();
-    if (!expect_true(early.has_value() && late.has_value())) return;
+    auto [early, early_status] = store.transaction();
+    if (!expect_equal(early_status, success_k)) return;
+    auto [late, late_status] = store.transaction();
+    if (!expect_equal(late_status, success_k)) return;
 
-    expect_equal(early->upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
-    expect_equal(late->upsert(trivial_id_to_member<member_t>(1, 222)), success_k);
+    expect_equal(early.upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
+    expect_equal(late.upsert(trivial_id_to_member<member_t>(1, 222)), success_k);
 
-    expect_equal(early->stage(), success_k);
-    expect_equal(early->commit(), success_k);
+    expect_equal(early.stage(), success_k);
+    expect_equal(early.commit(), success_k);
 
     // The loser is turned away rather than overwriting a version it never read.
-    expect_equal(late->stage(), status_t::write_conflict_k);
+    expect_equal(late.stage(), status_t::write_conflict_k);
     expect_equal(mapped_or_absent(store, 1), 111);
 }
 
@@ -421,21 +422,22 @@ static void test_conflict_caught_after_staging() {
     store_type_ store;
     commit_write(store, 1, 100);
 
-    auto early = store.transaction();
-    auto late = store.transaction();
-    if (!expect_true(early.has_value() && late.has_value())) return;
+    auto [early, early_status] = store.transaction();
+    if (!expect_equal(early_status, success_k)) return;
+    auto [late, late_status] = store.transaction();
+    if (!expect_equal(late_status, success_k)) return;
 
-    expect_equal(early->upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
-    expect_equal(late->upsert(trivial_id_to_member<member_t>(1, 222)), success_k);
+    expect_equal(early.upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
+    expect_equal(late.upsert(trivial_id_to_member<member_t>(1, 222)), success_k);
 
     // Staged versions carry no stamp, so neither transaction sees the other yet.
-    expect_equal(early->stage(), success_k);
-    expect_equal(late->stage(), success_k);
-    expect_equal(early->commit(), success_k);
+    expect_equal(early.stage(), success_k);
+    expect_equal(late.stage(), success_k);
+    expect_equal(early.commit(), success_k);
 
-    expect_equal(late->commit(), status_t::write_conflict_k);
+    expect_equal(late.commit(), status_t::write_conflict_k);
     expect_equal(mapped_or_absent(store, 1), 111);
-    expect_equal(late->rollback(), success_k);
+    expect_equal(late.rollback(), success_k);
 }
 
 /** Tests that a watch on a key someone else published over refuses the commit */
@@ -446,18 +448,18 @@ static void test_watch_refuses_lost_update() {
     commit_write(store, 1, 100);
     commit_write(store, 2, 200);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
     int observed = -1;
     expect_equal(
-        reader->find_and_watch(
+        reader.find_and_watch(
             trivial_key_t {1}, [&](auto const &member) noexcept { observed = member.mapped; }, []() noexcept {}),
         success_k);
     expect_equal(observed, 100);
-    expect_equal(reader->upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
+    expect_equal(reader.upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
 
     commit_write(store, 1, 111);
-    expect_equal(reader->stage(), status_t::read_conflict_k);
+    expect_equal(reader.stage(), status_t::read_conflict_k);
     expect_equal(mapped_or_absent(store, 2), 200);
 }
 
@@ -467,17 +469,17 @@ static void test_watch_records_absence() {
     using member_t = typename store_type_::value_type;
     store_type_ store;
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
     bool missed = false;
-    expect_equal(reader->find_and_watch(
+    expect_equal(reader.find_and_watch(
                      trivial_key_t {1}, [](auto const &) noexcept {}, [&]() noexcept { missed = true; }),
                  success_k);
     expect_true(missed);
-    expect_equal(reader->upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
+    expect_equal(reader.upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
 
     commit_write(store, 1, 111);
-    expect_equal(reader->stage(), status_t::read_conflict_k);
+    expect_equal(reader.stage(), status_t::read_conflict_k);
 }
 
 /** Tests that a watch on an absent key refuses a commit that inserted and erased it since */
@@ -486,21 +488,21 @@ static void test_watch_spans_insert_then_erase() {
     using member_t = typename store_type_::value_type;
     store_type_ store;
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
     bool missed = false;
-    expect_equal(reader->find_and_watch(
+    expect_equal(reader.find_and_watch(
                      trivial_key_t {1}, [](auto const &) noexcept {}, [&]() noexcept { missed = true; }),
                  success_k);
     expect_true(missed);
-    expect_equal(reader->upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
+    expect_equal(reader.upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
 
     // The key is back to missing, and two commits the reader never saw sit between the two absences,
     // so resolving to the same shape is not the key having stood still.
     commit_write(store, 1, 111);
     commit_erase(store, 1);
     expect_equal(mapped_or_absent(store, 1), status_t::key_not_found_k);
-    expect_equal(reader->stage(), status_t::read_conflict_k);
+    expect_equal(reader.stage(), status_t::read_conflict_k);
 }
 
 /** Tests that rollback hands staged writes back and lets a retry commit them */
@@ -509,20 +511,20 @@ static void test_rollback_returns_writes() {
     using member_t = typename store_type_::value_type;
     store_type_ store;
 
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(2, 200)), success_k);
-    expect_equal(writer->stage(), success_k);
-    expect_equal(writer->changes_count(), 0);
+    auto [writer, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(2, 200)), success_k);
+    expect_equal(writer.stage(), success_k);
+    expect_equal(writer.changes_count(), 0);
 
-    expect_equal(writer->rollback(), success_k);
-    expect_equal(writer->changes_count(), 2);
+    expect_equal(writer.rollback(), success_k);
+    expect_equal(writer.changes_count(), 2);
     expect_equal(store.versions_count(), 0);
     expect_true(store.empty());
 
-    expect_equal(writer->stage(), success_k);
-    expect_equal(writer->commit(), success_k);
+    expect_equal(writer.stage(), success_k);
+    expect_equal(writer.commit(), success_k);
     expect_equal(store.size(), 2);
     expect_equal(mapped_or_absent(store, 2), 200);
 }
@@ -535,10 +537,10 @@ static void test_abandoned_transaction_leaves_nothing() {
     commit_write(store, 1, 100);
 
     {
-        auto abandoned = store.transaction();
-        if (!expect_true(abandoned.has_value())) return;
-        expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
-        expect_equal(abandoned->stage(), success_k);
+        auto [abandoned, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(abandoned.upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
+        expect_equal(abandoned.stage(), success_k);
         expect_equal(store.versions_count(trivial_key_t {1}), 2);
         expect_equal(store.open_snapshots(), 1);
     }
@@ -573,8 +575,8 @@ static void test_open_transaction_pins_versions() {
     commit_write(store, 1, 100);
 
     {
-        auto reader = store.transaction();
-        if (!expect_true(reader.has_value())) return;
+        auto [reader, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
         commit_write(store, 1, 111);
         commit_write(store, 1, 222);
 
@@ -582,7 +584,7 @@ static void test_open_transaction_pins_versions() {
         expect_equal(store.versions_count(trivial_key_t {1}), 3);
         expect_equal(vacuumed(store), 0);
         expect_equal(store.versions_count(trivial_key_t {1}), 3);
-        expect_equal(mapped_or_absent(*reader, 1), 100);
+        expect_equal(mapped_or_absent(reader, 1), 100);
     }
 
     expect_equal(store.open_snapshots(), 0);
@@ -599,13 +601,13 @@ static void test_tombstones_are_reclaimed() {
     commit_write(store, 2, 200);
 
     {
-        auto reader = store.transaction();
-        if (!expect_true(reader.has_value())) return;
+        auto [reader, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
         commit_erase(store, 1);
 
         // The erasure hides the key from every reader that can see it, and pins it for the one that cannot.
         expect_equal(mapped_or_absent(store, 1), status_t::key_not_found_k);
-        expect_equal(mapped_or_absent(*reader, 1), 100);
+        expect_equal(mapped_or_absent(reader, 1), 100);
         expect_equal(store.size(), 1);
         expect_equal(store.versions_count(trivial_key_t {1}), 2);
         expect_equal(vacuumed(store), 0);
@@ -655,10 +657,10 @@ static void test_pruning_spares_staged_versions() {
     store_type_ store;
     commit_write(store, 1, 100);
 
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
-    expect_equal(writer->stage(), success_k);
+    auto [writer, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
+    expect_equal(writer.stage(), success_k);
     expect_equal(store.versions_count(trivial_key_t {1}), 2);
 
     // A staged version carries no stamp, so no mark can reach past it.
@@ -667,8 +669,8 @@ static void test_pruning_spares_staged_versions() {
     expect_equal(store.versions_count(trivial_key_t {1}), 3);
     expect_equal(mapped_or_absent(store, 1), 999);
 
-    expect_equal(writer->rollback(), success_k);
-    expect_equal(writer->changes_count(), 1);
+    expect_equal(writer.rollback(), success_k);
+    expect_equal(writer.changes_count(), 1);
     expect_equal(mapped_or_absent(store, 1), 999);
 }
 
@@ -682,19 +684,19 @@ static void test_bulk_sweep_keeps_every_reader_whole() {
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, 0);
 
     {
-        auto reader = store.transaction();
-        if (!expect_true(reader.has_value())) return;
+        auto [reader, reader_status] = store.transaction();
+        if (!expect_equal(reader_status, success_k)) return;
         for (int round = 1; round <= rounds_k; ++round) {
-            auto writer = store.transaction();
-            if (!expect_true(writer.has_value())) return;
+            auto [writer, writer_status] = store.transaction();
+            if (!expect_equal(writer_status, success_k)) return;
             for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-                expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, round)), success_k);
-            expect_equal(writer->stage(), success_k);
-            expect_equal(writer->commit(), success_k);
+                expect_equal(writer.upsert(trivial_id_to_member<member_t>(identifier, round)), success_k);
+            expect_equal(writer.stage(), success_k);
+            expect_equal(writer.commit(), success_k);
         }
 
         for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) {
-            expect_equal(mapped_or_absent(*reader, identifier), 0);
+            expect_equal(mapped_or_absent(reader, identifier), 0);
             expect_equal(mapped_or_absent(store, identifier), rounds_k);
         }
         expect_equal(store.versions_count(), keys_k * (rounds_k + 1));
@@ -732,9 +734,9 @@ static void test_low_water_mark_tracks_the_oldest_reader() {
 
         for (std::size_t index = 0; index != readers_k; ++index) {
             commit_write(store, 1, static_cast<int>(index));
-            auto opened = store.transaction();
-            if (!expect_true(opened.has_value())) return;
-            readers[index].emplace(std::move(*opened));
+            auto [opened, status] = store.transaction();
+            if (!expect_equal(status, success_k)) return;
+            readers[index].emplace(std::move(opened));
             expect_equal(store.open_snapshots(), index + 1);
             expect_true(store.low_water_mark() <= oldest_open_snapshot(store, readers));
         }
@@ -761,19 +763,19 @@ static void test_rolling_readers_keep_reclamation_moving() {
     commit_write(store, 1, 0);
 
     std::optional<transaction_t> holding;
-    auto first = store.transaction();
-    if (!expect_true(first.has_value())) return;
-    holding.emplace(std::move(*first));
+    auto [first, first_status] = store.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    holding.emplace(std::move(first));
 
     for (int round = 1; round != 64; ++round) {
         commit_write(store, 1, round);
 
         // The next reader arrives before the one before it leaves, so no bucket ever empties -
         // which is the shape a service with one perpetually open transaction has.
-        auto opened = store.transaction();
-        if (!expect_true(opened.has_value())) return;
+        auto [opened, opened_status] = store.transaction();
+        if (!expect_equal(opened_status, success_k)) return;
         std::optional<transaction_t> next;
-        next.emplace(std::move(*opened));
+        next.emplace(std::move(opened));
         expect_equal(store.open_snapshots(), 2);
         holding = std::move(next);
 
@@ -796,29 +798,29 @@ static void test_long_lived_reader_holds_its_own_snapshot() {
     commit_write(store, 1, 0);
 
     std::optional<transaction_t> early;
-    auto opened_early = store.transaction();
-    if (!expect_true(opened_early.has_value())) return;
-    early.emplace(std::move(*opened_early));
+    auto [opened_early, opened_early_status] = store.transaction();
+    if (!expect_equal(opened_early_status, success_k)) return;
+    early.emplace(std::move(opened_early));
 
     commit_write(store, 1, 1);
-    auto keeper = store.transaction();
-    if (!expect_true(keeper.has_value())) return;
-    expect_true(early->snapshot() < keeper->snapshot());
+    auto [keeper, keeper_status] = store.transaction();
+    if (!expect_equal(keeper_status, success_k)) return;
+    expect_true(early->snapshot() < keeper.snapshot());
 
     early.reset();
-    expect_true(store.low_water_mark() <= keeper->snapshot());
+    expect_true(store.low_water_mark() <= keeper.snapshot());
 
     for (int round = 2; round != 16; ++round) {
         commit_write(store, 1, round);
         {
-            auto churning = store.transaction();
-            expect_true(churning.has_value());
+            auto [churning, churning_status] = store.transaction();
+            expect_equal(churning_status, success_k);
             expect_equal(store.open_snapshots(), 2);
-            expect_true(store.low_water_mark() <= keeper->snapshot());
+            expect_true(store.low_water_mark() <= keeper.snapshot());
         }
         expect_equal(store.open_snapshots(), 1);
-        expect_true(store.low_water_mark() <= keeper->snapshot());
-        expect_equal(mapped_or_absent(*keeper, 1), 1);
+        expect_true(store.low_water_mark() <= keeper.snapshot());
+        expect_equal(mapped_or_absent(keeper, 1), 1);
     }
 }
 
@@ -833,16 +835,16 @@ static void test_point_insert_strategies() {
 
     store_type_ store;
 
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
-    expect_equal(writer->insert(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(writer->insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
-    expect_equal(writer->insert_if_missing(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(writer->update(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(writer->update(trivial_id_to_member<member_t>(2)), status_t::key_not_found_k);
-    expect_equal(writer->stage(), success_k);
-    expect_equal(writer->commit(), success_k);
+    auto [writer, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(writer.insert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(writer.insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
+    expect_equal(writer.insert_if_missing(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(writer.update(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(writer.update(trivial_id_to_member<member_t>(2)), status_t::key_not_found_k);
+    expect_equal(writer.stage(), success_k);
+    expect_equal(writer.commit(), success_k);
     expect_equal(store.size(), 1);
 
     expect_equal(store.insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
@@ -859,23 +861,23 @@ static void test_heavy_keys_round_trip() {
     snapshot_heavy_set_t store;
 
     {
-        auto writer = store.transaction();
-        if (!expect_true(writer.has_value())) return;
+        auto [writer, writer_status] = store.transaction();
+        if (!expect_equal(writer_status, success_k)) return;
         for (trivial_id_t identifier = 0; identifier != 16; ++identifier) {
-            auto key = heavy_key_t::make(identifier);
-            if (!expect_true(key.has_value())) return;
-            expect_equal(writer->upsert(std::move(*key)), success_k);
+            auto [key, key_status] = heavy_key_t::make(identifier);
+            if (!expect_equal(key_status, success_k)) return;
+            expect_equal(writer.upsert(std::move(key)), success_k);
         }
-        expect_equal(writer->stage(), success_k);
-        expect_equal(writer->commit(), success_k);
+        expect_equal(writer.stage(), success_k);
+        expect_equal(writer.commit(), success_k);
     }
     expect_equal(store.size(), 16);
 
-    auto probe = heavy_key_t::make(trivial_id_t {3});
-    if (!expect_true(probe.has_value())) return;
-    expect_equal(store.contains(*probe), true);
-    expect_equal(store.erase(*probe), success_k);
-    expect_equal(store.contains(*probe), false);
+    auto [probe, status] = heavy_key_t::make(trivial_id_t {3});
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(store.contains(probe), true);
+    expect_equal(store.erase(probe), success_k);
+    expect_equal(store.contains(probe), false);
     expect_equal(store.versions_count(), 15);
 }
 
@@ -890,16 +892,16 @@ static void test_group_spans_both_stores() {
     snapshot_t snapshots;
     monotonic_t monotonics;
 
-    auto group = make_transaction_group(snapshots, monotonics);
-    if (!expect_true(group.has_value())) return;
-    expect_equal(group->template participant<0>().upsert(trivial_id_to_member<snapshot_member_t>(1, 100)), success_k);
-    expect_equal(group->template participant<1>().upsert(trivial_id_to_member<monotonic_member_t>(1, 100)), success_k);
+    auto [group, status] = make_transaction_group(snapshots, monotonics);
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(group.template participant<0>().upsert(trivial_id_to_member<snapshot_member_t>(1, 100)), success_k);
+    expect_equal(group.template participant<1>().upsert(trivial_id_to_member<monotonic_member_t>(1, 100)), success_k);
 
-    expect_equal(group->stage(), success_k);
+    expect_equal(group.stage(), success_k);
     expect_equal(snapshots.size(), 0);
     expect_equal(monotonics.size(), 0);
 
-    expect_equal(group->commit(), success_k);
+    expect_equal(group.commit(), success_k);
     expect_equal(snapshots.size(), 1);
     expect_equal(monotonics.size(), 1);
     expect_equal(mapped_or_absent(snapshots, 1), 100);
@@ -928,8 +930,8 @@ static void test_cursor_yields_each_key_once() {
 
     // An open reader pins the mark, so nothing below it is reclaimed and several versions of one key
     // stay visible at the published stamp at once - which is what the cursor must collapse to one key.
-    auto pin = store.transaction();
-    expect_true(pin.has_value());
+    auto [pin, pin_status] = store.transaction();
+    expect_equal(pin_status, success_k);
     for (int round = 1; round != 4; ++round)
         for (trivial_id_t identifier : {trivial_id_t {0}, trivial_id_t {3}, trivial_id_t {7}})
             commit_write(store, identifier, round);
@@ -956,9 +958,9 @@ static void test_cursor_yields_each_key_once() {
     expect_true(drain_cursor(store.visible_keys_from(trivial_key_t {5})) == from_five);
 
     auto standing = store.visible_keys_from(trivial_key_t {6});
-    auto copied = standing.peek_copy();
-    if (!expect_true(copied.has_value())) return;
-    expect_equal(copied->key.unique_id, 6);
+    auto [copied, copied_status] = standing.peek_copy();
+    if (!expect_equal(copied_status, success_k)) return;
+    expect_equal(copied.key.unique_id, 6);
     expect_equal(standing.snapshot(), store.published_stamp());
 
     // A cursor past the last key is exhausted rather than standing on nothing.
@@ -974,20 +976,20 @@ static void test_transaction_range_is_sorted() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != 10; identifier += 2) commit_write(store, identifier, 10);
 
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
+    auto [writer, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (trivial_id_t identifier : {trivial_id_t {1}, trivial_id_t {3}, trivial_id_t {9}})
-        expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, 20)), success_k);
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(2, 22)), success_k);
-    expect_equal(writer->erase(trivial_key_t {6}), success_k);
+        expect_equal(writer.upsert(trivial_id_to_member<member_t>(identifier, 20)), success_k);
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(2, 22)), success_k);
+    expect_equal(writer.erase(trivial_key_t {6}), success_k);
 
     std::vector<trivial_id_t> seen;
     std::vector<int> values;
-    expect_equal(writer->range(trivial_key_t {0}, trivial_key_t {10},
-                               [&](auto const &member) noexcept {
-                                   seen.push_back(member.key.unique_id);
-                                   values.push_back(member.mapped);
-                               }),
+    expect_equal(writer.range(trivial_key_t {0}, trivial_key_t {10},
+                              [&](auto const &member) noexcept {
+                                  seen.push_back(member.key.unique_id);
+                                  values.push_back(member.mapped);
+                              }),
                  success_k);
 
     std::vector<trivial_id_t> const expected {0, 1, 2, 3, 4, 8, 9};
@@ -998,8 +1000,8 @@ static void test_transaction_range_is_sorted() {
 
     // A window that opens on a staged key and closes inside the committed ones stays sorted too.
     std::vector<trivial_id_t> window;
-    expect_equal(writer->range(trivial_key_t {1}, trivial_key_t {5},
-                               [&](auto const &member) noexcept { window.push_back(member.key.unique_id); }),
+    expect_equal(writer.range(trivial_key_t {1}, trivial_key_t {5},
+                              [&](auto const &member) noexcept { window.push_back(member.key.unique_id); }),
                  success_k);
     std::vector<trivial_id_t> const expected_window {1, 2, 3, 4};
     expect_true(window == expected_window);
@@ -1017,36 +1019,36 @@ static void test_publication_is_all_or_nothing() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, 0);
 
-    auto earlier = store.transaction();
-    if (!expect_true(earlier.has_value())) return;
+    auto [earlier, earlier_status] = store.transaction();
+    if (!expect_equal(earlier_status, success_k)) return;
     generation_t const before = store.published_stamp();
 
-    auto group = store.publication();
-    if (!expect_true(group.has_value())) return;
-    expect_equal(group->reserve(keys_k), success_k);
+    auto [group, group_status] = store.publication();
+    if (!expect_equal(group_status, success_k)) return;
+    expect_equal(group.reserve(keys_k), success_k);
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-        expect_equal(group->upsert(trivial_id_to_member<member_t>(identifier, 1)), success_k);
-    expect_equal(group->staged_count(), keys_k);
+        expect_equal(group.upsert(trivial_id_to_member<member_t>(identifier, 1)), success_k);
+    expect_equal(group.staged_count(), keys_k);
 
     // Filed and unstamped, so neither the store nor any reader can see any of it.
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
         expect_equal(mapped_or_absent(store, identifier), 0);
     expect_equal(store.published_stamp(), before);
 
-    expect_equal(group->publish(), success_k);
-    expect_equal(group->staged_count(), 0);
+    expect_equal(group.publish(), success_k);
+    expect_equal(group.staged_count(), 0);
 
     // One stamp for the whole group, so a snapshot names all of it or none of it.
     expect_equal(store.published_stamp(), before + 1);
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) {
         expect_equal(mapped_or_absent(store, identifier), 1);
-        expect_equal(mapped_or_absent(*earlier, identifier), 0);
+        expect_equal(mapped_or_absent(earlier, identifier), 0);
     }
 
-    auto later = store.transaction();
-    if (!expect_true(later.has_value())) return;
+    auto [later, later_status] = store.transaction();
+    if (!expect_equal(later_status, success_k)) return;
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-        expect_equal(mapped_or_absent(*later, identifier), 1);
+        expect_equal(mapped_or_absent(later, identifier), 1);
 }
 
 /** Tests that a publication erases through tombstones and undoes itself when discarded */
@@ -1056,27 +1058,27 @@ static void test_publication_erases_and_discards() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != 4; ++identifier) commit_write(store, identifier, 10);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, reader_status] = store.transaction();
+    if (!expect_equal(reader_status, success_k)) return;
 
     {
-        auto group = store.publication();
-        if (!expect_true(group.has_value())) return;
-        expect_equal(group->erase(trivial_key_t {1}), success_k);
-        expect_equal(group->erase(trivial_key_t {2}), success_k);
-        expect_equal(group->publish(), success_k);
+        auto [group, group_status] = store.publication();
+        if (!expect_equal(group_status, success_k)) return;
+        expect_equal(group.erase(trivial_key_t {1}), success_k);
+        expect_equal(group.erase(trivial_key_t {2}), success_k);
+        expect_equal(group.publish(), success_k);
     }
     expect_equal(store.size(), 2);
     expect_equal(mapped_or_absent(store, 1), status_t::key_not_found_k);
     // The erasure is a tombstone, so the snapshot that opened before it still reads the key.
-    expect_equal(mapped_or_absent(*reader, 1), 10);
-    expect_equal(mapped_or_absent(*reader, 2), 10);
+    expect_equal(mapped_or_absent(reader, 1), 10);
+    expect_equal(mapped_or_absent(reader, 2), 10);
 
     {
-        auto abandoned = store.publication();
-        if (!expect_true(abandoned.has_value())) return;
-        expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(0, 99)), success_k);
-        expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(3, 99)), success_k);
+        auto [abandoned, abandoned_status] = store.publication();
+        if (!expect_equal(abandoned_status, success_k)) return;
+        expect_equal(abandoned.upsert(trivial_id_to_member<member_t>(0, 99)), success_k);
+        expect_equal(abandoned.upsert(trivial_id_to_member<member_t>(3, 99)), success_k);
         expect_equal(store.versions_count(trivial_key_t {0}), 2);
     }
     expect_equal(mapped_or_absent(store, 0), 10);
@@ -1091,10 +1093,10 @@ static void test_clear_refuses_open_readers() {
     commit_write(store, 1, 100);
 
     {
-        auto reader = store.transaction();
-        if (!expect_true(reader.has_value())) return;
+        auto [reader, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
         expect_equal(store.clear(), status_t::operation_not_permitted_k);
-        expect_equal(mapped_or_absent(*reader, 1), 100);
+        expect_equal(mapped_or_absent(reader, 1), 100);
     }
 
     expect_equal(store.open_snapshots(), 0);
@@ -1138,12 +1140,12 @@ static void test_equal_range_collapses_to_find() {
         success_k);
     expect_true(found.empty());
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
-    expect_equal(reader->upsert(trivial_id_to_member<typename store_type_::value_type>(2, 222)), success_k);
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(reader.upsert(trivial_id_to_member<typename store_type_::value_type>(2, 222)), success_k);
     found.clear();
     expect_equal(
-        reader->equal_range(trivial_key_t {2}, [&](auto const &member) noexcept { found.push_back(member.mapped); }),
+        reader.equal_range(trivial_key_t {2}, [&](auto const &member) noexcept { found.push_back(member.mapped); }),
         success_k);
     if (!expect_equal(found.size(), 1)) return;
     expect_equal(found[0], 222);
@@ -1155,8 +1157,8 @@ static void test_erase_range_is_all_or_nothing() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != 10; ++identifier) commit_write(store, identifier, 0);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
 
     generation_t const before = store.published_stamp();
     std::vector<trivial_id_t> retired;
@@ -1176,7 +1178,7 @@ static void test_erase_range_is_all_or_nothing() {
     expect_equal(remaining[3], 9);
 
     // The older snapshot keeps every key it opened on, all ten of them, not a prefix.
-    std::vector<trivial_id_t> const observed = keys_in_range(*reader, 0, 10);
+    std::vector<trivial_id_t> const observed = keys_in_range(reader, 0, 10);
     if (!expect_equal(observed.size(), 10)) return;
     for (trivial_id_t identifier = 0; identifier != 10; ++identifier) expect_equal(observed[identifier], identifier);
 
@@ -1319,8 +1321,8 @@ static void test_update_range_leaves_readers_alone() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != 6; ++identifier) commit_write(store, identifier, 10);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
 
     generation_t const before = store.published_stamp();
     expect_equal(store.update_range(trivial_key_t {1}, trivial_key_t {4},
@@ -1335,7 +1337,7 @@ static void test_update_range_leaves_readers_alone() {
     expect_equal(store.size(), 6);
 
     for (trivial_id_t identifier = 0; identifier != 6; ++identifier)
-        expect_equal(mapped_or_absent(*reader, identifier), 10);
+        expect_equal(mapped_or_absent(reader, identifier), 10);
 }
 
 /** Tests that a bounded vacuum reclaims only the runs inside its window */
@@ -1345,8 +1347,8 @@ static void test_bounded_vacuum_sweeps_whole_runs() {
     constexpr trivial_id_t midpoint_k = keys_k / 2;
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) {
-        auto reader = store.transaction();
-        expect_true(reader.has_value());
+        auto [reader, status] = store.transaction();
+        expect_equal(status, success_k);
         commit_write(store, identifier, 1);
         commit_write(store, identifier, 2);
     }
@@ -1491,13 +1493,15 @@ static void test_order_statistics_cost_a_logarithm() {
     expect_equal(store.ranked_size(), size);
 
     counting_call_tally_t::reset();
-    expected<trivial_id_t> const drawn = selected_or_absent(store, size / 2);
+    auto const [drawn, drawn_status] = selected_or_absent(store, size / 2);
+    expect_equal(drawn_status, success_k);
     expect_equal(drawn, size / 2);
     // A select reads only the stored subtree counts, so it never consults the comparator at all.
     expect_equal(counting_call_tally_t::comparisons_count(), 0);
 
     counting_call_tally_t::reset();
-    expected<std::size_t> const ranked = ranked_or_absent(store, size - 1);
+    auto const [ranked, ranked_status] = ranked_or_absent(store, size - 1);
+    expect_equal(ranked_status, success_k);
     expect_equal(ranked, size - 1);
     // Both halves of a rank on the last key: the probe deciding it is readable, and the descent summing
     // the counts to its left. Only the balance policy or the shape of that probe moves this.
@@ -1511,21 +1515,21 @@ static void test_transaction_order_statistics_merge() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != 10; identifier += 2) commit_write(store, identifier, 0);
 
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(5, 1)), success_k);
-    expect_equal(writer->erase(trivial_key_t {4}), success_k);
+    auto [writer, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(5, 1)), success_k);
+    expect_equal(writer.erase(trivial_key_t {4}), success_k);
 
-    std::vector<trivial_id_t> const expected_order = keys_in_range(*writer, 0, 10);
+    std::vector<trivial_id_t> const expected_order = keys_in_range(writer, 0, 10);
     if (!expect_equal(expected_order.size(), 5)) return;
 
     for (std::size_t ordinal = 0; ordinal != expected_order.size(); ++ordinal) {
-        expect_equal(selected_or_absent(*writer, ordinal), expected_order[ordinal]);
-        expect_equal(ranked_or_absent(*writer, expected_order[ordinal]), ordinal);
+        expect_equal(selected_or_absent(writer, ordinal), expected_order[ordinal]);
+        expect_equal(ranked_or_absent(writer, expected_order[ordinal]), ordinal);
     }
 
-    expect_equal(selected_or_absent(*writer, expected_order.size()), status_t::key_not_found_k);
-    expect_equal(ranked_or_absent(*writer, 4), status_t::key_not_found_k);
+    expect_equal(selected_or_absent(writer, expected_order.size()), status_t::key_not_found_k);
+    expect_equal(ranked_or_absent(writer, 4), status_t::key_not_found_k);
 }
 
 /** Tests that the augmented counts follow every publication path, not only the point writes */
@@ -1555,12 +1559,12 @@ static void test_ranked_size_tracks_every_write() {
     [[maybe_unused]] std::size_t const swept = vacuumed(store);
     expect_equal(store.ranked_size(), store.size());
 
-    auto abandoned = store.transaction();
-    if (!expect_true(abandoned.has_value())) return;
-    expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(200, 1)), success_k);
-    expect_equal(abandoned->stage(), success_k);
+    auto [abandoned, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(abandoned.upsert(trivial_id_to_member<member_t>(200, 1)), success_k);
+    expect_equal(abandoned.stage(), success_k);
     expect_equal(store.ranked_size(), store.size());
-    expect_equal(abandoned->rollback(), success_k);
+    expect_equal(abandoned.rollback(), success_k);
     expect_equal(store.ranked_size(), store.size());
 }
 
@@ -1606,18 +1610,18 @@ static void check_for_each_merges_staged_writes() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != 4; ++identifier) commit_write(store, identifier, 0);
 
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(9, 1)), success_k);
-    expect_equal(writer->erase(trivial_key_t {1}), success_k);
+    auto [writer, writer_status] = store.transaction();
+    if (!expect_equal(writer_status, success_k)) return;
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(9, 1)), success_k);
+    expect_equal(writer.erase(trivial_key_t {1}), success_k);
 
     // A second transaction stages a key without publishing it, which neither side may enumerate.
-    auto other = store.transaction();
-    if (!expect_true(other.has_value())) return;
-    expect_equal(other->upsert(trivial_id_to_member<member_t>(7, 1)), success_k);
-    expect_equal(other->stage(), success_k);
+    auto [other, other_status] = store.transaction();
+    if (!expect_equal(other_status, success_k)) return;
+    expect_equal(other.upsert(trivial_id_to_member<member_t>(7, 1)), success_k);
+    expect_equal(other.stage(), success_k);
 
-    std::vector<trivial_id_t> const merged = keys_enumerated(*writer);
+    std::vector<trivial_id_t> const merged = keys_enumerated(writer);
     std::vector<trivial_id_t> const expected_merged {0, 2, 3, 9};
     expect_true(merged == expected_merged);
 
@@ -1625,7 +1629,7 @@ static void check_for_each_merges_staged_writes() {
     std::vector<trivial_id_t> const expected_published {0, 1, 2, 3};
     expect_true(published == expected_published);
 
-    expect_equal(other->rollback(), success_k);
+    expect_equal(other.rollback(), success_k);
 }
 
 /** Tests that an enumeration answers at the reader's snapshot rather than at the newest commit */
@@ -1634,13 +1638,13 @@ static void check_for_each_follows_the_snapshot() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != 4; ++identifier) commit_write(store, identifier, 0);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
 
     commit_write(store, 4, 1);
     commit_erase(store, 0);
 
-    std::vector<trivial_id_t> const observed = keys_enumerated(*reader);
+    std::vector<trivial_id_t> const observed = keys_enumerated(reader);
     std::vector<trivial_id_t> const expected_observed {0, 1, 2, 3};
     expect_true(observed == expected_observed);
 
@@ -1689,14 +1693,14 @@ static void check_transaction_select_answers_exactly_once() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != size; ++identifier) commit_write(store, identifier, 0);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
 
     for (trivial_id_t ordinal = 0; ordinal != size; ++ordinal) {
         std::size_t found_count = 0;
         std::size_t missing_count = 0;
         trivial_id_t drawn = size;
-        expect_equal(reader->select(
+        expect_equal(reader.select(
                          ordinal,
                          [&](auto const &member) noexcept {
                              drawn = member.key.unique_id;
@@ -1931,18 +1935,17 @@ static void test_ordinals_agree_with_the_oracle() {
 
     // An answer carries its own absence, so an engine that reports nothing cannot pass by holding a seed.
     for (std::size_t ordinal = 0; ordinal != oracle.size() + 2; ++ordinal) {
-        expected<trivial_id_t> const expected_key = selected_or_absent(oracle, ordinal);
-        expected<trivial_id_t> const observed_key = selected_or_absent(store, ordinal);
-        expect_equal(observed_key.status(), expected_key.status(),
-                     "an ordinal one of them answered and the other did not");
-        if (expected_key.has_value()) expect_equal(observed_key, *expected_key);
+        auto const [expected_key, expected_key_status] = selected_or_absent(oracle, ordinal);
+        auto const [observed_key, observed_key_status] = selected_or_absent(store, ordinal);
+        expect_equal(observed_key_status, expected_key_status, "an ordinal one of them answered and the other did not");
+        if (succeeded(expected_key_status)) expect_equal(observed_key, expected_key);
     }
 
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) {
-        expected<std::size_t> const expected_rank = ranked_or_absent(oracle, identifier);
-        expected<std::size_t> const observed_rank = ranked_or_absent(store, identifier);
-        expect_equal(observed_rank.status(), expected_rank.status(), "a key one of them ranked and the other did not");
-        if (expected_rank.has_value()) expect_equal(observed_rank, *expected_rank);
+        auto const [expected_rank, expected_rank_status] = ranked_or_absent(oracle, identifier);
+        auto const [observed_rank, observed_rank_status] = ranked_or_absent(store, identifier);
+        expect_equal(observed_rank_status, expected_rank_status, "a key one of them ranked and the other did not");
+        if (succeeded(expected_rank_status)) expect_equal(observed_rank, expected_rank);
     }
 }
 
@@ -1952,25 +1955,25 @@ static void test_oracle_transaction_ordinals_include_staged_writes() {
     reference_avl_map_t oracle;
     for (trivial_id_t identifier = 0; identifier != 8; identifier += 2) commit_write(oracle, identifier, 0);
 
-    auto staging = oracle.transaction();
-    if (!expect_true(staging.has_value())) return;
-    expect_equal(staging->upsert(trivial_id_to_member<member_t>(3, 1)), success_k);
-    expect_equal(staging->erase(trivial_key_t {4}), success_k);
+    auto [staging, status] = oracle.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(staging.upsert(trivial_id_to_member<member_t>(3, 1)), success_k);
+    expect_equal(staging.erase(trivial_key_t {4}), success_k);
 
     // Committed 0, 2, 6 with 4 tombstoned, plus a staged 3, so the walk reads 0, 2, 3, 6.
     trivial_id_t const expected_order[4] = {0, 2, 3, 6};
     for (std::size_t ordinal = 0; ordinal != 4; ++ordinal)
-        expect_equal(selected_or_absent(*staging, ordinal), expected_order[ordinal]);
+        expect_equal(selected_or_absent(staging, ordinal), expected_order[ordinal]);
 
-    expect_equal(ranked_or_absent(*staging, 3), std::size_t {2});
-    expect_equal(ranked_or_absent(*staging, 4), status_t::key_not_found_k);
+    expect_equal(ranked_or_absent(staging, 3), std::size_t {2});
+    expect_equal(ranked_or_absent(staging, 4), status_t::key_not_found_k);
 
     std::size_t staged_visits = 0;
-    expect_equal(staging->equal_range(trivial_key_t {3}, [&](auto const &) noexcept { ++staged_visits; }), success_k);
+    expect_equal(staging.equal_range(trivial_key_t {3}, [&](auto const &) noexcept { ++staged_visits; }), success_k);
     expect_equal(staged_visits, 1);
 
     std::size_t tombstoned_visits = 0;
-    expect_equal(staging->equal_range(trivial_key_t {4}, [&](auto const &) noexcept { ++tombstoned_visits; }),
+    expect_equal(staging.equal_range(trivial_key_t {4}, [&](auto const &) noexcept { ++tombstoned_visits; }),
                  success_k);
     expect_equal(tombstoned_visits, 0);
 }
@@ -2071,13 +2074,13 @@ static void test_smallest_answers_at_the_readers_snapshot() {
     for (trivial_id_t identifier : {30, 40})
         expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, static_cast<int>(identifier))), success_k);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, reader_status] = store.transaction();
+    if (!expect_equal(reader_status, success_k)) return;
 
     trivial_id_t answered = 0;
     expect_equal(
-        reader->smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
-                         no_op_t {}),
+        reader.smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
+                        no_op_t {}),
         success_k);
     expect_equal(answered, 30);
 
@@ -2085,27 +2088,27 @@ static void test_smallest_answers_at_the_readers_snapshot() {
     // holds none and is meant to see the newest published state, which is the level it advertises.
     expect_equal(store.upsert(trivial_id_to_member<member_t>(10, 10)), success_k);
     expect_equal(
-        reader->smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
-                         no_op_t {}),
+        reader.smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
+                        no_op_t {}),
         success_k);
     if constexpr (at_least(store_type_::isolation_k, isolation_t::snapshot_k)) { expect_equal(answered, 30); }
     else { expect_equal(answered, 10); }
 
     // Its own staged write does move it, at either level, so the key is put below everything committed
     // rather than between - which would only answer the same on a reader that is shielded.
-    expect_equal(reader->upsert(trivial_id_to_member<member_t>(5, 5)), success_k);
+    expect_equal(reader.upsert(trivial_id_to_member<member_t>(5, 5)), success_k);
     expect_equal(
-        reader->smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
-                         no_op_t {}),
+        reader.smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
+                        no_op_t {}),
         success_k);
     expect_equal(answered, 5);
 
     // A fresh reader opens on the committed key whether or not the earlier one was shielded from it.
-    auto later = store.transaction();
-    if (!expect_true(later.has_value())) return;
+    auto [later, later_status] = store.transaction();
+    if (!expect_equal(later_status, success_k)) return;
     expect_equal(
-        later->smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
-                        no_op_t {}),
+        later.smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
+                       no_op_t {}),
         success_k);
     expect_equal(answered, 10);
 }
@@ -2141,12 +2144,12 @@ static std::vector<trivial_id_t> one_identifier_per_partition() {
 template <typename store_type_>
 static void commit_write_many(store_type_ &store, std::vector<trivial_id_t> const &identifiers, int value) {
     using member_t = typename store_type_::value_type;
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
+    auto [writer, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (trivial_id_t identifier : identifiers)
-        expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
-    expect_equal(writer->stage(), success_k);
-    expect_equal(writer->commit(), success_k);
+        expect_equal(writer.upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
+    expect_equal(writer.stage(), success_k);
+    expect_equal(writer.commit(), success_k);
 }
 
 /** Tests that a reader answers every partition at the one snapshot it opened on */
@@ -2156,24 +2159,24 @@ static void test_sharded_reader_holds_one_snapshot() {
     auto const identifiers = one_identifier_per_partition<store_type_>();
     commit_write_many(store, identifiers, 100);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, reader_status] = store.transaction();
+    if (!expect_equal(reader_status, success_k)) return;
 
     // Two rounds land while the reader is open, each spanning every partition. Neither may show.
     commit_write_many(store, identifiers, 200);
     commit_write_many(store, identifiers, 300);
 
-    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(*reader, identifier), 100);
+    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(reader, identifier), 100);
 
     // The reader's own writes are its own, in whichever partition they land.
     using member_t = typename store_type_::value_type;
-    expect_equal(reader->upsert(trivial_id_to_member<member_t>(identifiers.front(), 111)), success_k);
-    expect_equal(mapped_or_absent(*reader, identifiers.front()), 111);
+    expect_equal(reader.upsert(trivial_id_to_member<member_t>(identifiers.front(), 111)), success_k);
+    expect_equal(mapped_or_absent(reader, identifiers.front()), 111);
 
     // A reader opening after both rounds sees the newer of them, whole.
-    auto fresh = store.transaction();
-    if (!expect_true(fresh.has_value())) return;
-    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(*fresh, identifier), 300);
+    auto [fresh, fresh_status] = store.transaction();
+    if (!expect_equal(fresh_status, success_k)) return;
+    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(fresh, identifier), 300);
 }
 
 /**
@@ -2189,21 +2192,21 @@ static void test_sharded_transaction_reads_its_own_commit() {
     auto const identifiers = one_identifier_per_partition<store_type_>();
     commit_write_many(store, identifiers, 100);
 
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
+    auto [writer, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (int round = 2; round != 5; ++round) {
         for (trivial_id_t identifier : identifiers)
-            expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, round * 100)), success_k);
-        expect_equal(writer->stage(), success_k);
-        expect_equal(writer->commit(), success_k);
+            expect_equal(writer.upsert(trivial_id_to_member<member_t>(identifier, round * 100)), success_k);
+        expect_equal(writer.stage(), success_k);
+        expect_equal(writer.commit(), success_k);
 
         // The same transaction, still open, answers every partition at the stamp it just published.
-        for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(*writer, identifier), round * 100);
+        for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(writer, identifier), round * 100);
     }
 
     // A reset moves the transaction forward, never back to a snapshot below its own commits.
-    expect_equal(writer->reset(), success_k);
-    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(*writer, identifier), 400);
+    expect_equal(writer.reset(), success_k);
+    for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(writer, identifier), 400);
     for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(store, identifier), 400);
 }
 
@@ -2215,17 +2218,17 @@ static void test_sharded_range_admits_no_phantoms() {
     auto const identifiers = one_identifier_per_partition<store_type_>();
     commit_write_many(store, identifiers, 100);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, reader_status] = store.transaction();
+    if (!expect_equal(reader_status, success_k)) return;
 
     // The predicate is evaluated through the transaction, over a span wide enough that every
     // partition answers part of it.
     auto count_present = [&]() noexcept {
         std::size_t seen = 0;
         for (trivial_id_t candidate = 0; candidate != 64; ++candidate) {
-            expected<bool> const is_present = reader->contains(trivial_key_t {candidate});
-            if (!expect_equal(is_present.status(), success_k)) return seen;
-            if (*is_present) ++seen;
+            auto const [present, present_status] = reader.contains(trivial_key_t {candidate});
+            if (!expect_equal(present_status, success_k)) return seen;
+            if (present) ++seen;
         }
         return seen;
     };
@@ -2242,7 +2245,7 @@ static void test_sharded_range_admits_no_phantoms() {
     expect_equal(count_present(), before);
 
     // The transaction's own insert is not a phantom - it is the transaction's own writing.
-    expect_equal(reader->upsert(trivial_id_to_member<member_t>(intruders.front(), 7)), success_k);
+    expect_equal(reader.upsert(trivial_id_to_member<member_t>(intruders.front(), 7)), success_k);
     expect_equal(count_present(), before + 1);
 }
 
@@ -2260,15 +2263,15 @@ static void test_sharded_mark_pins_every_partition() {
     commit_write_many(store, identifiers, 100);
 
     {
-        auto reader = store.transaction();
-        if (!expect_true(reader.has_value())) return;
+        auto [reader, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
 
         // Enough rounds that a version tail left unpinned would be collapsed several times over,
         // each round committed through a partition lock this reader is not holding.
         for (int round = 1; round != 8; ++round) commit_write_many(store, identifiers, 100 + round);
 
         // Every partition still answers with the version the reader opened on.
-        for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(*reader, identifier), 100);
+        for (trivial_id_t identifier : identifiers) expect_equal(mapped_or_absent(reader, identifier), 100);
     }
 
     // Once the reader has left, nothing is pinned and the next commit collapses the tails again.
@@ -2297,19 +2300,20 @@ template <typename store_type_>
     commit_write(store, 1, 1);
     commit_write(store, 2, 1);
 
-    auto first = store.transaction();
-    auto second = store.transaction();
-    if (!expect_true(first.has_value() && second.has_value())) return false;
+    auto [first, first_status] = store.transaction();
+    if (!expect_equal(first_status, success_k)) return false;
+    auto [second, second_status] = store.transaction();
+    if (!expect_equal(second_status, success_k)) return false;
 
     // Each reads both keys and concludes the other one covers the invariant.
     std::size_t first_total = 0, second_total = 0;
     for (trivial_id_t key = 1; key != 3; ++key) {
-        expect_equal(first->find(
+        expect_equal(first.find(
                          trivial_id_to_key<member_t>(key),
                          [&](member_t const &held) noexcept { first_total += static_cast<std::size_t>(held.mapped); },
                          no_op_t {}),
                      success_k);
-        expect_equal(second->find(
+        expect_equal(second.find(
                          trivial_id_to_key<member_t>(key),
                          [&](member_t const &held) noexcept { second_total += static_cast<std::size_t>(held.mapped); },
                          no_op_t {}),
@@ -2318,14 +2322,14 @@ template <typename store_type_>
     expect_equal(first_total, 2u);
     expect_equal(second_total, 2u);
 
-    expect_equal(first->upsert(trivial_id_to_member<member_t>(1, 0)), success_k);
-    expect_equal(second->upsert(trivial_id_to_member<member_t>(2, 0)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, 0)), success_k);
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(2, 0)), success_k);
 
-    expect_equal(first->stage(), success_k);
-    expect_equal(first->commit(), success_k);
+    expect_equal(first.stage(), success_k);
+    expect_equal(first.commit(), success_k);
 
-    if (failed(second->stage())) return false;
-    return succeeded(second->commit());
+    if (failed(second.stage())) return false;
+    return succeeded(second.commit());
 }
 
 /** Snapshot isolation admits write skew, and the serializable level refuses it. */
@@ -2351,17 +2355,17 @@ static void test_phantom_insert_refuses_the_walker() {
     commit_write(store, 10, 1);
     commit_write(store, 30, 1);
 
-    auto walker = store.transaction();
-    if (!expect_true(walker.has_value())) return;
+    auto [walker, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
     std::size_t seen = 0;
-    expect_equal(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100),
-                               [&](member_t const &) noexcept { ++seen; }),
+    expect_equal(walker.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100),
+                              [&](member_t const &) noexcept { ++seen; }),
                  success_k);
     expect_equal(seen, 2u);
 
     commit_write(store, 20, 1); // lands inside the window the walker recorded
 
-    expect_equal(walker->stage(), status_t::phantom_conflict_k);
+    expect_equal(walker.stage(), status_t::phantom_conflict_k);
 }
 
 /** An erase inside a watched window refuses too, since it publishes a tombstone in the window. */
@@ -2372,18 +2376,17 @@ static void test_phantom_erase_refuses_the_walker() {
     commit_write(store, 10, 1);
     commit_write(store, 30, 1);
 
-    auto walker = store.transaction();
-    if (!expect_true(walker.has_value())) return;
-    expect_equal(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100), no_op_t {}),
-                 success_k);
+    auto [walker, walker_status] = store.transaction();
+    if (!expect_equal(walker_status, success_k)) return;
+    expect_equal(walker.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100), no_op_t {}), success_k);
 
-    auto eraser = store.transaction();
-    if (!expect_true(eraser.has_value())) return;
-    expect_equal(eraser->erase(trivial_id_to_key<member_t>(10)), success_k);
-    expect_equal(eraser->stage(), success_k);
-    expect_equal(eraser->commit(), success_k);
+    auto [eraser, eraser_status] = store.transaction();
+    if (!expect_equal(eraser_status, success_k)) return;
+    expect_equal(eraser.erase(trivial_id_to_key<member_t>(10)), success_k);
+    expect_equal(eraser.stage(), success_k);
+    expect_equal(eraser.commit(), success_k);
 
-    expect_equal(walker->stage(), status_t::phantom_conflict_k);
+    expect_equal(walker.stage(), status_t::phantom_conflict_k);
 }
 
 /**
@@ -2399,8 +2402,8 @@ static void test_phantom_refuses_a_bounded_scan() {
     commit_write(store, 10, 1);
     commit_write(store, 30, 1);
 
-    auto reader = store.transaction();
-    if (!expect_true(reader.has_value())) return;
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
 
     // Step the window [10, 40) the way a caller would, by bounds rather than by a range call.
     std::size_t counted = 0;
@@ -2408,7 +2411,7 @@ static void test_phantom_refuses_a_bounded_scan() {
     while (true) {
         expected<trivial_id_t> next {status_t::key_not_found_k};
         expect_equal(
-            reader->lower_bound(
+            reader.lower_bound(
                 trivial_id_to_key<member_t>(at),
                 [&](member_t const &member) noexcept { next = mapping_key_or_itself<member_t>(member).unique_id; },
                 no_op_t {}),
@@ -2421,7 +2424,7 @@ static void test_phantom_refuses_a_bounded_scan() {
 
     commit_write(store, 20, 1); // inside a window the scan crossed but never named before
 
-    expect_equal(reader->stage(), status_t::phantom_conflict_k);
+    expect_equal(reader.stage(), status_t::phantom_conflict_k);
 }
 
 /**
@@ -2438,23 +2441,23 @@ static void test_ordinal_window_ignores_a_commit_above_it() {
     {
         store_t store;
         for (trivial_id_t identifier : {10, 20, 30}) commit_write(store, identifier, 1);
-        auto reader = store.transaction();
-        if (!expect_true(reader.has_value())) return;
-        expect_equal(reader->select(0, no_op_t {}, no_op_t {}), success_k);
+        auto [reader, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(reader.select(0, no_op_t {}, no_op_t {}), success_k);
         commit_write(store, 99, 1); // ordered after the key `select(0)` landed on
-        expect_equal(reader->stage(), success_k);
-        expect_equal(reader->commit(), success_k);
+        expect_equal(reader.stage(), success_k);
+        expect_equal(reader.commit(), success_k);
     }
 
     // A commit below it moves the answer, so it must refuse.
     {
         store_t store;
         for (trivial_id_t identifier : {10, 20, 30}) commit_write(store, identifier, 1);
-        auto reader = store.transaction();
-        if (!expect_true(reader.has_value())) return;
-        expect_equal(reader->select(1, no_op_t {}, no_op_t {}), success_k);
+        auto [reader, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(reader.select(1, no_op_t {}, no_op_t {}), success_k);
         commit_write(store, 5, 1); // ordered before the key `select(1)` landed on
-        expect_equal(reader->stage(), status_t::phantom_conflict_k);
+        expect_equal(reader.stage(), status_t::phantom_conflict_k);
     }
 }
 
@@ -2467,35 +2470,35 @@ static void test_each_refusal_names_its_cause() {
     {
         store_t store;
         commit_write(store, 1, 1);
-        auto writer = store.transaction();
-        if (!expect_true(writer.has_value())) return;
-        expect_equal(writer->upsert(trivial_id_to_member<member_t>(1, 7)), success_k);
+        auto [writer, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(writer.upsert(trivial_id_to_member<member_t>(1, 7)), success_k);
         commit_write(store, 1, 2);
-        expect_equal(writer->stage(), status_t::write_conflict_k);
+        expect_equal(writer.stage(), status_t::write_conflict_k);
     }
 
     // A key this transaction read was published over.
     {
         store_t store;
         commit_write(store, 1, 1);
-        auto reader = store.transaction();
-        if (!expect_true(reader.has_value())) return;
-        expect_equal(reader->find(trivial_id_to_key<member_t>(1), no_op_t {}, no_op_t {}), success_k);
-        expect_equal(reader->upsert(trivial_id_to_member<member_t>(2, 7)), success_k);
+        auto [reader, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(reader.find(trivial_id_to_key<member_t>(1), no_op_t {}, no_op_t {}), success_k);
+        expect_equal(reader.upsert(trivial_id_to_member<member_t>(2, 7)), success_k);
         commit_write(store, 1, 2);
-        expect_equal(reader->stage(), status_t::read_conflict_k);
+        expect_equal(reader.stage(), status_t::read_conflict_k);
     }
 
     // A window this transaction read gained a member.
     {
         store_t store;
         commit_write(store, 10, 1);
-        auto walker = store.transaction();
-        if (!expect_true(walker.has_value())) return;
-        expect_equal(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100), no_op_t {}),
+        auto [walker, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(walker.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100), no_op_t {}),
                      success_k);
         commit_write(store, 50, 1);
-        expect_equal(walker->stage(), status_t::phantom_conflict_k);
+        expect_equal(walker.stage(), status_t::phantom_conflict_k);
     }
 }
 
@@ -2505,13 +2508,13 @@ static void test_unbounded_read_refuses_any_commit() {
     store_t store;
     commit_write(store, 1, 1);
 
-    auto walker = store.transaction();
-    if (!expect_true(walker.has_value())) return;
-    expect_equal(walker->for_each(no_op_t {}), success_k);
+    auto [walker, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(walker.for_each(no_op_t {}), success_k);
 
     commit_write(store, 999, 1); // anywhere at all, since the read covered everything
 
-    expect_equal(walker->stage(), status_t::phantom_conflict_k);
+    expect_equal(walker.stage(), status_t::phantom_conflict_k);
 }
 
 /**
@@ -2527,19 +2530,19 @@ static void test_unbounded_read_ignores_a_commit_to_a_sibling_store() {
     store_t walked {order}, sibling {order};
     commit_write(walked, 1, 1);
 
-    auto walker = walked.transaction();
-    if (!expect_true(walker.has_value())) return;
+    auto [walker, status] = walked.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (trivial_id_t round = 0; round != 3; ++round) {
-        expect_equal(walker->for_each(no_op_t {}), success_k);
-        expect_equal(walker->upsert(trivial_id_to_member<member_t>(2, static_cast<int>(round))), success_k);
+        expect_equal(walker.for_each(no_op_t {}), success_k);
+        expect_equal(walker.upsert(trivial_id_to_member<member_t>(2, static_cast<int>(round))), success_k);
         commit_write(sibling, 999, static_cast<int>(round));
-        expect_equal(walker->stage(), success_k, "the sibling's commit wrote none of the walked keys");
-        expect_equal(walker->commit(), success_k);
+        expect_equal(walker.stage(), success_k, "the sibling's commit wrote none of the walked keys");
+        expect_equal(walker.commit(), success_k);
     }
 
-    expect_equal(walker->for_each(no_op_t {}), success_k);
+    expect_equal(walker.for_each(no_op_t {}), success_k);
     commit_write(walked, 999, 1);
-    expect_equal(walker->stage(), status_t::phantom_conflict_k);
+    expect_equal(walker.stage(), status_t::phantom_conflict_k);
 }
 
 /**
@@ -2561,13 +2564,13 @@ static void test_serializable_a_read_reports_what_it_could_not_record() {
         expect_equal(store.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
         expect_equal(store.upsert(trivial_id_to_member<member_t>(2, 1)), success_k);
 
-        auto reader = store.transaction();
-        if (!expect_equal(reader.status(), success_k)) return;
+        auto [reader, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
 
         // Everything the transaction needed is already allocated, so the next request is the read set's.
         ledger.refuse_everything();
         std::size_t seen = 0;
-        status_t const answered = reader->find(
+        status_t const answered = reader.find(
             trivial_key_t {1}, [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); },
             no_op_t {});
         expect_equal(answered, status_t::out_of_memory_heap_k,
@@ -2577,10 +2580,10 @@ static void test_serializable_a_read_reports_what_it_could_not_record() {
         // A commit lands, so validation has to consult the read set rather than take its fast path.
         ledger.allow(unlimited_budget_k);
         expect_equal(store.upsert(trivial_id_to_member<member_t>(3, 1)), success_k);
-        expect_equal(reader->upsert(trivial_id_to_member<member_t>(2, 5)), success_k);
-        expect_equal(reader->stage(), status_t::read_conflict_k,
+        expect_equal(reader.upsert(trivial_id_to_member<member_t>(2, 5)), success_k);
+        expect_equal(reader.stage(), status_t::read_conflict_k,
                      "a read it cannot name is a read it cannot prove untouched");
-        expect_equal(reader->reset(), success_k);
+        expect_equal(reader.reset(), success_k);
     }
     ledger.check_balanced();
 }
@@ -2595,13 +2598,13 @@ static void test_an_unvalidated_read_records_nothing_to_lose() {
         store_t store {typename store_t::allocator_t(ledger)};
         expect_equal(store.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
 
-        auto reader = store.transaction();
-        if (!expect_equal(reader.status(), success_k)) return;
+        auto [reader, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
 
         ledger.refuse_everything();
         std::size_t seen = 0;
         expect_equal(
-            reader->find(
+            reader.find(
                 trivial_key_t {1}, [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); },
                 no_op_t {}),
             success_k);
@@ -2626,23 +2629,23 @@ static void test_serializable_reset_clears_a_whole_keyspace_read() {
     store_t store;
     expect_equal(store.upsert(trivial_id_to_member<member_t>(1)), success_k);
 
-    auto reader = store.transaction();
-    if (!expect_equal(reader.status(), success_k)) return;
-    expect_equal(reader->for_each(no_op_t {}), success_k);
+    auto [reader, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(reader.for_each(no_op_t {}), success_k);
 
     // Somebody commits, so the whole-keyspace read is now stale and the transaction must refuse.
     expect_equal(store.upsert(trivial_id_to_member<member_t>(2)), success_k);
-    expect_equal(reader->stage(), status_t::phantom_conflict_k);
+    expect_equal(reader.stage(), status_t::phantom_conflict_k);
 
     // Reset drops that read. What follows is a fresh transaction in all but name, and must commit.
-    expect_equal(reader->reset(), success_k);
-    expect_equal(reader->upsert(trivial_id_to_member<member_t>(3)), success_k);
+    expect_equal(reader.reset(), success_k);
+    expect_equal(reader.upsert(trivial_id_to_member<member_t>(3)), success_k);
 
     // A commit lands on a key this transaction never read, after the reset - so validation has to look
     // past its fast path and consult the read set, which is where an uncleared refusal would be found.
     expect_equal(store.upsert(trivial_id_to_member<member_t>(4)), success_k);
-    expect_equal(reader->stage(), success_k);
-    expect_true(succeeded(reader->commit()), "a reset transaction must not inherit the refusal it was reset from");
+    expect_equal(reader.stage(), success_k);
+    expect_true(succeeded(reader.commit()), "a reset transaction must not inherit the refusal it was reset from");
     expect_equal(store.size(), 4u);
 }
 
@@ -2662,34 +2665,34 @@ static void test_transaction_range_surface_sees_its_own_writes() {
     for (std::size_t identifier = 0; identifier != 8; ++identifier)
         expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
-    auto writer = store.transaction();
-    if (!expect_equal(writer.status(), success_k)) return;
+    auto [writer, writer_status] = store.transaction();
+    if (!expect_equal(writer_status, success_k)) return;
 
     // A staged member the store has not published must be visible to every read on this transaction.
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(100)), success_k);
-    expect_equal(writer->count(trivial_id_to_key<member_t>(100)), std::size_t {1},
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(100)), success_k);
+    expect_equal(writer.count(trivial_id_to_key<member_t>(100)), std::size_t {1},
                  "a staged key must be counted by the transaction that staged it");
     expect_equal(store.count(trivial_id_to_key<member_t>(100)), std::size_t {0},
                  "and must stay invisible to the store until it commits");
 
-    auto const bounded = writer->lower_bound_copy(trivial_id_to_key<member_t>(100));
-    if (!expect_equal(bounded.status(), success_k)) return;
-    expect_equal(mapping_key_or_itself<member_t>(*bounded), trivial_id_to_key<member_t>(100),
+    auto [bounded, bounded_status] = writer.lower_bound_copy(trivial_id_to_key<member_t>(100));
+    if (!expect_equal(bounded_status, success_k)) return;
+    expect_equal(mapping_key_or_itself<member_t>(bounded), trivial_id_to_key<member_t>(100),
                  "a bound copy must reach the transaction's own staged member");
 
     // An erasing walk stages tombstones; the store keeps its members until the commit lands.
     std::size_t erased = 0;
-    expect_equal(writer->erase_range(trivial_id_to_key<member_t>(2), trivial_id_to_key<member_t>(5),
-                                     [&](member_t const &) noexcept { ++erased; }),
+    expect_equal(writer.erase_range(trivial_id_to_key<member_t>(2), trivial_id_to_key<member_t>(5),
+                                    [&](member_t const &) noexcept { ++erased; }),
                  success_k);
     expect_equal(erased, std::size_t {3}, "the window held three members");
-    expect_equal(writer->count(trivial_id_to_key<member_t>(3)), std::size_t {0},
+    expect_equal(writer.count(trivial_id_to_key<member_t>(3)), std::size_t {0},
                  "an erased key must be gone from the transaction that erased it");
     expect_equal(store.count(trivial_id_to_key<member_t>(3)), std::size_t {1},
                  "and must remain in the store until the commit lands");
 
-    expect_equal(writer->stage(), success_k);
-    expect_equal(writer->commit(), success_k);
+    expect_equal(writer.stage(), success_k);
+    expect_equal(writer.commit(), success_k);
     expect_equal(store.count(trivial_id_to_key<member_t>(3)), std::size_t {0},
                  "the commit publishes what the transaction staged");
     expect_equal(store.count(trivial_id_to_key<member_t>(100)), std::size_t {1});
@@ -2725,26 +2728,27 @@ static void test_one_hold_commit_matches_stage_then_commit() {
     using member_t = typename store_t::value_type;
     store_t store;
 
-    auto joined = store.transaction();
-    auto split = store.transaction();
-    if (!expect_true(joined.has_value() && split.has_value())) return;
-    expect_equal(joined->upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
-    expect_equal(joined->stage_and_commit(), success_k);
+    auto [joined, joined_status] = store.transaction();
+    if (!expect_equal(joined_status, success_k)) return;
+    auto [split, split_status] = store.transaction();
+    if (!expect_equal(split_status, success_k)) return;
+    expect_equal(joined.upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
+    expect_equal(joined.stage_and_commit(), success_k);
     expect_equal(mapped_or_absent(store, 1), 10);
-    expect_true(joined->commit_stamp() > 0);
+    expect_true(joined.commit_stamp() > 0);
 
-    expect_equal(joined->upsert(trivial_id_to_member<member_t>(7, 70)), success_k);
-    expect_equal(split->upsert(trivial_id_to_member<member_t>(7, 72)), success_k);
+    expect_equal(joined.upsert(trivial_id_to_member<member_t>(7, 70)), success_k);
+    expect_equal(split.upsert(trivial_id_to_member<member_t>(7, 72)), success_k);
     commit_write(store, 7, 71);
-    status_t const refusal = stage_and_commit(*split);
+    status_t const refusal = stage_and_commit(split);
     expect_equal(refusal, status_t::write_conflict_k);
-    expect_equal(joined->stage_and_commit(), refusal);
+    expect_equal(joined.stage_and_commit(), refusal);
     expect_equal(mapped_or_absent(store, 7), 71, "a refused validation publishes nothing");
     expect_equal(store.size(), 2u);
 
-    expect_equal(joined->reset(), success_k);
-    expect_equal(joined->upsert(trivial_id_to_member<member_t>(7, 73)), success_k);
-    expect_equal(joined->stage_and_commit(), success_k, "the refusal kept neither the hold nor a staged version");
+    expect_equal(joined.reset(), success_k);
+    expect_equal(joined.upsert(trivial_id_to_member<member_t>(7, 73)), success_k);
+    expect_equal(joined.stage_and_commit(), success_k, "the refusal kept neither the hold nor a staged version");
     expect_equal(mapped_or_absent(store, 7), 73);
     expect_equal(store.size(), 2u);
 }
@@ -2756,34 +2760,35 @@ static void test_commit_stamp_follows_commit_order() {
     using member_t = typename store_type_::value_type;
     store_type_ store;
 
-    auto first = store.transaction();
-    auto second = store.transaction();
-    if (!expect_true(first.has_value() && second.has_value())) return;
-    expect_equal(first->commit_stamp(), 0, "no commit has gone out yet");
+    auto [first, first_status] = store.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    auto [second, second_status] = store.transaction();
+    if (!expect_equal(second_status, success_k)) return;
+    expect_equal(first.commit_stamp(), 0, "no commit has gone out yet");
 
-    expect_equal(second->upsert(trivial_id_to_member<member_t>(2, 20)), success_k);
-    expect_equal(stage_and_commit(*second), success_k);
-    expect_equal(first->upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
-    expect_equal(stage_and_commit(*first), success_k);
-    expect_true(second->commit_stamp() > 0);
-    expect_true(first->commit_stamp() > second->commit_stamp(), "the later commit carries the larger stamp");
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(2, 20)), success_k);
+    expect_equal(stage_and_commit(second), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
+    expect_equal(stage_and_commit(first), success_k);
+    expect_true(second.commit_stamp() > 0);
+    expect_true(first.commit_stamp() > second.commit_stamp(), "the later commit carries the larger stamp");
 
     // A reader opened after both reads at or above the newer stamp.
     auto const pinned = store.reader();
-    expect_true(pinned.snapshot() >= first->commit_stamp());
+    expect_true(pinned.snapshot() >= first.commit_stamp());
 
     // A refused commit leaves the stamp where the last successful one put it.
-    generation_t const kept = first->commit_stamp();
-    expect_equal(first->upsert(trivial_id_to_member<member_t>(7, 70)), success_k);
+    generation_t const kept = first.commit_stamp();
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(7, 70)), success_k);
     commit_write(store, 7, 71);
-    expect_equal(stage_and_commit(*first), status_t::write_conflict_k);
-    expect_equal(first->commit_stamp(), kept);
+    expect_equal(stage_and_commit(first), status_t::write_conflict_k);
+    expect_equal(first.commit_stamp(), kept);
 
     // The same transaction committing again moves past every stamp before it.
-    expect_equal(first->reset(), success_k);
-    expect_equal(first->upsert(trivial_id_to_member<member_t>(1, 11)), success_k);
-    expect_equal(stage_and_commit(*first), success_k);
-    expect_true(first->commit_stamp() > kept);
+    expect_equal(first.reset(), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, 11)), success_k);
+    expect_equal(stage_and_commit(first), success_k);
+    expect_true(first.commit_stamp() > kept);
 }
 
 /** Tests that a store-level window write over every partition goes out under one stamp, which is
@@ -2923,13 +2928,13 @@ static void test_reader_serves_threads_without_a_lock() {
         expect_true(spin_until([&] { return readers_inside.load(std::memory_order_acquire); }));
         for (std::size_t round = 0; round != rounds; ++round) {
             if (round >= least_rounds_k && std::chrono::steady_clock::now() >= deadline) break;
-            auto writer = store.transaction();
-            if (!expect_true(writer.has_value())) break;
+            auto [writer, status] = store.transaction();
+            if (!expect_equal(status, success_k)) break;
             for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-                expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, int(round) + 2)), success_k);
-            expect_equal(stage_and_commit(*writer), success_k);
+                expect_equal(writer.upsert(trivial_id_to_member<member_t>(identifier, int(round) + 2)), success_k);
+            expect_equal(stage_and_commit(writer), success_k);
             expect_equal(store.erase_range(trivial_key_t {10}, trivial_key_t {20}), success_k);
-            [[maybe_unused]] auto const reclaimed = store.vacuum();
+            [[maybe_unused]] status_t const ignored = store.vacuum().status();
             rounds_run.fetch_add(1, std::memory_order_relaxed);
         }
         writing_done.store(true, std::memory_order_release);
@@ -2960,11 +2965,11 @@ static void test_reader_serves_threads_without_a_lock() {
     // A transaction adopting the stamp counts a snapshot of its own beside the reader's claim, over and over.
     threads.emplace_back([&]() noexcept {
         do {
-            auto adopted = store.transaction(pinned);
-            if (!expect_true(adopted.has_value())) return;
+            auto [adopted, adopted_status] = store.transaction(pinned);
+            if (!expect_equal(adopted_status, success_k)) return;
             for (trivial_id_t identifier = 0; identifier < keys_k; identifier += 7) {
-                expected<int> const observed = mapped_or_absent(*adopted, identifier);
-                if (!observed || *observed != 1) wrong.fetch_add(1, std::memory_order_relaxed);
+                auto const [observed, observed_status] = mapped_or_absent(adopted, identifier);
+                if (failed(observed_status) || observed != 1) wrong.fetch_add(1, std::memory_order_relaxed);
             }
             adoptions.fetch_add(1, std::memory_order_relaxed);
         } while (!writing_done.load(std::memory_order_acquire));
@@ -2990,38 +2995,38 @@ static void test_adopted_stamp_is_validated() {
     commit_write(store, 1, 11);
 
     {
-        auto adopted = store.transaction(pinned);
-        if (!expect_true(adopted.has_value())) return;
-        expect_equal(mapped_or_absent(*adopted, 1), 10, "an adoption reads at the stamp, not at the newest commit");
-        expect_equal(adopted->upsert(trivial_id_to_member<member_t>(1, 12)), success_k);
-        expect_equal(stage_and_commit(*adopted), status_t::write_conflict_k,
+        auto [adopted, status] = store.transaction(pinned);
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(mapped_or_absent(adopted, 1), 10, "an adoption reads at the stamp, not at the newest commit");
+        expect_equal(adopted.upsert(trivial_id_to_member<member_t>(1, 12)), success_k);
+        expect_equal(stage_and_commit(adopted), status_t::write_conflict_k,
                      "writing a key published over since the stamp is a lost update at every level");
     }
     {
-        auto adopted = store.transaction(pinned);
-        if (!expect_true(adopted.has_value())) return;
-        expect_equal(mapped_or_absent(*adopted, 1), 10);
-        expect_equal(adopted->upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
+        auto [adopted, status] = store.transaction(pinned);
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(mapped_or_absent(adopted, 1), 10);
+        expect_equal(adopted.upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
         if constexpr (at_least(store_type_::isolation_k, isolation_t::serializable_k))
-            expect_equal(stage_and_commit(*adopted), status_t::read_conflict_k,
+            expect_equal(stage_and_commit(adopted), status_t::read_conflict_k,
                          "a read of a key published over since the stamp is refused from serializable up");
-        else expect_equal(stage_and_commit(*adopted), success_k);
+        else expect_equal(stage_and_commit(adopted), success_k);
     }
     if constexpr (!at_least(store_type_::isolation_k, isolation_t::serializable_k)) {
-        auto adopted = store.transaction(pinned);
-        if (!expect_true(adopted.has_value())) return;
-        expect_equal(adopted->watch(trivial_key_t {1}), success_k);
-        expect_equal(adopted->upsert(trivial_id_to_member<member_t>(4, 40)), success_k);
-        expect_equal(stage_and_commit(*adopted), status_t::read_conflict_k,
+        auto [adopted, status] = store.transaction(pinned);
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(adopted.watch(trivial_key_t {1}), success_k);
+        expect_equal(adopted.upsert(trivial_id_to_member<member_t>(4, 40)), success_k);
+        expect_equal(stage_and_commit(adopted), status_t::read_conflict_k,
                      "a watched key published over since the stamp is refused at snapshot isolation too");
     }
     {
-        auto adopted = store.transaction(pinned);
-        if (!expect_true(adopted.has_value())) return;
-        expect_equal(mapped_or_absent(*adopted, 2), 20);
-        expect_equal(adopted->upsert(trivial_id_to_member<member_t>(2, 21)), success_k);
-        expect_equal(stage_and_commit(*adopted), success_k);
-        expect_true(adopted->commit_stamp() > pinned.snapshot());
+        auto [adopted, status] = store.transaction(pinned);
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(mapped_or_absent(adopted, 2), 20);
+        expect_equal(adopted.upsert(trivial_id_to_member<member_t>(2, 21)), success_k);
+        expect_equal(stage_and_commit(adopted), success_k);
+        expect_true(adopted.commit_stamp() > pinned.snapshot());
         expect_equal(mapped_or_absent(store, 2), 21);
     }
 }
@@ -3034,18 +3039,18 @@ static void test_adoption_outlives_the_reader() {
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, 1);
 
-    auto adopted = [&]() {
+    auto [adopted, status] = [&]() {
         auto const pinned = store.reader();
         return store.transaction(pinned);
     }();
-    if (!expect_true(adopted.has_value())) return;
+    if (!expect_equal(status, success_k)) return;
 
     for (int round = 2; round != 6; ++round) {
         for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, round);
         [[maybe_unused]] std::size_t const swept = vacuumed(store);
     }
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
-        expect_equal(mapped_or_absent(*adopted, identifier), 1, "the adoption's own claim keeps its versions");
+        expect_equal(mapped_or_absent(adopted, identifier), 1, "the adoption's own claim keeps its versions");
 }
 
 /** The three ordered walks a page can be read through. */
@@ -3091,38 +3096,38 @@ static void test_page_ignores_commits_past_its_last_key() {
         for (trivial_id_t index = 0; index != keys_k; ++index) commit_write(store, index * spacing_k, int(index));
 
         {
-            auto paging = store.transaction();
-            if (!expect_true(paging.has_value())) return;
-            expect_equal(read_a_page(*paging, walk, page_k, upper_k), last_on_page_k);
+            auto [paging, status] = store.transaction();
+            if (!expect_equal(status, success_k)) return;
+            expect_equal(read_a_page(paging, walk, page_k, upper_k), last_on_page_k);
             // Past the page: an insert beside its last key, an update, an erase, and an insert past the window.
             commit_write(store, last_on_page_k + 5, 1);
             commit_write(store, 50 * spacing_k, 1);
             commit_erase(store, 70 * spacing_k);
             commit_write(store, upper_k + 5, 1);
-            expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
-            expect_true(succeeded(stage_and_commit(*paging)), "a commit past the page's last key must not refuse it");
+            expect_equal(paging.upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
+            expect_true(succeeded(stage_and_commit(paging)), "a commit past the page's last key must not refuse it");
         }
         {
-            auto paging = store.transaction();
-            if (!expect_true(paging.has_value())) return;
-            expect_equal(read_a_page(*paging, walk, page_k, upper_k), last_on_page_k);
+            auto [paging, status] = store.transaction();
+            if (!expect_equal(status, success_k)) return;
+            expect_equal(read_a_page(paging, walk, page_k, upper_k), last_on_page_k);
             commit_write(store, 4 * spacing_k + 5, 1);
-            expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
+            expect_equal(paging.upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
             if constexpr (validated_k)
-                expect_equal(stage_and_commit(*paging), status_t::phantom_conflict_k,
+                expect_equal(stage_and_commit(paging), status_t::phantom_conflict_k,
                              "an insert inside the page is still a phantom from serializable up");
-            else expect_equal(stage_and_commit(*paging), success_k);
+            else expect_equal(stage_and_commit(paging), success_k);
         }
         {
-            auto paging = store.transaction();
-            if (!expect_true(paging.has_value())) return;
-            trivial_id_t const stopped = read_a_page(*paging, walk, page_k, upper_k);
+            auto [paging, status] = store.transaction();
+            if (!expect_equal(status, success_k)) return;
+            trivial_id_t const stopped = read_a_page(paging, walk, page_k, upper_k);
             commit_write(store, stopped, -1);
-            expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
+            expect_equal(paging.upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
             if constexpr (validated_k)
-                expect_equal(stage_and_commit(*paging), status_t::read_conflict_k,
+                expect_equal(stage_and_commit(paging), status_t::read_conflict_k,
                              "the key a page stopped on is a key it read");
-            else expect_equal(stage_and_commit(*paging), success_k);
+            else expect_equal(stage_and_commit(paging), success_k);
         }
     }
 }
@@ -3184,8 +3189,8 @@ static void test_window_writes_are_never_seen_half_applied() {
         threads.emplace_back([&]() noexcept {
             do {
                 tally(store.reader());
-                auto opened = store.transaction();
-                if (expect_true(opened.has_value())) tally(*opened);
+                auto [opened, status] = store.transaction();
+                if (expect_equal(status, success_k)) tally(opened);
                 readers_inside.store(true, std::memory_order_release);
             } while (!writing_done.load(std::memory_order_acquire));
         });
@@ -3219,30 +3224,31 @@ static void test_staged_transaction_unwinds_under_partition_locks() {
     };
 
     {
-        auto staged = store.transaction();
-        if (!expect_true(staged.has_value())) return;
-        stage_everything(*staged);
+        auto [staged, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
+        stage_everything(staged);
     }
     expect_equal(store.versions_count(), settled, "a staged transaction going away takes its versions back");
 
     {
-        auto staged = store.transaction();
-        if (!expect_true(staged.has_value())) return;
-        stage_everything(*staged);
-        expect_equal(staged->reset(), success_k);
+        auto [staged, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
+        stage_everything(staged);
+        expect_equal(staged.reset(), success_k);
         expect_equal(store.versions_count(), settled, "a reset takes them back too");
     }
 
     {
-        auto staged = store.transaction();
-        auto fresh = store.transaction();
-        if (!expect_true(staged.has_value() && fresh.has_value())) return;
-        stage_everything(*staged);
-        *staged = std::move(*fresh);
+        auto [staged, staged_status] = store.transaction();
+        if (!expect_equal(staged_status, success_k)) return;
+        auto [fresh, fresh_status] = store.transaction();
+        if (!expect_equal(fresh_status, success_k)) return;
+        stage_everything(staged);
+        staged = std::move(fresh);
         expect_equal(store.versions_count(), settled,
                      "a staged transaction assigned over unwinds before it is replaced");
-        expect_equal(staged->upsert(trivial_id_to_member<member_t>(identifiers.front(), 3)), success_k);
-        expect_equal(stage_and_commit(*staged), success_k);
+        expect_equal(staged.upsert(trivial_id_to_member<member_t>(identifiers.front(), 3)), success_k);
+        expect_equal(stage_and_commit(staged), success_k);
     }
     expect_equal(mapped_or_absent(store, identifiers.front()), 3);
     for (std::size_t index = 1; index != identifiers.size(); ++index)
@@ -3265,11 +3271,11 @@ static void test_staged_transaction_unwinds_under_partition_locks() {
     });
     for (; rounds_run != rounds; ++rounds_run) {
         if (rounds_run >= least_rounds_k && std::chrono::steady_clock::now() >= deadline) break;
-        auto abandoned = store.transaction();
-        if (!expect_true(abandoned.has_value())) break;
+        auto [abandoned, status] = store.transaction();
+        if (!expect_equal(status, success_k)) break;
         for (trivial_id_t identifier : identifiers)
-            expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(identifier + 5000, 9)), success_k);
-        expect_equal(abandoned->stage(), success_k);
+            expect_equal(abandoned.upsert(trivial_id_to_member<member_t>(identifier + 5000, 9)), success_k);
+        expect_equal(abandoned.stage(), success_k);
     }
     walking_done.store(true, std::memory_order_release);
     walker.join();
@@ -3326,29 +3332,29 @@ template <typename store_type_>
 static void commit_logged_round(store_type_ &store, fuzz_oracle_t &oracle, split_mix_generator_t &generator,
                                 std::vector<logged_version_t> &log) {
     using member_t = typename store_type_::value_type;
-    auto writer = store.transaction();
-    if (!expect_true(writer.has_value())) return;
+    auto [writer, writer_status] = store.transaction();
+    if (!expect_equal(writer_status, success_k)) return;
     std::vector<logged_version_t> written;
     trivial_id_t const first = trivial_id_t(generator() % fuzz_keyspace_k);
     std::size_t const count = 1 + generator() % 3;
     for (std::size_t offset = 0; offset != count; ++offset) {
         // Seven is coprime with the keyspace, so three steps never land on one key twice.
         trivial_id_t const key = trivial_id_t((first + offset * 7) % fuzz_keyspace_k);
-        expected<bool> const present = oracle.contains(trivial_key_t {key});
-        if (!expect_true(present.has_value())) return;
-        if (*present && generator() % 3 == 0) {
-            expect_equal(writer->erase(trivial_key_t {key}), success_k);
+        auto const [present, present_status] = oracle.contains(trivial_key_t {key});
+        if (!expect_equal(present_status, success_k)) return;
+        if (present && generator() % 3 == 0) {
+            expect_equal(writer.erase(trivial_key_t {key}), success_k);
             expect_equal(oracle.erase(trivial_key_t {key}), success_k);
             written.push_back({key, 0, presence_t::erased_k, 0});
             continue;
         }
         int const value = int(generator() % 1000);
-        expect_equal(writer->upsert(trivial_id_to_member<member_t>(key, value)), success_k);
+        expect_equal(writer.upsert(trivial_id_to_member<member_t>(key, value)), success_k);
         expect_equal(oracle.upsert(trivial_id_to_member<member_t>(key, value)), success_k);
         written.push_back({key, 0, presence_t::present_k, value});
     }
-    expect_equal(stage_and_commit(*writer), success_k);
-    for (logged_version_t &version : written) version.stamp = writer->commit_stamp();
+    expect_equal(stage_and_commit(writer), success_k);
+    for (logged_version_t &version : written) version.stamp = writer.commit_stamp();
     log.insert(log.end(), written.begin(), written.end());
 }
 
@@ -3552,21 +3558,21 @@ static void test_descending_range_reverses_the_forward_walk() {
         return ascending;
     };
     {
-        auto writer = store.transaction();
-        if (!expect_true(writer.has_value())) return;
-        expect_equal(writer->upsert(trivial_id_to_member<member_t>(2 * spacing_k + 1, -1)), success_k);
-        expect_equal(writer->upsert(trivial_id_to_member<member_t>(6 * spacing_k, -6)), success_k);
-        expect_equal(writer->upsert(trivial_id_to_member<member_t>(3 * spacing_k, -3)), success_k);
-        expect_equal(writer->erase(trivial_key_t {8 * spacing_k}), success_k);
-        expect_equal(writer->erase(trivial_key_t {largest_k}), success_k);
-        std::vector<trivial_id_t> const ascending = ascending_through(*writer);
+        auto [writer, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(writer.upsert(trivial_id_to_member<member_t>(2 * spacing_k + 1, -1)), success_k);
+        expect_equal(writer.upsert(trivial_id_to_member<member_t>(6 * spacing_k, -6)), success_k);
+        expect_equal(writer.upsert(trivial_id_to_member<member_t>(3 * spacing_k, -3)), success_k);
+        expect_equal(writer.erase(trivial_key_t {8 * spacing_k}), success_k);
+        expect_equal(writer.erase(trivial_key_t {largest_k}), success_k);
+        std::vector<trivial_id_t> const ascending = ascending_through(writer);
         expect_true(std::find(ascending.begin(), ascending.end(), 8 * spacing_k) == ascending.end());
-        check_descents_reverse(*writer, ascending, bounds);
+        check_descents_reverse(writer, ascending, bounds);
     }
     if constexpr (offers_descending_range<store_type_>) {
-        auto fresh = store.transaction();
-        if (!expect_true(fresh.has_value())) return;
-        std::vector<trivial_id_t> const newest = ascending_through(*fresh);
+        auto [fresh, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
+        std::vector<trivial_id_t> const newest = ascending_through(fresh);
         check_descents_reverse(store, newest, bounds);
     }
     if constexpr (requires { store.reader(); }) {
@@ -3574,9 +3580,9 @@ static void test_descending_range_reverses_the_forward_walk() {
         commit_write(store, 4 * spacing_k + 1, 1);
         commit_erase(store, 5 * spacing_k);
         commit_erase(store, largest_k);
-        auto adopted = store.transaction(pinned);
-        if (!expect_true(adopted.has_value())) return;
-        std::vector<trivial_id_t> const at_the_stamp = ascending_through(*adopted);
+        auto [adopted, status] = store.transaction(pinned);
+        if (!expect_equal(status, success_k)) return;
+        std::vector<trivial_id_t> const at_the_stamp = ascending_through(adopted);
         expect_equal(at_the_stamp.back(), largest_k, "the reader's stamp still reads the largest key");
         check_descents_reverse(pinned, at_the_stamp, bounds);
     }
@@ -3601,11 +3607,11 @@ static void test_descending_page_records_what_it_handed_over() {
           probe_t {stopped_k + 5, status_t::phantom_conflict_k}, probe_t {upper_k, status_t::read_conflict_k}}) {
         store_type_ store;
         for (trivial_id_t index = 0; index != keys_k; ++index) commit_write(store, index * spacing_k, int(index));
-        auto paging = store.transaction();
-        if (!expect_true(paging.has_value())) return;
+        auto [paging, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
         std::size_t handed = 0;
         trivial_id_t last = 0;
-        expect_equal(paging->range(
+        expect_equal(paging.range(
                          trivial_key_t {upper_k}, unbounded,
                          [&](member_t const &member) noexcept {
                              last = member.key.unique_id;
@@ -3615,8 +3621,8 @@ static void test_descending_page_records_what_it_handed_over() {
                      success_k);
         expect_equal(last, stopped_k, "the page stops where its callback says");
         commit_write(store, probe.written, -1);
-        expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
-        expect_equal(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
+        expect_equal(paging.upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
+        expect_equal(stage_and_commit(paging), validated_k ? probe.refusal : success_k,
                      "only a commit inside the page, its bound included, refuses it from serializable up");
     }
 
@@ -3626,11 +3632,11 @@ static void test_descending_page_records_what_it_handed_over() {
          {probe_t {topmost_stop_k - 5, success_k}, probe_t {keys_k * spacing_k + 5, status_t::phantom_conflict_k}}) {
         store_type_ store;
         for (trivial_id_t index = 0; index != keys_k; ++index) commit_write(store, index * spacing_k, int(index));
-        auto paging = store.transaction();
-        if (!expect_true(paging.has_value())) return;
+        auto [paging, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
         std::size_t handed = 0;
         trivial_id_t last = 0;
-        expect_equal(paging->range(
+        expect_equal(paging.range(
                          unbounded, unbounded,
                          [&](member_t const &member) noexcept {
                              last = member.key.unique_id;
@@ -3640,8 +3646,8 @@ static void test_descending_page_records_what_it_handed_over() {
                      success_k);
         expect_equal(last, topmost_stop_k, "a page from the top stops where its callback says");
         commit_write(store, probe.written, -1);
-        expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
-        expect_equal(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
+        expect_equal(paging.upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
+        expect_equal(stage_and_commit(paging), validated_k ? probe.refusal : success_k,
                      "a commit above a page from the top is a phantom from serializable up");
     }
 
@@ -3651,17 +3657,17 @@ static void test_descending_page_records_what_it_handed_over() {
     for (probe_t const probe : {probe_t {until_k - 5, success_k}, probe_t {until_k, status_t::phantom_conflict_k}}) {
         store_type_ store;
         for (trivial_id_t index = 0; index != keys_k; ++index) commit_write(store, index * spacing_k, int(index));
-        auto paging = store.transaction();
-        if (!expect_true(paging.has_value())) return;
+        auto [paging, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
         std::size_t handed = 0;
-        expect_equal(paging->range(
+        expect_equal(paging.range(
                          trivial_key_t {upper_k}, trivial_key_t {until_k}, [&](member_t const &) noexcept { ++handed; },
                          descending),
                      success_k);
         expect_equal(handed, std::size_t(page_k), "the window ( until, from ] holds the page");
         commit_write(store, probe.written, -1);
-        expect_equal(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
-        expect_equal(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
+        expect_equal(paging.upsert(trivial_id_to_member<member_t>(next_outside++, 1)), success_k);
+        expect_equal(stage_and_commit(paging), validated_k ? probe.refusal : success_k,
                      "a walk that ran out depends on its lower bound and nothing below it");
     }
 }
@@ -3689,14 +3695,15 @@ static void test_sorted_staging_equals_element_staging() {
     commit_write(sorted_store, 5, 1);
     commit_write(element_store, 5, 1);
 
-    auto sorted = sorted_store.transaction();
-    auto element = element_store.transaction();
-    if (!expect_true(sorted.has_value() && element.has_value())) return;
-    expect_equal(sorted->upsert(members.begin(), members.end(), assume_sorted), success_k);
-    expect_equal(element->upsert(members.begin(), members.end()), success_k);
-    expect_equal(sorted->changes_count(), element->changes_count());
-    expect_equal(mapped_or_absent(*sorted, 5), 50);
-    for (auto *transaction : {&*sorted, &*element}) {
+    auto [sorted, sorted_status] = sorted_store.transaction();
+    if (!expect_equal(sorted_status, success_k)) return;
+    auto [element, element_status] = element_store.transaction();
+    if (!expect_equal(element_status, success_k)) return;
+    expect_equal(sorted.upsert(members.begin(), members.end(), assume_sorted), success_k);
+    expect_equal(element.upsert(members.begin(), members.end()), success_k);
+    expect_equal(sorted.changes_count(), element.changes_count());
+    expect_equal(mapped_or_absent(sorted, 5), 50);
+    for (auto *transaction : {&sorted, &element}) {
         expect_equal(transaction->stage(), success_k);
         expect_equal(transaction->commit(), success_k);
     }
@@ -3711,13 +3718,13 @@ static void test_sorted_staging_compares_linearly() {
     std::size_t const size = 4096;
     std::vector<member_t> const members = ascending_members<member_t>(0, size);
     snapshot_ranked_map_t store;
-    auto transaction = store.transaction();
-    if (!expect_true(transaction.has_value())) return;
+    auto [transaction, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
     counting_call_tally_t::reset();
-    expect_equal(transaction->upsert(members.begin(), members.end(), assume_sorted), success_k);
+    expect_equal(transaction.upsert(members.begin(), members.end(), assume_sorted), success_k);
     // The ascent check compares each neighbouring pair, and the build itself compares nothing.
     expect_true(counting_call_tally_t::comparisons_count() <= 2 * size);
-    expect_equal(transaction->changes_count(), size);
+    expect_equal(transaction.changes_count(), size);
 }
 
 /** Tests that partitions staged whole, one sorted bucket each, publish what element staging does */
@@ -3729,13 +3736,13 @@ static void test_sorted_partitions_equal_element_staging() {
     std::vector<std::vector<member_t>> buckets(store_type_::partitions_k);
     for (member_t const &member : members) buckets[sorted_store.partition_of(member)].push_back(member);
 
-    auto sorted = sorted_store.transaction();
-    if (!expect_true(sorted.has_value())) return;
+    auto [sorted, status] = sorted_store.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (std::size_t index = 0; index != buckets.size(); ++index)
-        expect_equal(sorted->upsert_partition(index, buckets[index].begin(), buckets[index].end(), assume_sorted),
+        expect_equal(sorted.upsert_partition(index, buckets[index].begin(), buckets[index].end(), assume_sorted),
                      success_k);
-    expect_equal(sorted->stage(), success_k);
-    expect_equal(sorted->commit(), success_k);
+    expect_equal(sorted.stage(), success_k);
+    expect_equal(sorted.commit(), success_k);
     expect_equal(element_store.upsert(members.begin(), members.end()), success_k);
     for (trivial_id_t identifier = 0; identifier != 256; ++identifier)
         expect_equal(mapped_or_absent(sorted_store, identifier), mapped_or_absent(element_store, identifier));
@@ -3751,11 +3758,11 @@ static void test_sorted_staging_refuses_an_unsorted_range() {
     repeated.push_back(repeated.back());
 
     store_type_ store;
-    auto transaction = store.transaction();
-    if (!expect_true(transaction.has_value())) return;
+    auto [transaction, status] = store.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (std::vector<member_t> const *refused : {&descending, &repeated}) {
-        expect_equal(transaction->upsert(refused->begin(), refused->end(), assume_sorted), invalid_argument_k);
-        expect_true(!transaction->has_changes());
+        expect_equal(transaction.upsert(refused->begin(), refused->end(), assume_sorted), invalid_argument_k);
+        expect_true(!transaction.has_changes());
     }
 }
 

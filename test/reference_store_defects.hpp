@@ -17,11 +17,11 @@ namespace ashvardanian::smashtable::test {
 template <typename container_type_>
 void commit_erase_of(container_type_ &container, trivial_id_t identifier) {
     using member_t = typename container_type_::value_type;
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(identifier)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(identifier)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
 }
 
 /**
@@ -33,22 +33,21 @@ void commit_erase_of(container_type_ &container, trivial_id_t identifier) {
 template <typename container_type_>
 void check_committed_tombstones_are_reclaimable(std::size_t size = 32) {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
     for (std::size_t identifier = 0; identifier < size; ++identifier)
         expect_equal(container.insert(trivial_id_to_member<member_t>(identifier)), success_k);
     for (std::size_t identifier = 0; identifier < size; ++identifier) commit_erase_of(container, identifier);
 
     expect_equal(container.size(), 0u);
-    auto const reclaimed = container.vacuum();
-    if (!expect_true(reclaimed.has_value())) return;
-    expect_equal(*reclaimed, size);
+    auto const [reclaimed, reclaimed_status] = container.vacuum();
+    if (!expect_equal(reclaimed_status, success_k)) return;
+    expect_equal(reclaimed, size);
 
-    auto const swept_again = container.vacuum();
-    if (!expect_true(swept_again.has_value())) return;
-    expect_equal(*swept_again, 0u);
+    auto const [swept_again, swept_again_status] = container.vacuum();
+    if (!expect_equal(swept_again_status, success_k)) return;
+    expect_equal(swept_again, 0u);
     expect_equal(container.size(), 0u);
 }
 
@@ -56,31 +55,30 @@ void check_committed_tombstones_are_reclaimable(std::size_t size = 32) {
 template <typename container_type_>
 void check_vacuum_respects_its_window(std::size_t size = 32) {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
     for (std::size_t identifier = 0; identifier < size; ++identifier)
         expect_equal(container.insert(trivial_id_to_member<member_t>(identifier)), success_k);
     for (std::size_t identifier = 0; identifier < size; ++identifier) commit_erase_of(container, identifier);
 
     std::size_t const midpoint = size / 2;
-    auto const first_half = container.vacuum(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(midpoint));
-    if (!expect_true(first_half.has_value())) return;
-    expect_equal(*first_half, midpoint);
+    auto const [first_half, first_half_status] =
+        container.vacuum(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(midpoint));
+    if (!expect_equal(first_half_status, success_k)) return;
+    expect_equal(first_half, midpoint);
 
-    auto const rest = container.vacuum();
-    if (!expect_true(rest.has_value())) return;
-    expect_equal(*rest, size - midpoint);
+    auto const [rest, rest_status] = container.vacuum();
+    if (!expect_equal(rest_status, success_k)) return;
+    expect_equal(rest, size - midpoint);
 }
 
 /** Erasing a key whose tombstone is committed reports absence and reclaims the tombstone. */
 template <typename container_type_>
 void check_erase_reports_and_reclaims_tombstone() {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
     expect_equal(container.insert(trivial_id_to_member<member_t>(7)), success_k);
     commit_erase_of(container, 7);
@@ -92,9 +90,9 @@ void check_erase_reports_and_reclaims_tombstone() {
     expect_equal(status, status_t::key_not_found_k);
 
     // Nothing is left for a sweep to find, and an absent key erases the same way.
-    auto const reclaimed = container.vacuum();
-    if (!expect_true(reclaimed.has_value())) return;
-    expect_equal(*reclaimed, 0u);
+    auto const [reclaimed, reclaimed_status] = container.vacuum();
+    if (!expect_equal(reclaimed_status, success_k)) return;
+    expect_equal(reclaimed, 0u);
     expect_equal(container.erase(trivial_id_to_key<member_t>(9)), status_t::key_not_found_k);
 }
 
@@ -102,9 +100,8 @@ void check_erase_reports_and_reclaims_tombstone() {
 template <typename container_type_>
 void check_erase_range_skips_tombstones() {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, status] = container_type_::make();
+    if (!expect_equal(status, success_k)) return;
 
     expect_equal(container.insert(trivial_id_to_member<member_t>(1)), success_k);
     expect_equal(container.insert(trivial_id_to_member<member_t>(2)), success_k);
@@ -123,23 +120,22 @@ template <typename container_type_>
 void check_vacuum_leaves_staged_entries() {
     using member_t = typename container_type_::value_type;
 
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
     expect_equal(container.insert(trivial_id_to_member<member_t>(3)), success_k);
     commit_erase_of(container, 3);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3)), success_k);
-    expect_equal(transaction->stage(), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(3)), success_k);
+    expect_equal(transaction.stage(), success_k);
 
-    auto const reclaimed = container.vacuum();
-    if (!expect_true(reclaimed.has_value())) return;
-    expect_equal(*reclaimed, 1u);
+    auto const [reclaimed, reclaimed_status] = container.vacuum();
+    if (!expect_equal(reclaimed_status, success_k)) return;
+    expect_equal(reclaimed, 1u);
 
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.commit(), success_k);
     expect_equal(container.contains(trivial_id_to_key<member_t>(3)), true);
     expect_equal(container.size(), 1u);
 }
@@ -159,17 +155,16 @@ void check_vacuum_leaves_staged_entries() {
 template <typename container_type_>
 void check_staged_versions_survive_a_clear() {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(5)), success_k);
-    expect_equal(transaction->stage(), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(5)), success_k);
+    expect_equal(transaction.stage(), success_k);
 
     expect_equal(container.clear(), status_t::operation_not_permitted_k);
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.commit(), success_k);
     expect_equal(container.size(), 1u);
     expect_equal(container.clear(), success_k);
 }
@@ -178,19 +173,18 @@ void check_staged_versions_survive_a_clear() {
 template <typename container_type_>
 void check_commit_reports_success_when_published(std::size_t size = 8) {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
     for (std::size_t identifier = 0; identifier < size; ++identifier)
-        expect_equal(transaction->upsert(trivial_id_to_member<member_t>(identifier)), success_k);
+        expect_equal(transaction.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
     // Touching one key twice lists it twice, and the second pass must not read as a loss.
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(0)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), status_t::success_k);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(0)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), status_t::success_k);
     expect_equal(container.size(), size);
 }
 
@@ -209,26 +203,25 @@ void check_commit_reports_success_when_published(std::size_t size = 8) {
 template <typename container_type_>
 void check_staged_entries_keep_one_generation() {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_true(transaction->generation() != absent_generation_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_true(transaction.generation() != absent_generation_k);
 
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(1)), success_k);
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(transaction->changes_count(), 1u);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(transaction.changes_count(), 1u);
 
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->rollback(), success_k);
-    expect_true(transaction->generation() != absent_generation_k);
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(2)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), status_t::success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.rollback(), success_k);
+    expect_true(transaction.generation() != absent_generation_k);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(2)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), status_t::success_k);
     expect_equal(container.size(), 2u);
 }
 
@@ -242,28 +235,27 @@ void check_staged_entries_keep_one_generation() {
 template <typename container_type_>
 void check_clear_keeps_generations_running() {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
-    auto early = container.transaction();
-    if (!expect_true(early.has_value())) return;
+    auto [early, early_status] = container.transaction();
+    if (!expect_equal(early_status, success_k)) return;
     expect_equal(container.clear(), success_k);
-    auto late = container.transaction();
-    if (!expect_true(late.has_value())) return;
-    expect_true(early->generation() != late->generation());
+    auto [late, late_status] = container.transaction();
+    if (!expect_equal(late_status, success_k)) return;
+    expect_true(early.generation() != late.generation());
 
-    expect_equal(late->upsert(trivial_id_to_member<member_t>(5, 500)), success_k);
-    expect_equal(late->stage(), success_k);
-    expect_equal(late->commit(), status_t::success_k);
+    expect_equal(late.upsert(trivial_id_to_member<member_t>(5, 500)), success_k);
+    expect_equal(late.stage(), success_k);
+    expect_equal(late.commit(), status_t::success_k);
 
-    expect_equal(early->upsert(trivial_id_to_member<member_t>(5, 100)), success_k);
-    expect_equal(early->stage(), success_k);
-    expect_equal(early->commit(), status_t::success_k);
+    expect_equal(early.upsert(trivial_id_to_member<member_t>(5, 100)), success_k);
+    expect_equal(early.stage(), success_k);
+    expect_equal(early.commit(), status_t::success_k);
 
-    auto const stored = container.find_copy(trivial_id_to_key<member_t>(5));
-    if (!expect_true(stored.has_value())) return;
-    expect_equal(stored->mapped, 100);
+    auto [stored, stored_status] = container.find_copy(trivial_id_to_key<member_t>(5));
+    if (!expect_equal(stored_status, success_k)) return;
+    expect_equal(stored.mapped, 100);
 }
 
 #pragma endregion Generation Stamping
@@ -274,27 +266,25 @@ void check_clear_keeps_generations_running() {
 template <typename container_type_>
 void check_insert_refuses_with_key_already_exists() {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
     expect_equal(container.insert(trivial_id_to_member<member_t>(1)), success_k);
     expect_equal(container.insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
-    expect_equal(transaction->insert(trivial_id_to_member<member_t>(2)), success_k);
-    expect_equal(transaction->insert(trivial_id_to_member<member_t>(2)), status_t::key_already_exists_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
+    expect_equal(transaction.insert(trivial_id_to_member<member_t>(2)), success_k);
+    expect_equal(transaction.insert(trivial_id_to_member<member_t>(2)), status_t::key_already_exists_k);
 }
 
 /** Every insert path hands its callbacks the element, so one lambda fits every backend. */
 template <typename container_type_>
 void check_insert_reports_the_stored_element() {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
     auto expected_key = trivial_id_to_key<member_t>(3);
     std::size_t stored_reports = 0;
@@ -324,20 +314,20 @@ void check_insert_reports_the_stored_element() {
     expect_equal(container.insert_or_assign(trivial_id_to_member<member_t>(5), note_stored, note_existing), success_k);
     expect_equal(existing_reports, 3u);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
     expected_key = trivial_id_to_key<member_t>(6);
-    expect_equal(transaction->insert(trivial_id_to_member<member_t>(6), note_stored, note_existing), success_k);
+    expect_equal(transaction.insert(trivial_id_to_member<member_t>(6), note_stored, note_existing), success_k);
     expect_equal(stored_reports, 4u);
-    expect_equal(transaction->insert(trivial_id_to_member<member_t>(6), note_stored, note_existing),
+    expect_equal(transaction.insert(trivial_id_to_member<member_t>(6), note_stored, note_existing),
                  status_t::key_already_exists_k);
     expect_equal(existing_reports, 4u);
 
     expected_key = trivial_id_to_key<member_t>(7);
-    expect_equal(transaction->insert_if_missing(trivial_id_to_member<member_t>(7), note_stored, note_existing),
+    expect_equal(transaction.insert_if_missing(trivial_id_to_member<member_t>(7), note_stored, note_existing),
                  success_k);
     expect_equal(stored_reports, 5u);
-    expect_equal(transaction->insert_if_missing(trivial_id_to_member<member_t>(7), note_stored, note_existing),
+    expect_equal(transaction.insert_if_missing(trivial_id_to_member<member_t>(7), note_stored, note_existing),
                  success_k);
     expect_equal(existing_reports, 5u);
 }
@@ -346,22 +336,21 @@ void check_insert_reports_the_stored_element() {
 template <typename container_type_>
 void check_insert_after_local_erase_succeeds() {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
     expect_equal(container.insert(trivial_id_to_member<member_t>(7, 700)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(7)), success_k);
-    expect_equal(transaction->insert(trivial_id_to_member<member_t>(7, 777)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), status_t::success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(7)), success_k);
+    expect_equal(transaction.insert(trivial_id_to_member<member_t>(7, 777)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), status_t::success_k);
 
-    auto const stored = container.find_copy(trivial_id_to_key<member_t>(7));
-    if (!expect_true(stored.has_value())) return;
-    expect_equal(stored->mapped, 777);
+    auto [stored, stored_status] = container.find_copy(trivial_id_to_key<member_t>(7));
+    if (!expect_equal(stored_status, success_k)) return;
+    expect_equal(stored.mapped, 777);
 }
 
 #pragma endregion Insert Reporting
@@ -372,16 +361,15 @@ void check_insert_after_local_erase_succeeds() {
 template <typename container_type_>
 void check_stage_refuses_when_already_staged() {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->stage(), status_t::operation_not_permitted_k);
-    expect_equal(transaction->commit(), status_t::success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.stage(), status_t::operation_not_permitted_k);
+    expect_equal(transaction.commit(), status_t::success_k);
     expect_equal(container.size(), 1u);
 }
 
@@ -395,17 +383,16 @@ void check_stage_refuses_when_already_staged() {
 template <typename container_type_>
 void check_rollback_recovers_what_it_staged() {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(5)), success_k);
-    expect_equal(transaction->stage(), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(5)), success_k);
+    expect_equal(transaction.stage(), success_k);
 
     expect_equal(container.clear(), status_t::operation_not_permitted_k);
-    expect_equal(transaction->rollback(), success_k);
+    expect_equal(transaction.rollback(), success_k);
     expect_equal(container.size(), 0u);
     expect_equal(container.clear(), success_k);
 }
@@ -423,24 +410,23 @@ void check_rollback_recovers_what_it_staged() {
 template <typename container_type_>
 void check_transaction_bounds_skip_locally_erased() {
     using member_t = typename container_type_::value_type;
-    auto maybe_container = container_type_::make();
-    if (!expect_true(maybe_container.has_value())) return;
-    auto &container = *maybe_container;
+    auto [container, container_status] = container_type_::make();
+    if (!expect_equal(container_status, success_k)) return;
 
     expect_equal(container.insert(trivial_id_to_member<member_t>(5, 50)), success_k);
     expect_equal(container.insert(trivial_id_to_member<member_t>(9, 90)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(5)), success_k);
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(9, 99)), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(5)), success_k);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(9, 99)), success_k);
 
     std::size_t found = 0;
     auto const ninth = trivial_id_to_key<member_t>(9);
     auto note = [&](member_t const &element) noexcept { found += mapping_key_or_itself(element) == ninth; };
-    expect_equal(transaction->lower_bound(trivial_id_to_key<member_t>(0), note, []() noexcept {}), success_k);
+    expect_equal(transaction.lower_bound(trivial_id_to_key<member_t>(0), note, []() noexcept {}), success_k);
     expect_equal(found, 1u);
-    expect_equal(transaction->upper_bound(trivial_id_to_key<member_t>(0), note, []() noexcept {}), success_k);
+    expect_equal(transaction.upper_bound(trivial_id_to_key<member_t>(0), note, []() noexcept {}), success_k);
     expect_equal(found, 2u);
 }
 

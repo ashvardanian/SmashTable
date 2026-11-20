@@ -33,28 +33,30 @@ void check_rolled_back_stage_does_not_abort_a_peer() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
 
     // The writer stages a change it will never publish.
-    auto writer = container.transaction();
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(1, 999)), success_k);
-    expect_equal(writer->stage(), success_k);
+    auto [writer, writer_status] = container.transaction();
+    if (!expect_equal(writer_status, success_k)) return;
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(1, 999)), success_k);
+    expect_equal(writer.stage(), success_k);
 
     // The peer reads the key, records what it saw, and stages its own change on top of that read.
-    auto peer = container.transaction();
+    auto [peer, peer_status] = container.transaction();
+    if (!expect_equal(peer_status, success_k)) return;
     int observed = 0;
-    expect_equal(peer->find_and_watch(
+    expect_equal(peer.find_and_watch(
                      trivial_id_to_key<member_t>(1),
                      [&](member_t const &member) noexcept { observed = int(member.mapped); }, []() noexcept {}),
                  success_k);
     expect_equal(observed, 100);
-    expect_equal(peer->upsert(trivial_id_to_member<member_t>(1, 200)), success_k);
-    expect_true(succeeded(peer->stage()), "a write nobody has committed must not refuse a reader");
+    expect_equal(peer.upsert(trivial_id_to_member<member_t>(1, 200)), success_k);
+    expect_true(succeeded(peer.stage()), "a write nobody has committed must not refuse a reader");
 
     // The writer gives up, so the peer's read was never invalidated by anything.
-    expect_equal(writer->rollback(), success_k);
-    expect_true(succeeded(peer->commit()), "a rolled-back write must not refuse the commit either");
+    expect_equal(writer.rollback(), success_k);
+    expect_true(succeeded(peer.commit()), "a rolled-back write must not refuse the commit either");
 
-    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
-    if (!expect_true(maybe_final.has_value())) return;
-    expect_equal(int(maybe_final->mapped), 200);
+    auto [committed, committed_status] = container.find_copy(trivial_id_to_key<member_t>(1));
+    if (!expect_equal(committed_status, success_k)) return;
+    expect_equal(int(committed.mapped), 200);
 }
 
 /**
@@ -76,14 +78,16 @@ void check_lost_update_is_refused() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
 
-    auto first = container.transaction();
-    auto second = container.transaction();
+    auto [first, first_status] = container.transaction();
+    auto [second, second_status] = container.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    if (!expect_equal(second_status, success_k)) return;
 
     // Whether a watch fired is a separate fact from what it read, so two callbacks that never ran
     // cannot agree their way past this by leaving both seeds untouched.
     int read_by_first = 0, read_by_second = 0;
     std::size_t watches_fired = 0;
-    expect_equal(first->find_and_watch(
+    expect_equal(first.find_and_watch(
                      trivial_id_to_key<member_t>(1),
                      [&](member_t const &member) noexcept {
                          read_by_first = int(member.mapped);
@@ -91,7 +95,7 @@ void check_lost_update_is_refused() {
                      },
                      []() noexcept {}),
                  success_k);
-    expect_equal(second->find_and_watch(
+    expect_equal(second.find_and_watch(
                      trivial_id_to_key<member_t>(1),
                      [&](member_t const &member) noexcept {
                          read_by_second = int(member.mapped);
@@ -103,20 +107,20 @@ void check_lost_update_is_refused() {
     expect_equal(read_by_first, read_by_second);
 
     // Each stages the increment it computed. Neither is committed, so neither refuses the other.
-    expect_equal(first->upsert(trivial_id_to_member<member_t>(1, read_by_first + 1)), success_k);
-    expect_equal(second->upsert(trivial_id_to_member<member_t>(1, read_by_second + 1)), success_k);
-    expect_equal(first->stage(), success_k);
-    expect_equal(second->stage(), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, read_by_first + 1)), success_k);
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(1, read_by_second + 1)), success_k);
+    expect_equal(first.stage(), success_k);
+    expect_equal(second.stage(), success_k);
 
     // The first to publish wins the key, and the second is turned away rather than losing the
     // increment underneath it.
-    expect_equal(first->commit(), success_k);
-    auto const refused = second->commit();
+    expect_equal(first.commit(), success_k);
+    auto const refused = second.commit();
     expect_equal(refused, status_t::read_conflict_k);
 
-    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
-    if (!expect_true(maybe_final.has_value())) return;
-    expect_equal(int(maybe_final->mapped), 101);
+    auto [committed, committed_status] = container.find_copy(trivial_id_to_key<member_t>(1));
+    if (!expect_equal(committed_status, success_k)) return;
+    expect_equal(int(committed.mapped), 101);
 }
 
 /** A read recorded through @c find_and_watch on a key that is not there is still a read. Whoever
@@ -133,10 +137,11 @@ void check_find_and_watch_records_absence() {
 
     container_t container;
 
-    auto reader = container.transaction();
+    auto [reader, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
     bool saw_absence = false;
     expect_equal(
-        reader->find_and_watch(
+        reader.find_and_watch(
             trivial_id_to_key<member_t>(7), [](member_t const &) noexcept {}, [&]() noexcept { saw_absence = true; }),
         success_k);
     expect_true(saw_absence, "the key must be reported missing");
@@ -144,8 +149,8 @@ void check_find_and_watch_records_absence() {
     // Somebody else creates the key the reader was promised was absent.
     expect_equal(container.upsert(trivial_id_to_member<member_t>(7, 42)), success_k);
 
-    expect_equal(reader->upsert(trivial_id_to_member<member_t>(7, 43)), success_k);
-    auto const refused = reader->stage();
+    expect_equal(reader.upsert(trivial_id_to_member<member_t>(7, 43)), success_k);
+    auto const refused = reader.stage();
     expect_equal(refused, status_t::read_conflict_k);
 }
 

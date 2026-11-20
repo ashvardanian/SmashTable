@@ -351,10 +351,10 @@ static void test_copy_and_swap() {
     basic_vector<fallible_element_t> vector;
     for (int value = 0; value < 5; ++value) expect_equal(vector.emplace_back(value), success_k);
 
-    auto copied = vector.copy();
-    if (!expect_true(static_cast<bool>(copied))) return;
-    expect_equal(copied->size(), 5u);
-    for (std::size_t index = 0; index < 5; ++index) expect_equal((*copied)[index].value, vector[index].value);
+    auto [copied, status] = vector.copy();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(copied.size(), 5u);
+    for (std::size_t index = 0; index < 5; ++index) expect_equal(copied[index].value, vector[index].value);
 
     basic_vector<fallible_element_t> empty;
     expect_equal(empty.swap(vector), success_k);
@@ -365,9 +365,7 @@ static void test_copy_and_swap() {
     basic_vector<budgeted_element_t> budgeted;
     for (int value = 0; value < 4; ++value) expect_equal(budgeted.push_back(budgeted_element_t {}), success_k);
     budgeted_element_t::copies_left = 2;
-    auto refused = budgeted.copy();
-    expect_true(!refused);
-    expect_equal(refused.status(), status_t::out_of_memory_heap_k);
+    expect_equal(budgeted.copy().status(), status_t::out_of_memory_heap_k);
     expect_equal(budgeted.size(), 4u);
 }
 
@@ -541,9 +539,9 @@ static void test_erase_if_compacts_in_one_pass() {
 
 /** Moves transfer ownership and leave the source empty rather than aliasing its storage. */
 static void test_move_semantics() {
-    auto made = basic_vector<int>::make(16);
-    if (!expect_true(static_cast<bool>(made))) return;
-    basic_vector<int> vector = std::move(*made);
+    auto [built, status] = basic_vector<int>::make(16);
+    if (!expect_equal(status, success_k)) return;
+    basic_vector<int> vector = std::move(built);
     // A first reserve grants exactly what it was asked for once that clears the four-slot seed.
     expect_equal(vector.capacity(), 16u);
     for (int value = 0; value < 16; ++value) expect_equal(vector.push_back(assume_reserved, int {value}), success_k);

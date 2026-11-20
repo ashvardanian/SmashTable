@@ -64,23 +64,23 @@ static expected<sequence_type_> make_chunked(std::span<std::uint64_t const> valu
 
 /** An empty sequence stores nothing, and single values read back at both ends of the range. */
 void test_edges() {
-    auto empty = sequence_t::make(std::span<std::uint64_t const> {});
-    if (!expect_equal(empty.status(), success_k)) return;
-    expect_true(empty->empty());
-    expect_equal(empty->size_bytes(), 0u);
+    auto [empty, empty_status] = sequence_t::make(std::span<std::uint64_t const> {});
+    if (!expect_equal(empty_status, success_k)) return;
+    expect_true(empty.empty());
+    expect_equal(empty.size_bytes(), 0u);
 
     for (std::uint64_t const value :
          {std::uint64_t(0), std::uint64_t(7), (std::numeric_limits<std::uint64_t>::max)()}) {
         std::uint64_t const values[1] = {value};
-        auto single = sequence_t::make(std::span<std::uint64_t const>(values));
-        if (!expect_equal(single.status(), success_k)) return;
-        expect_equal(single->select(0), value);
+        auto [single, single_status] = sequence_t::make(std::span<std::uint64_t const>(values));
+        if (!expect_equal(single_status, success_k)) return;
+        expect_equal(single.select(0), value);
     }
 
     std::vector<std::uint64_t> const zeros(1000, 0);
-    auto flat = sequence_t::make(std::span<std::uint64_t const>(zeros));
-    if (!expect_equal(flat.status(), success_k)) return;
-    for (std::size_t position = 0; position != zeros.size(); ++position) expect_equal(flat->select(position), 0u);
+    auto [flat, flat_status] = sequence_t::make(std::span<std::uint64_t const>(zeros));
+    if (!expect_equal(flat_status, success_k)) return;
+    for (std::size_t position = 0; position != zeros.size(); ++position) expect_equal(flat.select(position), 0u);
 }
 
 /** Every value of every gap shape reads back at its position, whole or pulled in chunks, across
@@ -93,15 +93,15 @@ void check_kit(kit_type_) {
                                     std::size_t(4099), std::size_t(1) << 18})
         for (gaps_t const gaps : {gaps_t::dense_k, gaps_t::sparse_k, gaps_t::runs_k, gaps_t::jumps_k}) {
             std::vector<std::uint64_t> const values = make_values(generator, count, gaps);
-            auto whole = kit_sequence_t::make(std::span<std::uint64_t const>(values));
-            auto chunked = make_chunked<kit_sequence_t>(values, 1 + generator() % 1000);
-            if (!expect_equal(whole.status(), success_k)) return;
-            if (!expect_equal(chunked.status(), success_k)) return;
-            expect_equal(whole->size(), count);
-            expect_equal(chunked->size_bytes(), whole->size_bytes());
+            auto [whole, whole_status] = kit_sequence_t::make(std::span<std::uint64_t const>(values));
+            auto [chunked, chunked_status] = make_chunked<kit_sequence_t>(values, 1 + generator() % 1000);
+            if (!expect_equal(whole_status, success_k)) return;
+            if (!expect_equal(chunked_status, success_k)) return;
+            expect_equal(whole.size(), count);
+            expect_equal(chunked.size_bytes(), whole.size_bytes());
             for (std::size_t position = 0; position != count; ++position) {
-                expect_equal(whole->select(position), values[position]);
-                expect_equal(chunked->select(position), values[position]);
+                expect_equal(whole.select(position), values[position]);
+                expect_equal(chunked.select(position), values[position]);
             }
         }
 
@@ -128,10 +128,10 @@ void test_narrow_values() {
     std::vector<std::uint32_t> values(5000);
     std::uint32_t running = 0;
     for (std::uint32_t &value : values) value = running += static_cast<std::uint32_t>(generator() % 300);
-    auto sequence = immutable_elias_fano<std::uint32_t>::make(std::span<std::uint32_t const>(values));
-    if (!expect_equal(sequence.status(), success_k)) return;
+    auto [sequence, status] = immutable_elias_fano<std::uint32_t>::make(std::span<std::uint32_t const>(values));
+    if (!expect_equal(status, success_k)) return;
     for (std::size_t position = 0; position != values.size(); ++position)
-        expect_equal(sequence->select(position), values[position]);
+        expect_equal(sequence.select(position), values[position]);
 }
 
 /** Decreasing values, values past the universe, a short fill, a failing fill and a refusing
@@ -163,12 +163,12 @@ void test_space_bound() {
     std::vector<std::uint64_t> values(count);
     std::uint64_t running = 0;
     for (std::uint64_t &value : values) value = running += 200 + generator() % 400;
-    auto sequence = sequence_t::make(std::span<std::uint64_t const>(values));
-    if (!expect_equal(sequence.status(), success_k)) return;
+    auto [sequence, status] = sequence_t::make(std::span<std::uint64_t const>(values));
+    if (!expect_equal(status, success_k)) return;
     std::size_t const low_bits = std::bit_width(values.back() / count) - 1;
     // Three words round the three arrays up, and seven pad the high parts for the kits' scans.
     std::size_t const bound_bits = count * (3 + low_bits) + count / 4 + (3 + 7) * 64;
-    expect_true(sequence->size_bytes() * 8 <= bound_bits);
+    expect_true(sequence.size_bytes() * 8 <= bound_bits);
 }
 
 using packed_t = immutable_packed_array<std::uint64_t>;
@@ -194,80 +194,80 @@ static void check_saved_view(array_type_ const &array, std::size_t offset) {
     using view_t = immutable_packed_array_view<typename array_type_::value_t>;
     std::vector<std::byte> bytes(offset + array.saved_bytes());
     expect_equal(array.save(std::span<std::byte>(bytes).subspan(offset)), success_k);
-    auto view = view_t::make(std::span<std::byte const>(bytes).subspan(offset));
-    if (!expect_equal(view.status(), success_k)) return;
-    expect_equal(view->size(), array.size());
-    expect_equal(view->bits(), array.bits());
-    expect_equal(view->base(), array.base());
-    expect_equal(view->saved_bytes(), array.saved_bytes());
-    for (std::size_t position = 0; position != array.size(); ++position)
-        expect_equal((*view)[position], array[position]);
+    auto const [view, status] = view_t::make(std::span<std::byte const>(bytes).subspan(offset));
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(view.size(), array.size());
+    expect_equal(view.bits(), array.bits());
+    expect_equal(view.base(), array.base());
+    expect_equal(view.saved_bytes(), array.saved_bytes());
+    for (std::size_t position = 0; position != array.size(); ++position) expect_equal(view[position], array[position]);
 }
 
 /** Empty and one-element arrays, a zero width that stores no words, the full 64 bits, and fields
  *  straddling a word boundary all read back. */
 void test_packed_array_edges() {
-    auto empty = packed_t::make(std::span<std::uint64_t const> {});
-    if (!expect_equal(empty.status(), success_k)) return;
-    expect_true(empty->empty());
-    expect_equal(empty->bits(), 0u);
-    expect_equal(empty->size_bytes(), 0u);
-    check_saved_view(*empty, 0);
+    auto [empty, empty_status] = packed_t::make(std::span<std::uint64_t const> {});
+    if (!expect_equal(empty_status, success_k)) return;
+    expect_true(empty.empty());
+    expect_equal(empty.bits(), 0u);
+    expect_equal(empty.size_bytes(), 0u);
+    check_saved_view(empty, 0);
     auto never_pulled = [](std::size_t) noexcept { return expected<std::span<std::uint64_t const>>(input_output_k); };
-    auto empty_pulled = packed_t::make(0, 5, 9, never_pulled);
-    if (!expect_equal(empty_pulled.status(), success_k)) return;
-    expect_equal(empty_pulled->bits(), 0u);
-    expect_equal(empty_pulled->base(), 0u);
+    auto [empty_pulled, empty_pulled_status] = packed_t::make(0, 5, 9, never_pulled);
+    if (!expect_equal(empty_pulled_status, success_k)) return;
+    expect_equal(empty_pulled.bits(), 0u);
+    expect_equal(empty_pulled.base(), 0u);
 
     std::uint64_t const greatest = (std::numeric_limits<std::uint64_t>::max)();
     for (std::uint64_t const value : {std::uint64_t(0), std::uint64_t(7), greatest}) {
         std::uint64_t const values[1] = {value};
-        auto single = packed_t::make(std::span<std::uint64_t const>(values));
-        if (!expect_equal(single.status(), success_k)) return;
-        expect_equal(single->bits(), 0u);
-        expect_equal(single->size_bytes(), 0u);
-        expect_equal((*single)[0], value);
-        auto widest = packed_t::make(1, 0, greatest, pull_in_chunks(std::span<std::uint64_t const>(values), 1));
-        if (!expect_equal(widest.status(), success_k)) return;
-        expect_equal(widest->bits(), 64u);
-        expect_equal(widest->size_bytes(), sizeof(std::uint64_t));
-        expect_equal((*widest)[0], value);
+        auto [single, single_status] = packed_t::make(std::span<std::uint64_t const>(values));
+        if (!expect_equal(single_status, success_k)) return;
+        expect_equal(single.bits(), 0u);
+        expect_equal(single.size_bytes(), 0u);
+        expect_equal(single[0], value);
+        auto [widest, widest_status] =
+            packed_t::make(1, 0, greatest, pull_in_chunks(std::span<std::uint64_t const>(values), 1));
+        if (!expect_equal(widest_status, success_k)) return;
+        expect_equal(widest.bits(), 64u);
+        expect_equal(widest.size_bytes(), sizeof(std::uint64_t));
+        expect_equal(widest[0], value);
     }
 
     std::vector<std::uint64_t> const flat(1000, 42);
-    auto constant = packed_t::make(std::span<std::uint64_t const>(flat));
-    if (!expect_equal(constant.status(), success_k)) return;
-    expect_equal(constant->size_bytes(), 0u, "a zero width stores no words");
-    expect_equal(constant->saved_bytes(), sizeof(packed_array_header_t));
-    for (std::size_t position = 0; position != flat.size(); ++position) expect_equal((*constant)[position], 42u);
-    check_saved_view(*constant, 3);
-    auto const filled = packed_t::make(flat.size(), std::uint64_t {42});
-    if (!expect_equal(filled.status(), success_k)) return;
-    expect_equal(filled->size(), flat.size());
-    expect_equal(filled->size_bytes(), 0u, "copies of one value store no words, with no pass over them");
-    expect_equal((*filled)[flat.size() - 1], 42u);
+    auto [constant, constant_status] = packed_t::make(std::span<std::uint64_t const>(flat));
+    if (!expect_equal(constant_status, success_k)) return;
+    expect_equal(constant.size_bytes(), 0u, "a zero width stores no words");
+    expect_equal(constant.saved_bytes(), sizeof(packed_array_header_t));
+    for (std::size_t position = 0; position != flat.size(); ++position) expect_equal(constant[position], 42u);
+    check_saved_view(constant, 3);
+    auto [filled, filled_status] = packed_t::make(flat.size(), std::uint64_t {42});
+    if (!expect_equal(filled_status, success_k)) return;
+    expect_equal(filled.size(), flat.size());
+    expect_equal(filled.size_bytes(), 0u, "copies of one value store no words, with no pass over them");
+    expect_equal(filled[flat.size() - 1], 42u);
 
     // Both ends of the 64-bit range, alternating, so every field is all ones or all zeros.
     std::vector<std::uint64_t> extremes(129);
     for (std::size_t position = 0; position != extremes.size(); ++position)
         extremes[position] = position % 2 ? greatest - position / 2 : position / 2;
-    auto full = packed_t::make(std::span<std::uint64_t const>(extremes));
-    if (!expect_equal(full.status(), success_k)) return;
-    expect_equal(full->bits(), 64u);
+    auto [full, full_status] = packed_t::make(std::span<std::uint64_t const>(extremes));
+    if (!expect_equal(full_status, success_k)) return;
+    expect_equal(full.bits(), 64u);
     for (std::size_t position = 0; position != extremes.size(); ++position)
-        expect_equal((*full)[position], extremes[position]);
+        expect_equal(full[position], extremes[position]);
 
     // Widths that do not divide 64 put fields across word boundaries, all ones to catch a lost bit.
     for (unsigned const bits : {3u, 7u, 13u, 33u, 63u}) {
         std::uint64_t const top = (std::uint64_t {1} << bits) - 1;
         std::vector<std::uint64_t> values(130);
         for (std::size_t position = 0; position != values.size(); ++position) values[position] = position % 3 ? top : 0;
-        auto straddling = packed_t::make(std::span<std::uint64_t const>(values));
-        if (!expect_equal(straddling.status(), success_k)) return;
-        expect_equal(straddling->bits(), bits);
-        expect_equal(straddling->size_bytes(), packed_bytes(values.size(), bits));
+        auto [straddling, straddling_status] = packed_t::make(std::span<std::uint64_t const>(values));
+        if (!expect_equal(straddling_status, success_k)) return;
+        expect_equal(straddling.bits(), bits);
+        expect_equal(straddling.size_bytes(), packed_bytes(values.size(), bits));
         for (std::size_t position = 0; position != values.size(); ++position)
-            expect_equal((*straddling)[position], values[position]);
+            expect_equal(straddling[position], values[position]);
     }
 }
 
@@ -290,22 +290,22 @@ void test_packed_array_random_widths() {
             values.front() = base;
             if (count > 1) values.back() = maximum;
 
-            auto chunked = packed_t::make(
+            auto [chunked, chunked_status] = packed_t::make(
                 count, base, maximum, pull_in_chunks(std::span<std::uint64_t const>(values), 1 + generator() % 100));
-            auto whole = packed_t::make(std::span<std::uint64_t const>(values));
-            if (!expect_equal(chunked.status(), success_k)) return;
-            if (!expect_equal(whole.status(), success_k)) return;
-            expect_equal(chunked->bits(), bits);
-            expect_equal(chunked->base(), base);
-            expect_equal(chunked->size_bytes(), packed_bytes(count, bits));
-            expect_equal(whole->base(), base);
+            auto [whole, whole_status] = packed_t::make(std::span<std::uint64_t const>(values));
+            if (!expect_equal(chunked_status, success_k)) return;
+            if (!expect_equal(whole_status, success_k)) return;
+            expect_equal(chunked.bits(), bits);
+            expect_equal(chunked.base(), base);
+            expect_equal(chunked.size_bytes(), packed_bytes(count, bits));
+            expect_equal(whole.base(), base);
             // One value is its own base and maximum, so held whole it packs at zero width.
-            expect_equal(whole->bits(), count > 1 ? bits : 0u);
+            expect_equal(whole.bits(), count > 1 ? bits : 0u);
             for (std::size_t position = 0; position != count; ++position) {
-                expect_equal((*chunked)[position], values[position]);
-                expect_equal((*whole)[position], values[position]);
+                expect_equal(chunked[position], values[position]);
+                expect_equal(whole[position], values[position]);
             }
-            check_saved_view(*chunked, generator() % sizeof(std::uint64_t));
+            check_saved_view(chunked, generator() % sizeof(std::uint64_t));
         }
 }
 
@@ -315,17 +315,17 @@ void test_packed_array_narrow_values() {
     split_mix_generator_t generator {case_stream_key()};
     std::vector<std::uint32_t> values(5000);
     for (std::uint32_t &value : values) value = 1000 + static_cast<std::uint32_t>(generator() % 300000);
-    auto array = immutable_packed_array<std::uint32_t>::make(std::span<std::uint32_t const>(values));
-    if (!expect_equal(array.status(), success_k)) return;
+    auto [array, array_status] = immutable_packed_array<std::uint32_t>::make(std::span<std::uint32_t const>(values));
+    if (!expect_equal(array_status, success_k)) return;
     for (std::size_t position = 0; position != values.size(); ++position)
-        expect_equal((*array)[position], values[position]);
-    check_saved_view(*array, 1);
+        expect_equal(array[position], values[position]);
+    check_saved_view(array, 1);
 
     std::uint64_t const wide[2] = {0, std::uint64_t {1} << 40};
-    auto saved = packed_t::make(std::span<std::uint64_t const>(wide));
-    if (!expect_equal(saved.status(), success_k)) return;
-    std::vector<std::byte> bytes(saved->saved_bytes());
-    expect_equal(saved->save(std::span<std::byte>(bytes)), success_k);
+    auto [saved, saved_status] = packed_t::make(std::span<std::uint64_t const>(wide));
+    if (!expect_equal(saved_status, success_k)) return;
+    std::vector<std::byte> bytes(saved.saved_bytes());
+    expect_equal(saved.save(std::span<std::byte>(bytes)), success_k);
     expect_equal(immutable_packed_array_view<std::uint32_t>::make(std::span<std::byte const>(bytes)).status(),
                  invalid_argument_k);
 }
@@ -347,11 +347,11 @@ void test_packed_array_refusals() {
     using refused_t = immutable_packed_array<std::uint64_t, refusing_allocator<std::uint64_t>>;
     expect_equal(refused_t::make(std::span<std::uint64_t const>(values)).status(), out_of_memory_heap_k);
 
-    auto array = packed_t::make(std::span<std::uint64_t const>(values));
-    if (!expect_equal(array.status(), success_k)) return;
-    std::vector<std::byte> bytes(array->saved_bytes());
-    expect_equal(array->save(std::span<std::byte>(bytes).first(bytes.size() - 1)), invalid_argument_k);
-    expect_equal(array->save(std::span<std::byte>(bytes)), success_k);
+    auto [array, status] = packed_t::make(std::span<std::uint64_t const>(values));
+    if (!expect_equal(status, success_k)) return;
+    std::vector<std::byte> bytes(array.saved_bytes());
+    expect_equal(array.save(std::span<std::byte>(bytes).first(bytes.size() - 1)), invalid_argument_k);
+    expect_equal(array.save(std::span<std::byte>(bytes)), success_k);
     using view_t = immutable_packed_array_view<std::uint64_t>;
     std::span<std::byte const> const saved(bytes);
     expect_equal(view_t::make(saved).status(), success_k);

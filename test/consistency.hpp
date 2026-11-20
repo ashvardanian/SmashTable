@@ -127,12 +127,12 @@ void check_empty_transaction_commit() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
 
     // Don't add anything, just commit
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
 
     expect_equal(container.size(), 0);
 }
@@ -154,19 +154,19 @@ void check_no_dirty_reads_multi_key() {
     }
 
     // T1 modifies all 5 keys but only stages (doesn't commit)
-    auto t1 = container.transaction();
-    if (!expect_true(t1.has_value())) return;
+    auto [first, first_status] = container.transaction();
+    if (!expect_equal(first_status, success_k)) return;
     for (std::size_t i = 1; i <= 5; ++i) {
         auto new_member = trivial_id_to_member<member_t>(i, i * 100);
-        expect_equal(t1->upsert(std::move(new_member)), success_k);
+        expect_equal(first.upsert(std::move(new_member)), success_k);
     }
-    expect_equal(t1->stage(), success_k);
+    expect_equal(first.stage(), success_k);
 
     // External reader should see original values (staged changes invisible)
     for (std::size_t i = 1; i <= 5; ++i) {
-        auto maybe_found = container.find_copy(trivial_id_to_key<member_t>(i));
-        if (!expect_true(maybe_found.has_value(), "key must exist before the transaction stages over it")) return;
-        expect_equal((maybe_found->mapped), (static_cast<decltype(maybe_found->mapped)>(i)),
+        auto [found, found_status] = container.find_copy(trivial_id_to_key<member_t>(i));
+        if (!expect_equal(found_status, success_k, "key must exist before the transaction stages over it")) return;
+        expect_equal((found.mapped), (static_cast<decltype(found.mapped)>(i)),
                      "a reader outside must see the original, not the staged value");
     }
 }
@@ -190,20 +190,20 @@ void check_new_transaction_sees_nothing_staged() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    auto t1 = container.transaction();
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(2)), success_k);
-    expect_equal(t1->stage(), success_k); // Staged but not committed
+    auto [first, first_status] = container.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(2)), success_k);
+    expect_equal(first.stage(), success_k); // Staged but not committed
 
     // T2 created after T1 staged - should see nothing
-    auto t2 = container.transaction();
-    if (!expect_true(t2.has_value())) return;
+    auto [second, second_status] = container.transaction();
+    if (!expect_equal(second_status, success_k)) return;
 
-    auto maybe1 = t2->find_copy(trivial_id_to_key<member_t>(1));
-    auto maybe2 = t2->find_copy(trivial_id_to_key<member_t>(2));
-
-    expect_true(!maybe1, "a later transaction must not see a staged key");
-    expect_true(!maybe2, "a later transaction must not see a staged key");
+    expect_equal(second.find_copy(trivial_id_to_key<member_t>(1)).status(), status_t::key_not_found_k,
+                 "a later transaction must not see a staged key");
+    expect_equal(second.find_copy(trivial_id_to_key<member_t>(2)).status(), status_t::key_not_found_k,
+                 "a later transaction must not see a staged key");
 }
 
 /**
@@ -226,23 +226,24 @@ void check_committed_immediately_visible() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    auto t1 = container.transaction();
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
-    expect_equal(t1->stage(), success_k);
-    expect_equal(t1->commit(), success_k); // NOW committed
+    auto [first, first_status] = container.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, 111)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
+    expect_equal(first.stage(), success_k);
+    expect_equal(first.commit(), success_k); // NOW committed
 
     // T2 created after commit - should see everything
-    auto t2 = container.transaction();
-    if (!expect_true(t2.has_value())) return;
+    auto [second, second_status] = container.transaction();
+    if (!expect_equal(second_status, success_k)) return;
 
-    auto maybe1 = t2->find_copy(trivial_id_to_key<member_t>(1));
-    auto maybe2 = t2->find_copy(trivial_id_to_key<member_t>(2));
+    auto [first_held, first_held_status] = second.find_copy(trivial_id_to_key<member_t>(1));
+    auto [second_held, second_held_status] = second.find_copy(trivial_id_to_key<member_t>(2));
 
-    if (!expect_true(maybe1.has_value(), "a later transaction must see a committed key")) return;
-    if (!expect_true(maybe2.has_value(), "a later transaction must see a committed key")) return;
-    expect_equal(maybe1->mapped, 111);
-    expect_equal(maybe2->mapped, 222);
+    if (!expect_equal(first_held_status, success_k, "a later transaction must see a committed key")) return;
+    if (!expect_equal(second_held_status, success_k, "a later transaction must see a committed key")) return;
+    expect_equal(first_held.mapped, 111);
+    expect_equal(second_held.mapped, 222);
 }
 
 /**
@@ -273,39 +274,39 @@ void check_multi_key_atomicity_10_keys() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
 
     // Insert 10 keys in transaction
     for (std::size_t i = 0; i < 10; ++i)
-        expect_equal(transaction->upsert(trivial_id_to_member<member_t>(i, i * 10)), success_k);
+        expect_equal(transaction.upsert(trivial_id_to_member<member_t>(i, i * 10)), success_k);
 
     // Before stage: should see 0
     std::size_t count_before_stage = 0;
     for (std::size_t i = 0; i < 10; ++i) {
-        expected<std::size_t> const matched = container.count(trivial_id_to_key<member_t>(i));
-        if (!expect_equal(matched.status(), success_k)) return;
-        count_before_stage += *matched;
+        auto const [matched, matched_status] = container.count(trivial_id_to_key<member_t>(i));
+        if (!expect_equal(matched_status, success_k)) return;
+        count_before_stage += matched;
     }
     expect_equal(count_before_stage, 0);
-    expect_equal(transaction->stage(), success_k);
+    expect_equal(transaction.stage(), success_k);
 
     // After stage, before commit: should see 0
     std::size_t count_after_stage = 0;
     for (std::size_t i = 0; i < 10; ++i) {
-        expected<std::size_t> const matched = container.count(trivial_id_to_key<member_t>(i));
-        if (!expect_equal(matched.status(), success_k)) return;
-        count_after_stage += *matched;
+        auto const [matched, matched_status] = container.count(trivial_id_to_key<member_t>(i));
+        if (!expect_equal(matched_status, success_k)) return;
+        count_after_stage += matched;
     }
     expect_equal(count_after_stage, 0);
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.commit(), success_k);
 
     // After commit: should see all 10
     std::size_t count_after_commit = 0;
     for (std::size_t i = 0; i < 10; ++i) {
-        expected<std::size_t> const matched = container.count(trivial_id_to_key<member_t>(i));
-        if (!expect_equal(matched.status(), success_k)) return;
-        count_after_commit += *matched;
+        auto const [matched, matched_status] = container.count(trivial_id_to_key<member_t>(i));
+        if (!expect_equal(matched_status, success_k)) return;
+        count_after_commit += matched;
     }
     expect_equal((count_after_commit), (10), "commit must publish every key at once");
 }
@@ -338,23 +339,24 @@ void check_rollback_makes_all_invisible() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 1)), success_k); // Initial state
 
-    auto transaction = container.transaction();
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1, 100)), success_k); // Modify existing
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(2, 200)), success_k); // Add new
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3, 300)), success_k); // Add new
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->rollback(), success_k); // ROLLBACK instead of commit
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(1, 100)), success_k); // Modify existing
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(2, 200)), success_k); // Add new
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(3, 300)), success_k); // Add new
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.rollback(), success_k); // ROLLBACK instead of commit
 
     // Key 1 should have original value
-    auto maybe1 = container.find_copy(trivial_id_to_key<member_t>(1));
-    if (!expect_true(maybe1.has_value(), "rollback must leave the committed entry in place")) return;
-    expect_equal((maybe1->mapped), (1), "rollback must restore the original value");
+    auto [held, held_status] = container.find_copy(trivial_id_to_key<member_t>(1));
+    if (!expect_equal(held_status, success_k, "rollback must leave the committed entry in place")) return;
+    expect_equal((held.mapped), (1), "rollback must restore the original value");
 
     // Keys 2 and 3 should not exist
-    auto maybe2 = container.find_copy(trivial_id_to_key<member_t>(2));
-    auto maybe3 = container.find_copy(trivial_id_to_key<member_t>(3));
-    expect_true(!maybe2, "rollback must discard the staged key");
-    expect_true(!maybe3, "rollback must discard the staged key");
+    expect_equal(container.find_copy(trivial_id_to_key<member_t>(2)).status(), status_t::key_not_found_k,
+                 "rollback must discard the staged key");
+    expect_equal(container.find_copy(trivial_id_to_key<member_t>(3)).status(), status_t::key_not_found_k,
+                 "rollback must discard the staged key");
 }
 
 /**
@@ -384,9 +386,10 @@ void check_range_query_sees_atomic_boundaries() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    auto transaction = container.transaction();
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (std::size_t i = 10; i < 20; ++i)
-        expect_equal(transaction->upsert(trivial_id_to_member<member_t>(i)), success_k);
+        expect_equal(transaction.upsert(trivial_id_to_member<member_t>(i)), success_k);
 
     // Before commit: range query sees 0
     std::size_t count_before = 0;
@@ -395,8 +398,8 @@ void check_range_query_sees_atomic_boundaries() {
                  success_k);
     expect_equal(count_before, 0);
 
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
 
     // After commit: range query sees all 10
     std::size_t count_after = 0;
@@ -437,20 +440,22 @@ void check_fractured_read_prevention() {
     container_t container;
 
     // T1 will insert keys 1-3
-    auto t1 = container.transaction();
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(2, 20)), success_k);
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
+    auto [first, first_status] = container.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(2, 20)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
 
     // T2 will insert keys 4-6
-    auto t2 = container.transaction();
-    expect_equal(t2->upsert(trivial_id_to_member<member_t>(4, 40)), success_k);
-    expect_equal(t2->upsert(trivial_id_to_member<member_t>(5, 50)), success_k);
-    expect_equal(t2->upsert(trivial_id_to_member<member_t>(6, 60)), success_k);
+    auto [second, second_status] = container.transaction();
+    if (!expect_equal(second_status, success_k)) return;
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(4, 40)), success_k);
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(5, 50)), success_k);
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(6, 60)), success_k);
 
     // Stage both
-    expect_equal(t1->stage(), success_k);
-    expect_equal(t2->stage(), success_k);
+    expect_equal(first.stage(), success_k);
+    expect_equal(second.stage(), success_k);
 
     // Before any commits: see 0
     std::size_t count_initial = 0;
@@ -459,7 +464,7 @@ void check_fractured_read_prevention() {
             container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_initial++; }),
             success_k);
     expect_equal(count_initial, 0);
-    expect_equal(t1->commit(), success_k); // Commit T1
+    expect_equal(first.commit(), success_k); // Commit T1
 
     // Should see exactly T1's keys (1-3), not T2's (4-6)
     std::size_t count_t1 = 0;
@@ -467,7 +472,7 @@ void check_fractured_read_prevention() {
         expect_equal(container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_t1++; }),
                      success_k);
     expect_equal((count_t1), (3), "a range must not see another transaction staged keys");
-    expect_equal(t2->commit(), success_k); // Commit T2
+    expect_equal(second.commit(), success_k); // Commit T2
 
     // Now should see all 6
     std::size_t count_both = 0;
@@ -529,26 +534,28 @@ void check_transaction_commits_maintain_order() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     // T1: value = 100
-    auto t1 = container.transaction();
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
-    expect_equal(t1->stage(), success_k);
-    expect_equal(t1->commit(), success_k);
+    auto [first, first_status] = container.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
+    expect_equal(first.stage(), success_k);
+    expect_equal(first.commit(), success_k);
 
     // Observe T1's value
-    auto val1 = container.find_copy(trivial_id_to_key<member_t>(1));
-    if (!expect_true(val1.has_value())) return;
-    expect_equal(val1->mapped, 100);
+    auto [first_held, first_held_status] = container.find_copy(trivial_id_to_key<member_t>(1));
+    if (!expect_equal(first_held_status, success_k)) return;
+    expect_equal(first_held.mapped, 100);
 
     // T2: value = 200 (higher)
-    auto t2 = container.transaction();
-    expect_equal(t2->upsert(trivial_id_to_member<member_t>(1, 200)), success_k);
-    expect_equal(t2->stage(), success_k);
-    expect_equal(t2->commit(), success_k);
+    auto [second, second_status] = container.transaction();
+    if (!expect_equal(second_status, success_k)) return;
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(1, 200)), success_k);
+    expect_equal(second.stage(), success_k);
+    expect_equal(second.commit(), success_k);
 
     // Observe T2's value, which is the later of the two commits and so the one that stands
-    auto val2 = container.find_copy(trivial_id_to_key<member_t>(1));
-    if (!expect_true(val2.has_value())) return;
-    expect_equal(val2->mapped, 200);
+    auto [second_held, second_held_status] = container.find_copy(trivial_id_to_key<member_t>(1));
+    if (!expect_equal(second_held_status, success_k)) return;
+    expect_equal(second_held.mapped, 200);
 }
 
 /**
@@ -576,30 +583,32 @@ void check_concurrent_transactions_on_same_key() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
 
-    auto t1 = container.transaction();
-    auto t2 = container.transaction();
+    auto [first, first_status] = container.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    auto [second, second_status] = container.transaction();
+    if (!expect_equal(second_status, success_k)) return;
 
     // Both watch the same key
-    expect_equal(t1->watch(trivial_id_to_key<member_t>(1)), success_k);
-    expect_equal(t2->watch(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(first.watch(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(second.watch(trivial_id_to_key<member_t>(1)), success_k);
 
     // Both modify it
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
-    expect_equal(t2->upsert(trivial_id_to_member<member_t>(1, 200)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(1, 200)), success_k);
 
     // T1 commits successfully
-    expect_equal(t1->stage(), success_k);
-    expect_equal(t1->commit(), success_k);
+    expect_equal(first.stage(), success_k);
+    expect_equal(first.commit(), success_k);
 
     // T2's stage should fail (watched value changed)
-    auto status = t2->stage();
+    auto status = second.stage();
     expect_true(failed(status), "staging must fail once a watched key was modified");
     expect_equal(status, status_t::read_conflict_k);
 
     // Verify T1's value persisted, T2's did not
-    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
-    if (!expect_true(maybe_final.has_value())) return;
-    expect_equal((maybe_final->mapped), (100), "only the winning transaction value may persist");
+    auto [final_member, final_member_status] = container.find_copy(trivial_id_to_key<member_t>(1));
+    if (!expect_equal(final_member_status, success_k)) return;
+    expect_equal((final_member.mapped), (100), "only the winning transaction value may persist");
 }
 
 /**
@@ -631,29 +640,31 @@ void check_multi_key_conflict_any_key_fails() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(2, 2)), success_k);
     expect_equal(container.upsert(trivial_id_to_member<member_t>(3, 3)), success_k);
 
-    auto t1 = container.transaction();
-    auto t2 = container.transaction();
+    auto [first, first_status] = container.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    auto [second, second_status] = container.transaction();
+    if (!expect_equal(second_status, success_k)) return;
 
     // T1 watches keys 1, 2, 3
-    expect_equal(t1->watch(trivial_id_to_key<member_t>(1)), success_k);
-    expect_equal(t1->watch(trivial_id_to_key<member_t>(2)), success_k);
-    expect_equal(t1->watch(trivial_id_to_key<member_t>(3)), success_k);
+    expect_equal(first.watch(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(first.watch(trivial_id_to_key<member_t>(2)), success_k);
+    expect_equal(first.watch(trivial_id_to_key<member_t>(3)), success_k);
 
     // T2 watches same keys
-    expect_equal(t2->watch(trivial_id_to_key<member_t>(1)), success_k);
-    expect_equal(t2->watch(trivial_id_to_key<member_t>(2)), success_k);
-    expect_equal(t2->watch(trivial_id_to_key<member_t>(3)), success_k);
+    expect_equal(second.watch(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(second.watch(trivial_id_to_key<member_t>(2)), success_k);
+    expect_equal(second.watch(trivial_id_to_key<member_t>(3)), success_k);
 
     // External update to just one key (key 2)
     expect_equal(container.upsert(trivial_id_to_member<member_t>(2, 999)), success_k);
 
     // T1 modifies all three
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(2, 20)), success_k);
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(2, 20)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
 
     // T1's stage should fail (key 2 was modified externally)
-    auto status = t1->stage();
+    auto status = first.stage();
     expect_true(failed(status), "staging must fail if any watched key changed");
     expect_equal(status, status_t::read_conflict_k);
 }
@@ -685,17 +696,18 @@ void check_watch_detects_external_direct_modification() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
 
-    auto transaction = container.transaction();
-    expect_equal(transaction->watch(trivial_id_to_key<member_t>(1)), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.watch(trivial_id_to_key<member_t>(1)), success_k);
 
     // Direct modification to the set (not through a transaction)
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 777)), success_k);
 
     // Transaction attempts to modify
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1, 888)), success_k);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(1, 888)), success_k);
 
     // Stage should detect the external change
-    auto status = transaction->stage();
+    auto status = transaction.stage();
     expect_true(failed(status), "a watch must detect a direct write to the store");
     expect_equal(status, status_t::read_conflict_k);
 }
@@ -723,31 +735,33 @@ void check_disjoint_keys_both_succeed() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    auto t1 = container.transaction();
-    auto t2 = container.transaction();
+    auto [first, first_status] = container.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    auto [second, second_status] = container.transaction();
+    if (!expect_equal(second_status, success_k)) return;
 
     // T1 modifies keys 1-3
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(2, 20)), success_k);
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(2, 20)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
 
     // T2 modifies keys 4-6 (disjoint!)
-    expect_equal(t2->upsert(trivial_id_to_member<member_t>(4, 40)), success_k);
-    expect_equal(t2->upsert(trivial_id_to_member<member_t>(5, 50)), success_k);
-    expect_equal(t2->upsert(trivial_id_to_member<member_t>(6, 60)), success_k);
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(4, 40)), success_k);
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(5, 50)), success_k);
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(6, 60)), success_k);
 
     // Both should succeed
-    expect_equal(t1->stage(), success_k);
-    expect_equal(t2->stage(), success_k);
-    expect_equal(t1->commit(), success_k);
-    expect_equal(t2->commit(), success_k);
+    expect_equal(first.stage(), success_k);
+    expect_equal(second.stage(), success_k);
+    expect_equal(first.commit(), success_k);
+    expect_equal(second.commit(), success_k);
 
     // Verify all 6 keys exist
     std::size_t count = 0;
     for (std::size_t i = 1; i <= 6; ++i) {
-        expected<std::size_t> const matched = container.count(trivial_id_to_key<member_t>(i));
-        if (!expect_equal(matched.status(), success_k)) return;
-        count += *matched;
+        auto const [matched, matched_status] = container.count(trivial_id_to_key<member_t>(i));
+        if (!expect_equal(matched_status, success_k)) return;
+        count += matched;
     }
     expect_equal((count), (6), "disjoint transactions must both commit");
 }
@@ -781,27 +795,28 @@ void check_repeated_read_matches_isolation() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
 
-    auto transaction = container.transaction();
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
 
     // First read
-    auto first_read = transaction->find_copy(trivial_id_to_key<member_t>(1));
-    if (!expect_true(first_read.has_value())) return;
-    expect_equal(first_read->mapped, 100);
+    auto [first_read, first_read_status] = transaction.find_copy(trivial_id_to_key<member_t>(1));
+    if (!expect_equal(first_read_status, success_k)) return;
+    expect_equal(first_read.mapped, 100);
 
     // External modification
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 999)), success_k);
 
     // Second read in same transaction - can see new value (this is correct!)
-    auto second_read = transaction->find_copy(trivial_id_to_key<member_t>(1));
-    if (!expect_true(second_read.has_value())) return;
+    auto [second_read, second_read_status] = transaction.find_copy(trivial_id_to_key<member_t>(1));
+    if (!expect_equal(second_read_status, success_k)) return;
 
     if constexpr (at_least(container_t::isolation_k, repeatable_reads_from_k)) {
-        expect_equal((second_read->mapped), (100), "a snapshot must repeat its first read");
-        expect_equal(first_read->mapped, second_read->mapped);
+        expect_equal((second_read.mapped), (100), "a snapshot must repeat its first read");
+        expect_equal(first_read.mapped, second_read.mapped);
     }
     else {
-        expect_equal((second_read->mapped), (999), "below snapshot, a read sees the newest commit");
-        expect_true(first_read->mapped != second_read->mapped);
+        expect_equal((second_read.mapped), (999), "below snapshot, a read sees the newest commit");
+        expect_true(first_read.mapped != second_read.mapped);
     }
 }
 
@@ -833,7 +848,8 @@ void check_repeated_range_matches_isolation() {
     container_t container;
     for (std::size_t i = 0; i < 5; ++i) expect_equal(container.upsert(trivial_id_to_member<member_t>(i)), success_k);
 
-    auto transaction = container.transaction();
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
 
     // The predicate is evaluated through the transaction, not through `container`. Asking the store
     // would be a question about the store rather than about the transaction's view, and would hold at
@@ -843,9 +859,9 @@ void check_repeated_range_matches_isolation() {
     auto count_present = [&]() noexcept {
         std::size_t seen = 0;
         for (std::size_t candidate = 0; candidate != 10; ++candidate) {
-            expected<bool> const is_present = transaction->contains(trivial_id_to_key<member_t>(candidate));
-            if (!expect_equal(is_present.status(), success_k)) return seen;
-            if (*is_present) ++seen;
+            auto const [present, present_status] = transaction.contains(trivial_id_to_key<member_t>(candidate));
+            if (!expect_equal(present_status, success_k)) return seen;
+            if (present) ++seen;
         }
         return seen;
     };
@@ -898,32 +914,32 @@ void check_lost_update_matches_isolation() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 0)), success_k);
 
     // Both open before either writes, so each is unaware of the other by construction.
-    auto earlier = container.transaction();
-    if (!expect_equal(earlier.status(), success_k)) return;
-    auto later = container.transaction();
-    if (!expect_equal(later.status(), success_k)) return;
+    auto [earlier, earlier_status] = container.transaction();
+    if (!expect_equal(earlier_status, success_k)) return;
+    auto [later, later_status] = container.transaction();
+    if (!expect_equal(later_status, success_k)) return;
 
-    expect_equal(earlier->upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
-    expect_equal(later->upsert(trivial_id_to_member<member_t>(1, 20)), success_k);
+    expect_equal(earlier.upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
+    expect_equal(later.upsert(trivial_id_to_member<member_t>(1, 20)), success_k);
 
-    expect_equal(earlier->stage(), success_k);
-    expect_equal(earlier->commit(), success_k);
+    expect_equal(earlier.stage(), success_k);
+    expect_equal(earlier.commit(), success_k);
 
     // A store that validates the write set refuses at `stage`, one that does not gets as far as `commit`,
     // so the answer is whichever of the two spoke first.
-    status_t const staged = later->stage();
-    status_t const answered = succeeded(staged) ? later->commit() : staged;
+    status_t const staged = later.stage();
+    status_t const answered = succeeded(staged) ? later.commit() : staged;
 
-    auto held = container.find_copy(trivial_id_to_key<member_t>(1));
-    if (!expect_true(held.has_value())) return;
+    auto [held, held_status] = container.find_copy(trivial_id_to_key<member_t>(1));
+    if (!expect_equal(held_status, success_k)) return;
 
     if constexpr (at_least(container_t::isolation_k, first_committer_wins_from_k)) {
         expect_equal(answered, status_t::write_conflict_k);
-        expect_equal((held->mapped), (10), "first-committer-wins keeps the write that landed first");
+        expect_equal((held.mapped), (10), "first-committer-wins keeps the write that landed first");
     }
     else {
         expect_equal(answered, success_k);
-        expect_equal((held->mapped), (20), "below snapshot the later write wins and the earlier one is lost");
+        expect_equal((held.mapped), (20), "below snapshot the later write wins and the earlier one is lost");
     }
 }
 
@@ -961,20 +977,20 @@ void check_write_skew_matches_isolation() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
     expect_equal(container.upsert(trivial_id_to_member<member_t>(2, 1)), success_k);
 
-    auto earlier = container.transaction();
-    if (!expect_equal(earlier.status(), success_k)) return;
-    auto later = container.transaction();
-    if (!expect_equal(later.status(), success_k)) return;
+    auto [earlier, earlier_status] = container.transaction();
+    if (!expect_equal(earlier_status, success_k)) return;
+    auto [later, later_status] = container.transaction();
+    if (!expect_equal(later_status, success_k)) return;
 
     // Each reads the pair and concludes the other key covers the invariant.
     std::size_t earlier_total = 0, later_total = 0;
     for (trivial_id_t key = 1; key != 3; ++key) {
-        expect_equal(earlier->find(
+        expect_equal(earlier.find(
                          trivial_id_to_key<member_t>(key),
                          [&](member_t const &held) noexcept { earlier_total += static_cast<std::size_t>(held.mapped); },
                          no_op_t {}),
                      success_k);
-        expect_equal(later->find(
+        expect_equal(later.find(
                          trivial_id_to_key<member_t>(key),
                          [&](member_t const &held) noexcept { later_total += static_cast<std::size_t>(held.mapped); },
                          no_op_t {}),
@@ -984,21 +1000,21 @@ void check_write_skew_matches_isolation() {
     expect_equal(later_total, 2u, "both keys must be set before either transaction clears one");
 
     // Disjoint writes, so a validator comparing only written keys sees no collision at all.
-    expect_equal(earlier->upsert(trivial_id_to_member<member_t>(1, 0)), success_k);
-    expect_equal(later->upsert(trivial_id_to_member<member_t>(2, 0)), success_k);
+    expect_equal(earlier.upsert(trivial_id_to_member<member_t>(1, 0)), success_k);
+    expect_equal(later.upsert(trivial_id_to_member<member_t>(2, 0)), success_k);
 
-    expect_equal(earlier->stage(), success_k);
-    expect_equal(earlier->commit(), success_k);
+    expect_equal(earlier.stage(), success_k);
+    expect_equal(earlier.commit(), success_k);
 
-    status_t const staged = later->stage();
-    status_t const answered = succeeded(staged) ? later->commit() : staged;
+    status_t const staged = later.stage();
+    status_t const answered = succeeded(staged) ? later.commit() : staged;
 
-    auto first_held = container.find_copy(trivial_id_to_key<member_t>(1));
-    auto second_held = container.find_copy(trivial_id_to_key<member_t>(2));
-    if (!expect_true(first_held.has_value())) return;
-    if (!expect_true(second_held.has_value())) return;
+    auto [first_held, first_held_status] = container.find_copy(trivial_id_to_key<member_t>(1));
+    auto [second_held, second_held_status] = container.find_copy(trivial_id_to_key<member_t>(2));
+    if (!expect_equal(first_held_status, success_k)) return;
+    if (!expect_equal(second_held_status, success_k)) return;
     std::size_t const remaining =
-        static_cast<std::size_t>(first_held->mapped) + static_cast<std::size_t>(second_held->mapped);
+        static_cast<std::size_t>(first_held.mapped) + static_cast<std::size_t>(second_held.mapped);
 
     if constexpr (at_least(container_t::isolation_k, validated_reads_from_k)) {
         expect_equal(answered, status_t::read_conflict_k);
@@ -1039,38 +1055,38 @@ void check_read_conflict_matches_isolation() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
     expect_equal(container.upsert(trivial_id_to_member<member_t>(2, 1)), success_k);
 
-    auto reader = container.transaction();
-    if (!expect_equal(reader.status(), success_k)) return;
-    auto writer = container.transaction();
-    if (!expect_equal(writer.status(), success_k)) return;
+    auto [reader, reader_status] = container.transaction();
+    if (!expect_equal(reader_status, success_k)) return;
+    auto [writer, writer_status] = container.transaction();
+    if (!expect_equal(writer_status, success_k)) return;
 
     std::size_t seen = 0;
-    expect_equal(reader->find(
+    expect_equal(reader.find(
                      trivial_id_to_key<member_t>(1),
                      [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); }, no_op_t {}),
                  success_k);
     expect_equal(seen, 1u);
 
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(1, 99)), success_k);
-    expect_equal(writer->stage(), success_k);
-    expect_equal(writer->commit(), success_k);
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(1, 99)), success_k);
+    expect_equal(writer.stage(), success_k);
+    expect_equal(writer.commit(), success_k);
 
     // A key the reader never touched, so the write sets are disjoint by construction.
-    expect_equal(reader->upsert(trivial_id_to_member<member_t>(2, 5)), success_k);
+    expect_equal(reader.upsert(trivial_id_to_member<member_t>(2, 5)), success_k);
 
-    status_t const staged = reader->stage();
-    status_t const answered = succeeded(staged) ? reader->commit() : staged;
+    status_t const staged = reader.stage();
+    status_t const answered = succeeded(staged) ? reader.commit() : staged;
 
-    auto second_held = container.find_copy(trivial_id_to_key<member_t>(2));
-    if (!expect_true(second_held.has_value())) return;
+    auto [second_held, second_held_status] = container.find_copy(trivial_id_to_key<member_t>(2));
+    if (!expect_equal(second_held_status, success_k)) return;
 
     if constexpr (at_least(container_t::isolation_k, validated_reads_from_k)) {
         expect_equal(answered, status_t::read_conflict_k);
-        expect_equal((second_held->mapped), (1), "a refused transaction must leave its own write behind");
+        expect_equal((second_held.mapped), (1), "a refused transaction must leave its own write behind");
     }
     else {
         expect_equal(answered, success_k);
-        expect_equal((second_held->mapped), (5), "below validated reads a stale read does not refuse a commit");
+        expect_equal((second_held.mapped), (5), "below validated reads a stale read does not refuse a commit");
     }
 }
 
@@ -1109,26 +1125,27 @@ void check_reset_clears_transaction_state() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1)), success_k);
     expect_equal(container.upsert(trivial_id_to_member<member_t>(2)), success_k);
 
-    auto transaction = container.transaction();
-    expect_equal(transaction->watch(trivial_id_to_key<member_t>(1)), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.watch(trivial_id_to_key<member_t>(1)), success_k);
     // Key 4 is absent from the store, so its presence afterwards can only come from this discarded change
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(4)), success_k);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(4)), success_k);
 
     // Reset the transaction
-    expect_equal(transaction->reset(), success_k);
+    expect_equal(transaction.reset(), success_k);
 
     // After reset, can stage/commit successfully (watches cleared)
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(3)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
 
-    expected<bool> const found3 = container.contains(trivial_id_to_key<member_t>(3));
-    expected<bool> const found4 = container.contains(trivial_id_to_key<member_t>(4));
-    if (!expect_equal(found3.status(), success_k)) return;
-    if (!expect_equal(found4.status(), success_k)) return;
+    auto const [committed_found, committed_found_status] = container.contains(trivial_id_to_key<member_t>(3));
+    auto const [discarded_found, discarded_found_status] = container.contains(trivial_id_to_key<member_t>(4));
+    if (!expect_equal(committed_found_status, success_k)) return;
+    if (!expect_equal(discarded_found_status, success_k)) return;
 
-    expect_true(!*found4, "reset must discard the staged key");
-    expect_true(*found3, "the reused transaction must commit its own key");
+    expect_true(!discarded_found, "reset must discard the staged key");
+    expect_true(committed_found, "the reused transaction must commit its own key");
     expect_equal(container.contains(trivial_id_to_key<member_t>(2)), true, "reset must not touch committed entries");
 }
 
@@ -1146,24 +1163,24 @@ void check_commit_clears_transaction_state() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1)), success_k);
     expect_equal(container.upsert(trivial_id_to_member<member_t>(2)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_equal(transaction.status(), success_k)) return;
-    expect_equal(transaction->watch(trivial_id_to_key<member_t>(1)), success_k);
-    if constexpr (requires { transaction->for_each(no_op_t {}); })
-        expect_equal(transaction->for_each(no_op_t {}), success_k);
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
-    expect_equal(transaction->contains(trivial_id_to_key<member_t>(3)), true, "a commit is read by its own writer");
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(transaction.watch(trivial_id_to_key<member_t>(1)), success_k);
+    if constexpr (requires { transaction.for_each(no_op_t {}); })
+        expect_equal(transaction.for_each(no_op_t {}), success_k);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(3)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
+    expect_equal(transaction.contains(trivial_id_to_key<member_t>(3)), true, "a commit is read by its own writer");
 
     // The watched key moves after the commit that watched it, so no later round asked about it.
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 99)), success_k);
 
     // Enough keys to reach every partition of a sharded container, so no part escapes validation.
     for (trivial_id_t identifier = 100; identifier != 164; ++identifier)
-        expect_equal(transaction->upsert(trivial_id_to_member<member_t>(identifier)), success_k);
-    expect_equal(transaction->stage(), success_k, "a watch or a read from a committed round refused the next one");
-    expect_equal(transaction->commit(), success_k);
+        expect_equal(transaction.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
+    expect_equal(transaction.stage(), success_k, "a watch or a read from a committed round refused the next one");
+    expect_equal(transaction.commit(), success_k);
     expect_equal(container.contains(trivial_id_to_key<member_t>(163)), true);
 }
 
@@ -1196,42 +1213,43 @@ void check_reused_committer_still_conflicts() {
         container_t container;
         expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
 
-        auto reused = container.transaction();
-        auto rival = container.transaction();
-        if (!expect_true(reused.has_value() && rival.has_value())) return;
+        auto [reused, reused_status] = container.transaction();
+        if (!expect_equal(reused_status, success_k)) return;
+        auto [rival, rival_status] = container.transaction();
+        if (!expect_equal(rival_status, success_k)) return;
 
-        expect_equal(reused->upsert(trivial_id_to_member<member_t>(1, 20)), success_k);
-        expect_equal(reused->stage(), success_k);
-        expect_equal(reused->commit(), success_k);
-        expect_equal(reused->upsert(trivial_id_to_member<member_t>(1, 30)), success_k);
-        expect_equal(reused->stage(), success_k);
+        expect_equal(reused.upsert(trivial_id_to_member<member_t>(1, 20)), success_k);
+        expect_equal(reused.stage(), success_k);
+        expect_equal(reused.commit(), success_k);
+        expect_equal(reused.upsert(trivial_id_to_member<member_t>(1, 30)), success_k);
+        expect_equal(reused.stage(), success_k);
 
-        expect_equal(rival->upsert(trivial_id_to_member<member_t>(1, 40)), success_k);
-        status_t const staged = rival->stage();
-        expect_equal(succeeded(staged) ? rival->commit() : staged, status_t::write_conflict_k,
+        expect_equal(rival.upsert(trivial_id_to_member<member_t>(1, 40)), success_k);
+        status_t const staged = rival.stage();
+        expect_equal(succeeded(staged) ? rival.commit() : staged, status_t::write_conflict_k,
                      "the first committer wins, however often it commits");
     }
 
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 10)), success_k);
 
-    auto reused = container.transaction();
-    if (!expect_equal(reused.status(), success_k)) return;
-    expect_equal(reused->upsert(trivial_id_to_member<member_t>(1, 20)), success_k);
-    expect_equal(reused->stage(), success_k);
-    expect_equal(reused->commit(), success_k);
+    auto [reused, reused_status] = container.transaction();
+    if (!expect_equal(reused_status, success_k)) return;
+    expect_equal(reused.upsert(trivial_id_to_member<member_t>(1, 20)), success_k);
+    expect_equal(reused.stage(), success_k);
+    expect_equal(reused.commit(), success_k);
 
-    auto rival = container.transaction();
-    if (!expect_equal(rival.status(), success_k)) return;
-    expect_equal(rival->watch(trivial_id_to_key<member_t>(1)), success_k);
+    auto [rival, rival_status] = container.transaction();
+    if (!expect_equal(rival_status, success_k)) return;
+    expect_equal(rival.watch(trivial_id_to_key<member_t>(1)), success_k);
 
-    expect_equal(reused->upsert(trivial_id_to_member<member_t>(1, 30)), success_k);
-    expect_equal(reused->stage(), success_k);
-    expect_equal(reused->commit(), success_k);
+    expect_equal(reused.upsert(trivial_id_to_member<member_t>(1, 30)), success_k);
+    expect_equal(reused.stage(), success_k);
+    expect_equal(reused.commit(), success_k);
 
-    expect_equal(rival->upsert(trivial_id_to_member<member_t>(2, 5)), success_k);
-    status_t const staged = rival->stage();
-    expect_equal(succeeded(staged) ? rival->commit() : staged, status_t::read_conflict_k,
+    expect_equal(rival.upsert(trivial_id_to_member<member_t>(2, 5)), success_k);
+    status_t const staged = rival.stage();
+    expect_equal(succeeded(staged) ? rival.commit() : staged, status_t::read_conflict_k,
                  "a watch must see the second commit of a reused transaction");
 }
 
@@ -1267,29 +1285,31 @@ void check_watch_detects_staged_invisible_writes() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
 
-    auto t1 = container.transaction();
-    auto t2 = container.transaction();
+    auto [first, first_status] = container.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    auto [second, second_status] = container.transaction();
+    if (!expect_equal(second_status, success_k)) return;
 
     // Both watch the same key at generation 1, value 100
-    expect_equal(t1->watch(trivial_id_to_key<member_t>(1)), success_k);
-    expect_equal(t2->watch(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(first.watch(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(second.watch(trivial_id_to_key<member_t>(1)), success_k);
 
     // Both stage: a write nobody has committed is not yet binding on anyone, so neither is refused
     // here. Refusing at this point would abort a transaction whose rival may still roll back.
-    expect_equal(t2->upsert(trivial_id_to_member<member_t>(1, 999)), success_k);
-    expect_equal(t2->stage(), success_k);
-    expect_equal(t1->upsert(trivial_id_to_member<member_t>(1, 777)), success_k);
-    expect_equal(t1->stage(), success_k);
+    expect_equal(second.upsert(trivial_id_to_member<member_t>(1, 999)), success_k);
+    expect_equal(second.stage(), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1, 777)), success_k);
+    expect_equal(first.stage(), success_k);
 
     // T2 publishes first, so T1's watch does not match what is committed.
-    expect_equal(t2->commit(), success_k);
-    auto status = t1->commit();
+    expect_equal(second.commit(), success_k);
+    auto status = first.commit();
     expect_true(failed(status), "committing must detect the conflicting commit");
     expect_equal(status, status_t::read_conflict_k);
 
-    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
-    if (!expect_true(maybe_final.has_value())) return;
-    expect_equal((maybe_final->mapped), (999), "the accepted writer's value must be the one that lands");
+    auto [final_member, final_member_status] = container.find_copy(trivial_id_to_key<member_t>(1));
+    if (!expect_equal(final_member_status, success_k)) return;
+    expect_equal((final_member.mapped), (999), "the accepted writer's value must be the one that lands");
 }
 
 /**
@@ -1315,37 +1335,40 @@ void check_watch_detects_staged_writes_of_older_generation() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
 
     // `early` opens first, so every version it stages carries the lower generation.
-    auto early = container.transaction();
-    auto later = container.transaction();
+    auto [early, early_status] = container.transaction();
+    if (!expect_equal(early_status, success_k)) return;
+    auto [later, later_status] = container.transaction();
+    if (!expect_equal(later_status, success_k)) return;
 
     // `later` publishes first, lifting the visible version's generation above `early`'s.
-    expect_equal(later->watch(trivial_id_to_key<member_t>(1)), success_k);
-    expect_equal(later->upsert(trivial_id_to_member<member_t>(1, 101)), success_k);
-    expect_equal(later->stage(), success_k);
-    expect_equal(later->commit(), success_k);
+    expect_equal(later.watch(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(later.upsert(trivial_id_to_member<member_t>(1, 101)), success_k);
+    expect_equal(later.stage(), success_k);
+    expect_equal(later.commit(), success_k);
 
     // `early` watches what is now visible and stages beneath it.
-    expect_equal(early->watch(trivial_id_to_key<member_t>(1)), success_k);
-    expect_equal(early->upsert(trivial_id_to_member<member_t>(1, 102)), success_k);
-    expect_equal(early->stage(), success_k);
+    expect_equal(early.watch(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(early.upsert(trivial_id_to_member<member_t>(1, 102)), success_k);
+    expect_equal(early.stage(), success_k);
 
     // A transaction opening after all of that sees the same visible version `early` watched, so
     // nothing in its own view says the key is spoken for. The staged write is what must refuse it.
-    auto newcomer = container.transaction();
-    expect_equal(newcomer->watch(trivial_id_to_key<member_t>(1)), success_k);
-    expect_equal(newcomer->upsert(trivial_id_to_member<member_t>(1, 202)), success_k);
-    expect_equal(newcomer->stage(), success_k);
+    auto [newcomer, newcomer_status] = container.transaction();
+    if (!expect_equal(newcomer_status, success_k)) return;
+    expect_equal(newcomer.watch(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(newcomer.upsert(trivial_id_to_member<member_t>(1, 202)), success_k);
+    expect_equal(newcomer.stage(), success_k);
 
     // The commit stamp, not the generation, decides: whoever publishes first wins, and the loser
     // is turned away even though its generation is the higher of the two.
-    expect_equal(early->commit(), success_k);
-    auto const status = newcomer->commit();
+    expect_equal(early.commit(), success_k);
+    auto const status = newcomer.commit();
     expect_true(failed(status), "a commit over a watched key must refuse the second writer");
     expect_equal(status, status_t::read_conflict_k);
 
-    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
-    if (!expect_true(maybe_final.has_value())) return;
-    expect_equal((maybe_final->mapped), (102), "the accepted writer's value must be the one that lands");
+    auto [final_member, final_member_status] = container.find_copy(trivial_id_to_key<member_t>(1));
+    if (!expect_equal(final_member_status, success_k)) return;
+    expect_equal((final_member.mapped), (102), "the accepted writer's value must be the one that lands");
 }
 
 /** Builds a container around a given comparator, whichever factory shape its family offers.
@@ -1377,9 +1400,9 @@ void check_stateful_comparator_is_consulted() {
     // Above every key, so the first strict successor under a descending order is the largest key.
     constexpr std::size_t above_every_key_k = 1000;
 
-    auto built = make_around_comparator<container_type_>(comparator_t {stateful_comparator_ordering_t::descending_k});
-    if (!expect_true(built.has_value(), "a container must be constructible around a comparator instance")) return;
-    auto &container = *built;
+    auto [container, status] =
+        make_around_comparator<container_type_>(comparator_t {stateful_comparator_ordering_t::descending_k});
+    if (!expect_equal(status, success_k, "a container must be constructible around a comparator instance")) return;
 
     for (std::size_t identifier = 1; identifier <= keys_count_k; ++identifier)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
@@ -1427,21 +1450,23 @@ void check_abandoned_transaction_leaves_no_trace() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
 
     {
-        auto abandoned = container.transaction();
-        expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(2, 200)), success_k);
-        expect_equal(abandoned->stage(), success_k);
+        auto [abandoned, status] = container.transaction();
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(abandoned.upsert(trivial_id_to_member<member_t>(2, 200)), success_k);
+        expect_equal(abandoned.stage(), success_k);
         // Falls out of scope neither committed nor rolled back.
     }
 
     // A later transaction writing the same key must find nothing of the abandoned one in its way.
-    auto follower = container.transaction();
-    expect_equal(follower->upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
-    expect_equal(follower->stage(), success_k);
-    expect_equal(follower->commit(), success_k);
+    auto [follower, follower_status] = container.transaction();
+    if (!expect_equal(follower_status, success_k)) return;
+    expect_equal(follower.upsert(trivial_id_to_member<member_t>(2, 222)), success_k);
+    expect_equal(follower.stage(), success_k);
+    expect_equal(follower.commit(), success_k);
 
-    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(2));
-    if (!expect_true(maybe_final.has_value())) return;
-    expect_equal((maybe_final->mapped), (222), "the abandoned version must not shadow a later write");
+    auto [final_member, final_member_status] = container.find_copy(trivial_id_to_key<member_t>(2));
+    if (!expect_equal(final_member_status, success_k)) return;
+    expect_equal((final_member.mapped), (222), "the abandoned version must not shadow a later write");
 }
 
 /** Moving a staged transaction must hand the claim over, not duplicate it. A defaulted move would
@@ -1454,21 +1479,23 @@ void check_moved_transaction_unwinds_once() {
 
     container_t container;
     {
-        auto original = container.transaction();
-        expect_equal(original->upsert(trivial_id_to_member<member_t>(5, 500)), success_k);
-        expect_equal(original->stage(), success_k);
-        auto moved = std::move(*original);
+        auto [original, status] = container.transaction();
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(original.upsert(trivial_id_to_member<member_t>(5, 500)), success_k);
+        expect_equal(original.stage(), success_k);
+        auto moved = std::move(original);
         // Both halves are destroyed here; only the one holding the claim may unwind.
     }
 
-    auto follower = container.transaction();
-    expect_equal(follower->upsert(trivial_id_to_member<member_t>(5, 555)), success_k);
-    expect_equal(follower->stage(), success_k);
-    expect_equal(follower->commit(), success_k);
+    auto [follower, follower_status] = container.transaction();
+    if (!expect_equal(follower_status, success_k)) return;
+    expect_equal(follower.upsert(trivial_id_to_member<member_t>(5, 555)), success_k);
+    expect_equal(follower.stage(), success_k);
+    expect_equal(follower.commit(), success_k);
 
-    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(5));
-    if (!expect_true(maybe_final.has_value())) return;
-    expect_equal((maybe_final->mapped), (555), "a moved transaction must unwind exactly once");
+    auto [final_member, final_member_status] = container.find_copy(trivial_id_to_key<member_t>(5));
+    if (!expect_equal(final_member_status, success_k)) return;
+    expect_equal((final_member.mapped), (555), "a moved transaction must unwind exactly once");
 }
 
 /**
@@ -1493,15 +1520,15 @@ void check_find_does_not_watch() {
         container_t container;
         expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
 
-        auto reader = container.transaction();
-        expect_equal(reader->find(
-                         trivial_id_to_key<member_t>(1), [](member_t const &) noexcept {}, []() noexcept {}),
-                     success_k);
+        auto [reader, status] = container.transaction();
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(
+            reader.find(trivial_id_to_key<member_t>(1), [](member_t const &) noexcept {}, []() noexcept {}), success_k);
 
         expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 999)), success_k);
-        expect_equal(reader->upsert(trivial_id_to_member<member_t>(1, 101)), success_k);
-        expect_true(succeeded(reader->stage()), "an unwatched read cannot refuse anything");
-        expect_true(succeeded(reader->commit()), "an unwatched read cannot refuse anything");
+        expect_equal(reader.upsert(trivial_id_to_member<member_t>(1, 101)), success_k);
+        expect_true(succeeded(reader.stage()), "an unwatched read cannot refuse anything");
+        expect_true(succeeded(reader.commit()), "an unwatched read cannot refuse anything");
     }
 
     // The same shape through `find_and_watch` records what it saw, and the drift is caught.
@@ -1509,16 +1536,17 @@ void check_find_does_not_watch() {
         container_t container;
         expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
 
-        auto reader = container.transaction();
-        expect_equal(reader->find_and_watch(
+        auto [reader, status] = container.transaction();
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(reader.find_and_watch(
                          trivial_id_to_key<member_t>(1), [](member_t const &) noexcept {}, []() noexcept {}),
                      success_k);
 
         expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 999)), success_k);
-        expect_equal(reader->upsert(trivial_id_to_member<member_t>(1, 101)), success_k);
+        expect_equal(reader.upsert(trivial_id_to_member<member_t>(1, 101)), success_k);
 
-        auto const staged = reader->stage();
-        auto const committed = succeeded(staged) ? reader->commit() : staged;
+        auto const staged = reader.stage();
+        auto const committed = succeeded(staged) ? reader.commit() : staged;
         expect_true(failed(committed), "a watched read must refuse a write over a newer commit");
         expect_equal(committed, status_t::read_conflict_k);
     }
@@ -1541,18 +1569,20 @@ void check_watch_on_erased_key_can_commit() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(3, 300)), success_k);
 
     {
-        auto remover = container.transaction();
-        expect_equal(remover->erase(trivial_id_to_key<member_t>(3)), success_k);
-        expect_equal(remover->stage(), success_k);
-        expect_equal(remover->commit(), success_k);
+        auto [remover, remover_status] = container.transaction();
+        if (!expect_equal(remover_status, success_k)) return;
+        expect_equal(remover.erase(trivial_id_to_key<member_t>(3)), success_k);
+        expect_equal(remover.stage(), success_k);
+        expect_equal(remover.commit(), success_k);
     }
 
-    auto observer = container.transaction();
-    expect_equal(observer->watch(trivial_id_to_key<member_t>(3)), success_k);
-    expect_equal(observer->upsert(trivial_id_to_member<member_t>(4, 400)), success_k);
-    auto status = observer->stage();
+    auto [observer, observer_status] = container.transaction();
+    if (!expect_equal(observer_status, success_k)) return;
+    expect_equal(observer.watch(trivial_id_to_key<member_t>(3)), success_k);
+    expect_equal(observer.upsert(trivial_id_to_member<member_t>(4, 400)), success_k);
+    auto status = observer.stage();
     expect_true(succeeded(status), "watching an erased key must not conflict when nothing moved");
-    expect_equal(observer->commit(), success_k);
+    expect_equal(observer.commit(), success_k);
 }
 
 /**
@@ -1574,24 +1604,27 @@ void check_watch_catches_an_insert_and_erase_under_it() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
 
-    auto observer = container.transaction();
-    expect_equal(observer->watch(trivial_id_to_key<member_t>(7)), success_k);
+    auto [observer, observer_status] = container.transaction();
+    if (!expect_equal(observer_status, success_k)) return;
+    expect_equal(observer.watch(trivial_id_to_key<member_t>(7)), success_k);
 
     {
-        auto outsider = container.transaction();
-        expect_equal(outsider->upsert(trivial_id_to_member<member_t>(7, 700)), success_k);
-        expect_equal(outsider->stage(), success_k);
-        expect_equal(outsider->commit(), success_k);
+        auto [outsider, outsider_status] = container.transaction();
+        if (!expect_equal(outsider_status, success_k)) return;
+        expect_equal(outsider.upsert(trivial_id_to_member<member_t>(7, 700)), success_k);
+        expect_equal(outsider.stage(), success_k);
+        expect_equal(outsider.commit(), success_k);
     }
     {
-        auto outsider = container.transaction();
-        expect_equal(outsider->erase(trivial_id_to_key<member_t>(7)), success_k);
-        expect_equal(outsider->stage(), success_k);
-        expect_equal(outsider->commit(), success_k);
+        auto [outsider, outsider_status] = container.transaction();
+        if (!expect_equal(outsider_status, success_k)) return;
+        expect_equal(outsider.erase(trivial_id_to_key<member_t>(7)), success_k);
+        expect_equal(outsider.stage(), success_k);
+        expect_equal(outsider.commit(), success_k);
     }
 
-    expect_equal(observer->upsert(trivial_id_to_member<member_t>(1, 200)), success_k);
-    expect_equal(observer->stage(), status_t::read_conflict_k,
+    expect_equal(observer.upsert(trivial_id_to_member<member_t>(1, 200)), success_k);
+    expect_equal(observer.stage(), status_t::read_conflict_k,
                  "two commits landed under a watched absence, which it must not read as unchanged");
 }
 
@@ -1606,19 +1639,20 @@ void check_absent_watch_survives_rollback() {
 
     container_t container;
 
-    auto transaction = container.transaction();
-    expect_equal(transaction->watch(trivial_id_to_key<member_t>(9)), success_k);
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(8, 800)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->rollback(), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.watch(trivial_id_to_key<member_t>(9)), success_k);
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(8, 800)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.rollback(), success_k);
 
-    auto status = transaction->stage();
+    auto status = transaction.stage();
     expect_true(succeeded(status), "an absent watch must survive the rollback that preserved it");
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.commit(), success_k);
 
-    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(8));
-    if (!expect_true(maybe_final.has_value())) return;
-    expect_equal((maybe_final->mapped), (800), "the rolled-back write must still commit");
+    auto [final_member, final_member_status] = container.find_copy(trivial_id_to_key<member_t>(8));
+    if (!expect_equal(final_member_status, success_k)) return;
+    expect_equal((final_member.mapped), (800), "the rolled-back write must still commit");
 }
 
 #pragma endregion Transaction Lifetime and Watches
@@ -1636,17 +1670,17 @@ void check_group_commits_participants_together() {
 
     container_t first, second;
     {
-        auto group = make_transaction_group(first, second);
-        if (!expect_true(group.has_value(), "a group over two live stores must open")) return;
-        expect_equal(group->template participant<0>().upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
-        expect_equal(group->template participant<1>().upsert(trivial_id_to_member<member_t>(2, 200)), success_k);
+        auto [group, status] = make_transaction_group(first, second);
+        if (!expect_equal(status, success_k, "a group over two live stores must open")) return;
+        expect_equal(group.template participant<0>().upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
+        expect_equal(group.template participant<1>().upsert(trivial_id_to_member<member_t>(2, 200)), success_k);
 
-        expect_equal(group->stage(), success_k);
+        expect_equal(group.stage(), success_k);
         expect_true(!first.find_copy(trivial_id_to_key<member_t>(1)).has_value(), "a staged write must stay invisible");
         expect_true(!second.find_copy(trivial_id_to_key<member_t>(2)).has_value(),
                     "a staged write must stay invisible");
 
-        expect_equal(group->commit(), success_k);
+        expect_equal(group.commit(), success_k);
     }
 
     expect_true(first.find_copy(trivial_id_to_key<member_t>(1)).has_value());
@@ -1668,23 +1702,23 @@ void test_group_publishes_under_one_stamp() {
     container_t first {order}, second {order}, apart;
 
     generation_t const before = order.published_stamp();
-    auto group = make_transaction_group(first, second);
-    if (!expect_true(group.has_value(), "a group over two stores in one order must open")) return;
-    auto [ids, names] = group->participants();
+    auto [group, status] = make_transaction_group(first, second);
+    if (!expect_equal(status, success_k, "a group over two stores in one order must open")) return;
+    auto [ids, names] = group.participants();
     expect_equal(ids.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
     expect_equal(names.upsert(trivial_id_to_member<member_t>(2, 200)), success_k);
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
 
     expect_equal(order.published_stamp(), before + 1, "one commit draws one stamp, however many stores it spans");
-    expect_equal(group->commit_stamp(), before + 1);
-    expect_equal(ids.commit_stamp(), group->commit_stamp());
-    expect_equal(names.commit_stamp(), group->commit_stamp());
+    expect_equal(group.commit_stamp(), before + 1);
+    expect_equal(ids.commit_stamp(), group.commit_stamp());
+    expect_equal(names.commit_stamp(), group.commit_stamp());
     expect_true(first.find_copy(trivial_id_to_key<member_t>(1)).has_value());
     expect_true(second.find_copy(trivial_id_to_key<member_t>(2)).has_value());
 
-    auto mixed = make_transaction_group(first, apart);
-    expect_equal(mixed.status(), status_t::invalid_argument_k, "a participant on another order cannot share a stamp");
+    expect_equal(make_transaction_group(first, apart).status(), status_t::invalid_argument_k,
+                 "a participant on another order cannot share a stamp");
 }
 
 /** @c commit_with runs the body over the participants and then stages and commits, and resets what
@@ -1700,9 +1734,9 @@ void test_group_commit_with_runs_the_body() {
     container_t first {order}, second {order};
 
     {
-        auto group = make_transaction_group(first, second);
-        if (!expect_true(group.has_value())) return;
-        expect_equal(group->commit_with([&](auto &ids, auto &names) noexcept {
+        auto [group, status] = make_transaction_group(first, second);
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(group.commit_with([&](auto &ids, auto &names) noexcept {
             status_t const one = ids.upsert(trivial_id_to_member<member_t>(1, 100));
             return failed(one) ? one : names.upsert(trivial_id_to_member<member_t>(2, 200));
         }),
@@ -1713,14 +1747,14 @@ void test_group_commit_with_runs_the_body() {
 
     // A body that refuses publishes nothing and leaves no participant staged.
     {
-        auto group = make_transaction_group(first, second);
-        if (!expect_true(group.has_value())) return;
-        expect_equal(group->commit_with([&](auto &ids, auto &) noexcept {
+        auto [group, status] = make_transaction_group(first, second);
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(group.commit_with([&](auto &ids, auto &) noexcept {
             [[maybe_unused]] status_t const staged = ids.upsert(trivial_id_to_member<member_t>(3, 300));
             return status_t::invalid_argument_k;
         }),
                      status_t::invalid_argument_k);
-        expect_true(group->staging() == staging_t::pending_k);
+        expect_true(group.staging() == staging_t::pending_k);
     }
     expect_true(!first.find_copy(trivial_id_to_key<member_t>(3)).has_value(), "a refused body writes nothing");
 }
@@ -1743,23 +1777,24 @@ void check_group_unwind_refused_at(container_type_ &first, container_type_ &seco
     container_t &surviving = surviving_index_k == 0 ? first : second;
     expect_equal(refusing.upsert(trivial_id_to_member<member_t>(7, 700)), success_k);
 
-    auto group = make_transaction_group(first, second);
-    if (!expect_true(group.has_value())) return;
-    expect_equal(group->template participant<refusing_index_>().watch(trivial_id_to_key<member_t>(7)), success_k);
-    expect_equal(group->template participant<surviving_index_k>().upsert(trivial_id_to_member<member_t>(3, 300)),
+    auto [group, group_status] = make_transaction_group(first, second);
+    if (!expect_equal(group_status, success_k)) return;
+    expect_equal(group.template participant<refusing_index_>().watch(trivial_id_to_key<member_t>(7)), success_k);
+    expect_equal(group.template participant<surviving_index_k>().upsert(trivial_id_to_member<member_t>(3, 300)),
                  success_k);
-    expect_equal(group->template participant<refusing_index_>().upsert(trivial_id_to_member<member_t>(4, 400)),
+    expect_equal(group.template participant<refusing_index_>().upsert(trivial_id_to_member<member_t>(4, 400)),
                  success_k);
 
     // Move the watched key from outside, so this group's stage must be refused.
     {
-        auto interloper = refusing.transaction();
-        expect_equal(interloper->upsert(trivial_id_to_member<member_t>(7, 777)), success_k);
-        expect_equal(interloper->stage(), success_k);
-        expect_equal(interloper->commit(), success_k);
+        auto [interloper, interloper_status] = refusing.transaction();
+        if (!expect_equal(interloper_status, success_k)) return;
+        expect_equal(interloper.upsert(trivial_id_to_member<member_t>(7, 777)), success_k);
+        expect_equal(interloper.stage(), success_k);
+        expect_equal(interloper.commit(), success_k);
     }
 
-    auto status = group->stage();
+    auto status = group.stage();
     expect_true(failed(status), "a moved watch must refuse the whole group");
     expect_equal(status, status_t::read_conflict_k);
 
@@ -1771,17 +1806,17 @@ void check_group_unwind_refused_at(container_type_ &first, container_type_ &seco
 
     // A reset would have emptied the change set, and leaving the prefix staged would have moved it
     // into the store, so a pending write here is what says the undo rolled back.
-    expect_true(group->template participant<surviving_index_k>().changes_count() != std::size_t {0},
+    expect_true(group.template participant<surviving_index_k>().changes_count() != std::size_t {0},
                 "an unwound participant must keep the writes it staged");
 
     // Retrying is what the surviving writes were kept for, sharded or not - a rollback keeps the
     // partition marks precisely so the next stage has somewhere to put them.
-    expect_equal(group->template participant<refusing_index_>().reset(), success_k);
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
-    auto republished = surviving.find_copy(trivial_id_to_key<member_t>(3));
-    if (!expect_true(republished.has_value(), "a rolled-back write must publish on the retry")) return;
-    expect_equal((republished->mapped), (300), "a rolled-back write must publish the value it carried");
+    expect_equal(group.template participant<refusing_index_>().reset(), success_k);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
+    auto [republished, republished_status] = surviving.find_copy(trivial_id_to_key<member_t>(3));
+    if (!expect_equal(republished_status, success_k, "a rolled-back write must publish on the retry")) return;
+    expect_equal((republished.mapped), (300), "a rolled-back write must publish the value it carried");
 }
 
 /**

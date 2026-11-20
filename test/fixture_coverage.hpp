@@ -65,17 +65,19 @@ void check_rollback_balances_counted_keys(std::size_t size = 64) {
     {
         container_t container;
 
-        auto committed = container.transaction();
+        auto [committed, committed_status] = container.transaction();
+        if (!expect_equal(committed_status, success_k)) return;
         for (std::size_t identifier = 0; identifier != size; ++identifier)
-            expect_equal(committed->upsert(trivial_id_to_member<member_t>(identifier)), success_k);
-        expect_equal(committed->stage(), success_k);
-        expect_equal(committed->commit(), success_k);
+            expect_equal(committed.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
+        expect_equal(committed.stage(), success_k);
+        expect_equal(committed.commit(), success_k);
 
-        auto abandoned = container.transaction();
+        auto [abandoned, abandoned_status] = container.transaction();
+        if (!expect_equal(abandoned_status, success_k)) return;
         for (std::size_t identifier = size; identifier != size * 2; ++identifier)
-            expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(identifier)), success_k);
-        expect_equal(abandoned->stage(), success_k);
-        expect_equal(abandoned->rollback(), success_k);
+            expect_equal(abandoned.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
+        expect_equal(abandoned.stage(), success_k);
+        expect_equal(abandoned.rollback(), success_k);
 
         clear_container(container);
     }
@@ -137,17 +139,18 @@ void check_transaction_walks_collision_runs(std::size_t groups = 4) {
     for (std::size_t identifier = 0; identifier != size; ++identifier)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
 
-    auto transaction = container.transaction();
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (std::size_t identifier = size; identifier != size + groups; ++identifier)
-        expect_equal(transaction->upsert(trivial_id_to_member<member_t>(identifier)), success_k);
-    expect_equal(transaction->stage(), success_k);
+        expect_equal(transaction.upsert(trivial_id_to_member<member_t>(identifier)), success_k);
+    expect_equal(transaction.stage(), success_k);
 
     for (std::size_t identifier = size; identifier != size + groups; ++identifier) {
         expect_equal(container.contains(trivial_id_to_key<member_t>(identifier)), false,
                      "a staged key must stay invisible however long its probe run is");
     }
 
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.commit(), success_k);
 
     for (std::size_t identifier = 0; identifier != size + groups; ++identifier) {
         expect_equal(container.contains(trivial_id_to_key<member_t>(identifier)), true,
@@ -232,13 +235,13 @@ void check_find_copy_reports_a_refused_copy() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1)), success_k);
 
     copy_budget_t::allow(0);
-    auto const refused = container.find_copy(trivial_id_to_key<member_t>(1));
-    expect_true(!refused, "a refused copy must not report a value");
+    expect_true(failed(container.find_copy(trivial_id_to_key<member_t>(1)).status()),
+                "a refused copy must not report a value");
     expect_true(copy_budget_t::refusals_count > 0, "the budget must have been consulted");
 
     copy_budget_t::reset();
-    auto const granted = container.find_copy(trivial_id_to_key<member_t>(1));
-    expect_true(granted.has_value(), "the same read must succeed once the budget allows it");
+    expect_equal(container.find_copy(trivial_id_to_key<member_t>(1)).status(), success_k,
+                 "the same read must succeed once the budget allows it");
 }
 
 #pragma endregion Hostile Element Types

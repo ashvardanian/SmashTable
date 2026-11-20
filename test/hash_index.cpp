@@ -60,8 +60,8 @@ void check_random_mix(split_mix_generator_t &generator) {
     using key_t = typename index_type_::key_t;
     constexpr std::size_t capacity_k = 200;
     constexpr std::uint64_t keys_range_k = 64;
-    auto index = index_type_::make(capacity_k);
-    if (!expect_equal(index.status(), success_k)) return;
+    auto [index, status] = index_type_::make(capacity_k);
+    if (!expect_equal(status, success_k)) return;
 
     std::vector<key_t> keys(capacity_k);
     std::vector<unsigned char> present(capacity_k, 0);
@@ -72,32 +72,32 @@ void check_random_mix(split_mix_generator_t &generator) {
         switch (generator() % 3) {
         case 0:
             if (present[position]) break;
-            expect_equal(index->insert(key, position, assume_unique), success_k);
+            expect_equal(index.insert(key, position, assume_unique), success_k);
             keys[position] = key, present[position] = 1, ++present_count;
             break;
         case 1:
             if (present[position] && !(keys[position] == key))
-                expect_equal(index->erase(key, position), status_t::key_not_found_k, "the pair must match");
+                expect_equal(index.erase(key, position), status_t::key_not_found_k, "the pair must match");
             if (!present[position]) {
-                expect_equal(index->erase(key, position), status_t::key_not_found_k);
+                expect_equal(index.erase(key, position), status_t::key_not_found_k);
                 break;
             }
-            expect_equal(index->erase(keys[position], position), success_k);
+            expect_equal(index.erase(keys[position], position), success_k);
             present[position] = 0, --present_count;
             break;
         default: {
-            std::uint32_t const found = index->find(key);
+            std::uint32_t const found = index.find(key);
             if (found == index_type_::absent_k)
                 for (std::size_t other = 0; other != capacity_k; ++other)
                     expect_true(!present[other] || !(keys[other] == key), "a stored key must be found");
             else expect_true(present[found] && keys[found] == key, "a found position must hold the key");
             std::uint32_t const confirmed =
-                index->find(key, [&](std::uint32_t candidate) noexcept { return candidate == position; });
+                index.find(key, [&](std::uint32_t candidate) noexcept { return candidate == position; });
             expect_equal(confirmed == position, present[position] && keys[position] == key);
             break;
         }
         }
-        expect_equal(index->size(), present_count);
+        expect_equal(index.size(), present_count);
     }
 }
 
@@ -109,10 +109,10 @@ void check_extreme_keys() {
         key_type_ key;
         if constexpr (std::same_as<key_type_, key128_t>) key = key128_t {word, ~word};
         else key = static_cast<key_type_>(word);
-        auto index = index_t::make(4);
-        if (!expect_equal(index.status(), success_k)) return;
-        expect_equal(index->insert(key, 1u, assume_unique), success_k);
-        expect_equal(index->find(key), 1u);
+        auto [index, status] = index_t::make(4);
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(index.insert(key, 1u, assume_unique), success_k);
+        expect_equal(index.find(key), 1u);
     }
 }
 
@@ -147,89 +147,89 @@ static void test_capacity_rules() {
         basic_hash_index<std::uint64_t, std::uint32_t, default_hash_t, refusing_allocator<std::byte>>;
     expect_equal(refused_index_t::make(16).status(), status_t::out_of_memory_heap_k);
 
-    auto empty = index_t::make(0);
-    if (!expect_equal(empty.status(), success_k)) return;
-    expect_equal(empty->insert(1u, 0u, assume_unique), status_t::capacity_exhausted_k);
-    expect_equal(empty->find(1u), index_t::absent_k);
-    expect_equal(empty->erase(1u, 0u), status_t::key_not_found_k);
+    auto [empty, empty_status] = index_t::make(0);
+    if (!expect_equal(empty_status, success_k)) return;
+    expect_equal(empty.insert(1u, 0u, assume_unique), status_t::capacity_exhausted_k);
+    expect_equal(empty.find(1u), index_t::absent_k);
+    expect_equal(empty.erase(1u, 0u), status_t::key_not_found_k);
 
-    auto index = index_t::make(4);
-    if (!expect_equal(index.status(), success_k)) return;
+    auto [index, index_status] = index_t::make(4);
+    if (!expect_equal(index_status, success_k)) return;
     for (std::uint32_t position = 0; position != 4; ++position)
-        expect_equal(index->insert(position * 7u, position, assume_unique), success_k);
-    expect_equal(index->insert(99u, 4u, assume_unique), status_t::capacity_exhausted_k);
-    expect_equal(index->erase(7u, 2u), status_t::key_not_found_k, "a key under another position stays");
-    expect_equal(index->erase(7u, 1u), success_k);
-    expect_equal(index->insert(99u, 4u, assume_unique), success_k);
-    expect_equal(index->find(99u), 4u);
-    expect_equal(index->size(), 4u);
+        expect_equal(index.insert(position * 7u, position, assume_unique), success_k);
+    expect_equal(index.insert(99u, 4u, assume_unique), status_t::capacity_exhausted_k);
+    expect_equal(index.erase(7u, 2u), status_t::key_not_found_k, "a key under another position stays");
+    expect_equal(index.erase(7u, 1u), success_k);
+    expect_equal(index.insert(99u, 4u, assume_unique), success_k);
+    expect_equal(index.find(99u), 4u);
+    expect_equal(index.size(), 4u);
 
-    index->clear();
-    expect_true(index->empty());
+    index.clear();
+    expect_true(index.empty());
     for (std::uint32_t position = 0; position != 4; ++position)
-        expect_equal(index->find(position * 7u), index_t::absent_k, "a cleared slot must not match its old key");
-    expect_equal(index->insert(14u, 2u, assume_unique), success_k);
-    expect_equal(index->find(14u), 2u);
+        expect_equal(index.find(position * 7u), index_t::absent_k, "a cleared slot must not match its old key");
+    expect_equal(index.insert(14u, 2u, assume_unique), success_k);
+    expect_equal(index.find(14u), 2u);
 
-    auto moved = std::move(*index);
+    auto moved = std::move(index);
     expect_equal(moved.find(14u), 2u);
-    expect_true(index->empty());
+    expect_true(index.empty());
 }
 
 /** Every key sharing one home stays reachable while the run is erased from its middle. */
 static void test_colliding_homes() {
-    auto index = basic_hash_index<std::uint64_t, std::uint32_t, one_home_hash_t>::make(40);
-    if (!expect_equal(index.status(), success_k)) return;
+    auto [index, status] = basic_hash_index<std::uint64_t, std::uint32_t, one_home_hash_t>::make(40);
+    if (!expect_equal(status, success_k)) return;
     for (std::uint32_t position = 0; position != 40; ++position)
-        expect_equal(index->insert(std::uint64_t {position} * 3, position, assume_unique), success_k);
+        expect_equal(index.insert(std::uint64_t {position} * 3, position, assume_unique), success_k);
     for (std::uint32_t position = 0; position < 40; position += 3)
-        expect_equal(index->erase(std::uint64_t {position} * 3, position), success_k);
+        expect_equal(index.erase(std::uint64_t {position} * 3, position), success_k);
     for (std::uint32_t position = 0; position != 40; ++position)
-        expect_equal(index->find(std::uint64_t {position} * 3),
+        expect_equal(index.find(std::uint64_t {position} * 3),
                      position % 3 == 0 ? basic_hash_index<std::uint64_t>::absent_k : position);
 }
 
 /** A confirm tells apart positions under one key, and an erase removes only the one it names. */
 static void test_confirm_separates_equal_keys() {
-    auto index = basic_hash_index<std::uint64_t>::make(8);
-    if (!expect_equal(index.status(), success_k)) return;
+    auto [index, status] = basic_hash_index<std::uint64_t>::make(8);
+    if (!expect_equal(status, success_k)) return;
     for (std::uint32_t position = 1; position <= 3; ++position)
-        expect_equal(index->insert(7u, position, assume_unique), success_k);
-    expect_equal(index->find(7u), 1u, "the first position in probe order");
-    expect_equal(index->find(7u, [](std::uint32_t candidate) noexcept { return candidate == 3; }), 3u);
-    expect_equal(index->find(7u, [](std::uint32_t candidate) noexcept { return candidate == 9; }),
+        expect_equal(index.insert(7u, position, assume_unique), success_k);
+    expect_equal(index.find(7u), 1u, "the first position in probe order");
+    expect_equal(index.find(7u, [](std::uint32_t candidate) noexcept { return candidate == 3; }), 3u);
+    expect_equal(index.find(7u, [](std::uint32_t candidate) noexcept { return candidate == 9; }),
                  basic_hash_index<std::uint64_t>::absent_k);
-    expect_equal(index->erase(7u, 1u), success_k);
-    expect_equal(index->find(7u), 2u);
-    expect_equal(index->find(7u, [](std::uint32_t candidate) noexcept { return candidate == 3; }), 3u);
+    expect_equal(index.erase(7u, 1u), success_k);
+    expect_equal(index.find(7u), 2u);
+    expect_equal(index.find(7u, [](std::uint32_t candidate) noexcept { return candidate == 3; }), 3u);
 }
 
 /** A run wrapping past the last slot shifts back across the end, and every key stays reachable. */
 static void test_erase_wraps_table_end() {
     using index_t = basic_hash_index<std::uint64_t, std::uint32_t, identity_hash_t>;
     // Sixteen keys take 32 slots, so homes 30 and 31 run into slots 0 to 2.
-    auto index = index_t::make(16);
-    if (!expect_equal(index.status(), success_k)) return;
+    auto [index, status] = index_t::make(16);
+    if (!expect_equal(status, success_k)) return;
     std::uint64_t const keys[] = {30, 62, 94, 31, 0};
     for (std::uint32_t position = 0; position != 5; ++position)
-        expect_equal(index->insert(keys[position], position, assume_unique), success_k);
-    expect_equal(index->erase(30u, 0u), success_k);
-    for (std::uint32_t position = 1; position != 5; ++position) expect_equal(index->find(keys[position]), position);
-    expect_equal(index->erase(94u, 2u), success_k);
-    expect_equal(index->find(62u), 1u);
-    expect_equal(index->find(31u), 3u);
-    expect_equal(index->find(0u), 4u);
-    expect_equal(index->erase(62u, 1u), success_k);
-    expect_equal(index->erase(31u, 3u), success_k);
-    expect_equal(index->find(0u), 4u);
+        expect_equal(index.insert(keys[position], position, assume_unique), success_k);
+    expect_equal(index.erase(30u, 0u), success_k);
+    for (std::uint32_t position = 1; position != 5; ++position) expect_equal(index.find(keys[position]), position);
+    expect_equal(index.erase(94u, 2u), success_k);
+    expect_equal(index.find(62u), 1u);
+    expect_equal(index.find(31u), 3u);
+    expect_equal(index.find(0u), 4u);
+    expect_equal(index.erase(62u, 1u), success_k);
+    expect_equal(index.erase(31u, 3u), success_k);
+    expect_equal(index.find(0u), 4u);
 
     // Homes 14, 46 and 78 share slot 14 modulo 32, one run crosses the 15 to 16 boundary.
-    expect_equal(index->insert(14u, 5u, assume_unique), success_k);
-    expect_equal(index->insert(46u, 6u, assume_unique), success_k);
-    expect_equal(index->insert(78u, 7u, assume_unique), success_k);
-    expect_equal(index->erase(14u, 5u), success_k);
-    expect_equal(index->find(78u), 7u);
-    expect_equal(index->size(), 3u);
+    expect_equal(index.insert(14u, 5u, assume_unique), success_k);
+    expect_equal(index.insert(46u, 6u, assume_unique), success_k);
+    expect_equal(index.insert(78u, 7u, assume_unique), success_k);
+    expect_equal(index.erase(14u, 5u), success_k);
+    expect_equal(index.find(78u), 7u);
+    expect_equal(index.size(), 3u);
 }
 
 /** @c check_kit through @p kit , skipped where this machine cannot run it. */

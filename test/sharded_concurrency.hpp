@@ -190,10 +190,10 @@ void check_sharded_lower_bound_probes_twice(std::size_t key_span = 128) {
 
     // Quiescent: the exact probe answers for an even key, the successor probe for an odd one.
     for (std::size_t identifier = 0; identifier + 2 < key_span; identifier += 2) {
-        auto const exact = container.lower_bound_copy(trivial_id_to_key<member_t>(identifier));
-        expect_true(exact.has_value(), "an element present at the bound is its own lower bound");
-        auto const successor = container.lower_bound_copy(trivial_id_to_key<member_t>(identifier + 1));
-        expect_true(successor.has_value(), "a bound between elements answers with the next one");
+        expect_equal(container.lower_bound_copy(trivial_id_to_key<member_t>(identifier)).status(), success_k,
+                     "an element present at the bound is its own lower bound");
+        expect_equal(container.lower_bound_copy(trivial_id_to_key<member_t>(identifier + 1)).status(), success_k,
+                     "a bound between elements answers with the next one");
     }
 
     std::atomic<std::size_t> answers {0};
@@ -332,11 +332,9 @@ inline void check_partition_array_leaves_no_scratch_behind() {
         ~counted_t() noexcept { ++tally.destructed; }
     };
 
-    {
-        auto built = generate_array_safely<counted_t, 16>(
-            [&tally](std::size_t) noexcept { return expected<counted_t> {counted_t {tally}}; });
-        expect_true(built.has_value(), "every element was offered, so the array must be there");
-    }
+    auto const offer = [&tally](std::size_t) noexcept { return expected<counted_t> {counted_t {tally}}; };
+    expect_equal(generate_array_safely<counted_t, 16>(offer).status(), success_k,
+                 "every element was offered, so the array must be there");
     expect_equal(tally.misaligned_sources, std::size_t {0});
     expect_equal(tally.constructed, tally.destructed);
 }
@@ -354,9 +352,8 @@ void check_concurrent_transactions_get_distinct_generations(std::size_t per_thre
     using store_t = store_type_;
     using generation_t = typename store_t::generation_t;
 
-    auto made = store_t::make();
-    if (!expect_true(made.has_value(), "the store must build")) return;
-    auto &store = *made;
+    auto [store, status] = store_t::make();
+    if (!expect_equal(status, success_k, "the store must build")) return;
 
     std::vector<std::vector<generation_t>> observed(sharded_threads_count_k);
     std::vector<std::thread> threads;
@@ -367,8 +364,8 @@ void check_concurrent_transactions_get_distinct_generations(std::size_t per_thre
             auto &mine = observed[thread_index];
             mine.reserve(per_thread);
             for (std::size_t opened = 0; opened != per_thread; ++opened) {
-                auto transaction = store.transaction();
-                if (transaction) mine.push_back(transaction->generation());
+                auto [transaction, transaction_status] = store.transaction();
+                if (succeeded(transaction_status)) mine.push_back(transaction.generation());
             }
         });
     for (auto &thread : threads) thread.join();
@@ -421,44 +418,44 @@ void check_sharded_stage_unwinds_on_partial_failure(std::size_t key_span = 64) {
     expect_equal(conflicting_partition, container_t::partitions_k - 1,
                  "the refusal must land on the last partition, or the undo has less than everything to walk");
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value(), "a transaction must open")) return;
-    expect_equal(transaction->watch(trivial_id_to_key<member_t>(conflicting_identifier)), success_k);
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k, "a transaction must open")) return;
+    expect_equal(transaction.watch(trivial_id_to_key<member_t>(conflicting_identifier)), success_k);
 
     // Spread writes across partitions, so a refusal partway through has predecessors to undo.
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
-        expect_equal(transaction->upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
+        expect_equal(transaction.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
     // Publish over the watched key from outside, so the stage is refused where the watch sits.
     {
-        auto interloper = container.transaction();
-        if (!expect_true(interloper.has_value(), "the interloping transaction must open")) return;
-        expect_equal(interloper->upsert(trivial_id_to_member<member_t>(conflicting_identifier, key_span)), success_k);
-        expect_equal(interloper->stage(), success_k);
-        expect_equal(interloper->commit(), success_k);
+        auto [interloper, interloper_status] = container.transaction();
+        if (!expect_equal(interloper_status, success_k, "the interloping transaction must open")) return;
+        expect_equal(interloper.upsert(trivial_id_to_member<member_t>(conflicting_identifier, key_span)), success_k);
+        expect_equal(interloper.stage(), success_k);
+        expect_equal(interloper.commit(), success_k);
     }
 
-    status_t const refused = transaction->stage();
+    status_t const refused = transaction.stage();
     expect_true(failed(refused), "a moved watch must refuse the stage");
     expect_equal(refused, status_t::read_conflict_k);
 
     // An undo that never ran leaves the staged prefix holding its writes, so a change set that is
     // whole again is what says every partition handed them back.
-    expect_equal(transaction->changes_count(), key_span,
+    expect_equal(transaction.changes_count(), key_span,
                  "a refused stage must roll every partition it staged back into the transaction");
 
     // Whatever the outcome, nothing may be visible and nothing may be left reserved: a later
     // transaction writing the same keys must find every one of them free to take.
-    auto follower = container.transaction();
-    if (!expect_true(follower.has_value(), "a transaction must open after the unwind")) return;
+    auto [follower, follower_status] = container.transaction();
+    if (!expect_equal(follower_status, success_k, "a transaction must open after the unwind")) return;
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
-        expect_equal(follower->upsert(trivial_id_to_member<member_t>(identifier, identifier + key_span)), success_k);
-    expect_equal(follower->stage(), success_k);
-    expect_equal(follower->commit(), success_k);
+        expect_equal(follower.upsert(trivial_id_to_member<member_t>(identifier, identifier + key_span)), success_k);
+    expect_equal(follower.stage(), success_k);
+    expect_equal(follower.commit(), success_k);
 
     for (std::size_t identifier = 0; identifier < key_span; ++identifier) {
-        auto found = container.find_copy(trivial_id_to_key<member_t>(identifier));
-        expect_true(found.has_value(), "every key the follower committed must be visible");
+        expect_equal(container.find_copy(trivial_id_to_key<member_t>(identifier)).status(), success_k,
+                     "every key the follower committed must be visible");
     }
     expect_equal(container.size(), key_span);
 }
@@ -591,13 +588,13 @@ void check_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16
     threads.emplace_back([&]() noexcept {
         expect_true(spin_until([&] { return readers_ready.load() == sharded_threads_count_k; }));
         for (std::size_t round = 1; round <= rounds; ++round) {
-            auto writer = container.transaction();
-            if (!writer) break;
+            auto [writer, status] = container.transaction();
+            if (failed(status)) break;
             status_t staged = success_k;
             for (std::size_t identifier = 0; identifier != keys_count && succeeded(staged); ++identifier)
-                staged = writer->upsert(trivial_id_to_member<member_t>(identifier, round));
-            if (succeeded(staged)) staged = writer->stage();
-            if (succeeded(staged)) { [[maybe_unused]] status_t const committed = writer->commit(); }
+                staged = writer.upsert(trivial_id_to_member<member_t>(identifier, round));
+            if (succeeded(staged)) staged = writer.stage();
+            if (succeeded(staged)) { [[maybe_unused]] status_t const committed = writer.commit(); }
         }
         writing.store(false);
     });
@@ -607,10 +604,10 @@ void check_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16
             commit_span_tally_t &tally = tallies[thread_index];
             ++readers_ready;
             while (writing.load()) {
-                auto reader = container.transaction();
-                if (!reader) continue;
-                commit_span_sweep_t const first = read_every_key<member_t>(*reader, keys_count);
-                commit_span_sweep_t const second = read_every_key<member_t>(*reader, keys_count);
+                auto [reader, status] = container.transaction();
+                if (failed(status)) continue;
+                commit_span_sweep_t const first = read_every_key<member_t>(reader, keys_count);
+                commit_span_sweep_t const second = read_every_key<member_t>(reader, keys_count);
                 // Four independent questions, so none of them is an `else` of another.
                 ++tally.passes;
                 tally.torn += first.torn + second.torn;
@@ -649,12 +646,12 @@ void check_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16
     else {
         // Whether any threaded pair straddled a commit is the scheduler's to decide, so the licence
         // below the rung is pinned by a schedule rather than counted out of the race above.
-        auto reader = container.transaction();
-        if (!expect_equal(reader.status(), success_k)) return;
-        commit_span_sweep_t const before = read_every_key<member_t>(*reader, keys_count);
+        auto [reader, status] = container.transaction();
+        if (!expect_equal(status, success_k)) return;
+        commit_span_sweep_t const before = read_every_key<member_t>(reader, keys_count);
         expect_equal(container.upsert(trivial_id_to_member<member_t>(0, before.first_value + 1)), success_k);
 
-        commit_span_sweep_t const after = read_every_key<member_t>(*reader, keys_count);
+        commit_span_sweep_t const after = read_every_key<member_t>(reader, keys_count);
         expect_true(after.first_value != before.first_value,
                     "a level below repeatable reads must show a commit landing mid-transaction");
     }
@@ -703,19 +700,19 @@ void test_refused_commit_publishes_nothing() {
     // second, so the suite proves its point on every schedule rather than on a lucky interleaving.
     // The racing threads below widen the interleavings it proves it over.
     {
-        auto first = container.transaction();
-        auto second = container.transaction();
-        if (!expect_equal(first.status(), success_k)) return;
-        if (!expect_equal(second.status(), success_k)) return;
-        expect_equal(first->upsert(trivial_id_to_member<member_t>(0, 1)), success_k);
-        expect_equal(second->upsert(trivial_id_to_member<member_t>(0, 2)), success_k);
-        expect_equal(first->stage(), success_k);
-        expect_equal(second->stage(), success_k);
-        expect_equal(first->commit(), success_k);
-        expect_equal(second->commit(), status_t::write_conflict_k,
+        auto [first, first_status] = container.transaction();
+        auto [second, second_status] = container.transaction();
+        if (!expect_equal(first_status, success_k)) return;
+        if (!expect_equal(second_status, success_k)) return;
+        expect_equal(first.upsert(trivial_id_to_member<member_t>(0, 1)), success_k);
+        expect_equal(second.upsert(trivial_id_to_member<member_t>(0, 2)), success_k);
+        expect_equal(first.stage(), success_k);
+        expect_equal(second.stage(), success_k);
+        expect_equal(first.commit(), success_k);
+        expect_equal(second.commit(), status_t::write_conflict_k,
                      "a second writer over one key must be refused for writing it");
         note_refusal(2);
-        [[maybe_unused]] status_t const undone = second->reset();
+        [[maybe_unused]] status_t const undone = second.reset();
     }
 
     // Every attempt writes a value no other attempt writes, so finding one after a refusal is proof
@@ -726,20 +723,20 @@ void test_refused_commit_publishes_nothing() {
             for (std::size_t round = 0; round != rounds; ++round)
                 while (true) {
                     std::size_t const marker = (thread_index + 1) * 1000000 + (++attempt);
-                    auto writer = container.transaction();
-                    if (!writer) return;
+                    auto [writer, status] = container.transaction();
+                    if (failed(status)) return;
                     status_t staged = success_k;
                     for (std::size_t identifier = 0; identifier != keys_count && succeeded(staged); ++identifier)
-                        staged = writer->upsert(trivial_id_to_member<member_t>(identifier, marker));
-                    if (succeeded(staged)) staged = writer->stage();
+                        staged = writer.upsert(trivial_id_to_member<member_t>(identifier, marker));
+                    if (succeeded(staged)) staged = writer.stage();
                     if (failed(staged)) {
-                        [[maybe_unused]] status_t const undone = writer->reset();
+                        [[maybe_unused]] status_t const undone = writer.reset();
                         continue;
                     }
-                    if (succeeded(writer->commit())) break;
+                    if (succeeded(writer.commit())) break;
 
                     note_refusal(marker);
-                    [[maybe_unused]] status_t const undone = writer->reset();
+                    [[maybe_unused]] status_t const undone = writer.reset();
                 }
         });
 
@@ -876,9 +873,8 @@ void check_commit_is_visible_to_what_opens_after_it() {
     using member_t = typename container_t::value_type;
     constexpr bool waits_k = at_least(container_t::isolation_k, isolation_t::strict_serializable_k);
 
-    auto made = container_t::make(gated_less_t {}, hash<std::int64_t> {});
-    if (!expect_equal(made.status(), success_k)) return;
-    container_t &store = *made;
+    auto [store, status] = container_t::make(gated_less_t {}, hash<std::int64_t> {});
+    if (!expect_equal(status, success_k)) return;
 
     expect_equal(store.upsert(member_t {publication_gate_t::gated_key_k, 0}), success_k);
 
@@ -892,19 +888,18 @@ void check_commit_is_visible_to_what_opens_after_it() {
     // Opened before the gate arms, because opening a transaction takes every partition lock in turn:
     // one of them belongs to the held commit, so a transaction opened during the hold would be waiting
     // on a mutex rather than on the watermark, which is not the wait under test.
-    auto opened = store.transaction();
-    if (!expect_equal(opened.status(), success_k)) return;
-    auto writer = std::move(*opened);
+    auto [writer, writer_status] = store.transaction();
+    if (!expect_equal(writer_status, success_k)) return;
 
     // The earlier commit, stopped inside its own publication, so its stamp stays in flight and pins the
     // watermark one below itself for as long as the gate holds.
-    auto holder = store.transaction();
-    if (!expect_equal(holder.status(), success_k)) return;
-    expect_equal(holder->upsert(member_t {publication_gate_t::gated_key_k, 1}), success_k);
-    expect_equal(holder->stage(), success_k);
+    auto [holder, holder_status] = store.transaction();
+    if (!expect_equal(holder_status, success_k)) return;
+    expect_equal(holder.upsert(member_t {publication_gate_t::gated_key_k, 1}), success_k);
+    expect_equal(holder.stage(), success_k);
 
     publication_gate_t::arm();
-    std::thread earlier {[&]() noexcept { [[maybe_unused]] status_t const answered = holder->commit(); }};
+    std::thread earlier {[&]() noexcept { [[maybe_unused]] status_t const answered = holder.commit(); }};
     publication_gate_t::wait_until_reached();
 
     std::atomic<bool> reached_commit {false};
@@ -919,11 +914,11 @@ void check_commit_is_visible_to_what_opens_after_it() {
 
         // Opening this one is itself the question: a strict commit has already waited by the time it
         // returns, so nothing is held and the snapshot it draws covers its own write.
-        auto reader = store.transaction();
-        if (!expect_equal(reader.status(), success_k)) return;
+        auto [reader, reader_status] = store.transaction();
+        if (!expect_equal(reader_status, success_k)) return;
         bool found = false;
         [[maybe_unused]] status_t const read =
-            reader->find(later_key, [&](member_t const &member) noexcept { found = member.mapped == 42; }, no_op_t {});
+            reader.find(later_key, [&](member_t const &member) noexcept { found = member.mapped == 42; }, no_op_t {});
         saw_its_own_commit.store(found, std::memory_order_release);
     }};
 
@@ -992,26 +987,26 @@ void check_sharded_window_read_is_validated() {
         expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier, int(identifier))), success_k);
 
     // Both bounds are seeded keys, so the half-open window holds one key per step across it.
-    auto reader = container.transaction();
-    if (!expect_equal(reader.status(), success_k)) return;
+    auto [reader, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
     std::size_t seen = 0;
-    expect_equal(reader->range(trivial_key_t {window_lower_k}, trivial_key_t {window_upper_k},
-                               [&](auto const &) noexcept { ++seen; }),
+    expect_equal(reader.range(trivial_key_t {window_lower_k}, trivial_key_t {window_upper_k},
+                              [&](auto const &) noexcept { ++seen; }),
                  success_k);
     expect_equal(seen, std::size_t {(window_upper_k - window_lower_k) / seeded_every_k},
                  "the window must hold every key seeded into it");
 
     // Written outside the window, so only the recorded read can refuse this transaction.
-    expect_equal(reader->upsert(trivial_id_to_member<member_t>(span_k + 1, 1)), success_k);
+    expect_equal(reader.upsert(trivial_id_to_member<member_t>(span_k + 1, 1)), success_k);
 
-    auto other = container.transaction();
-    if (!expect_equal(other.status(), success_k)) return;
-    expect_equal(other->upsert(trivial_id_to_member<member_t>(45, 45)), success_k);
-    expect_equal(other->stage(), success_k);
-    expect_equal(other->commit(), success_k);
+    auto [other, other_status] = container.transaction();
+    if (!expect_equal(other_status, success_k)) return;
+    expect_equal(other.upsert(trivial_id_to_member<member_t>(45, 45)), success_k);
+    expect_equal(other.stage(), success_k);
+    expect_equal(other.commit(), success_k);
 
-    status_t const staged = reader->stage();
-    status_t const answered = succeeded(staged) ? reader->commit() : staged;
+    status_t const staged = reader.stage();
+    status_t const answered = succeeded(staged) ? reader.commit() : staged;
 
     if constexpr (at_least(container_t::isolation_k, validated_reads_from_k)) {
         expect_equal(answered, status_t::phantom_conflict_k,
@@ -1046,13 +1041,13 @@ void test_group_commit_is_read_whole_across_stores() {
     threads.emplace_back([&]() noexcept {
         expect_true(spin_until([&] { return readers_ready.load() == sharded_threads_count_k; }));
         for (std::size_t round = 1; round <= rounds; ++round) {
-            auto group = make_transaction_group(first, second);
-            if (!group) break;
-            status_t staged = group->template participant<0>().upsert(trivial_id_to_member<member_t>(1, round));
+            auto [group, status] = make_transaction_group(first, second);
+            if (failed(status)) break;
+            status_t staged = group.template participant<0>().upsert(trivial_id_to_member<member_t>(1, round));
             if (succeeded(staged))
-                staged = group->template participant<1>().upsert(trivial_id_to_member<member_t>(1, round));
-            if (succeeded(staged)) staged = group->stage();
-            if (succeeded(staged)) { [[maybe_unused]] status_t const committed = group->commit(); }
+                staged = group.template participant<1>().upsert(trivial_id_to_member<member_t>(1, round));
+            if (succeeded(staged)) staged = group.stage();
+            if (succeeded(staged)) { [[maybe_unused]] status_t const committed = group.commit(); }
         }
         writing.store(false);
     });
@@ -1061,13 +1056,14 @@ void test_group_commit_is_read_whole_across_stores() {
         threads.emplace_back([&]() noexcept {
             ++readers_ready;
             while (writing.load()) {
-                auto pinned = first.transaction();
-                if (!pinned) continue;
+                auto [pinned, pinned_status] = first.transaction();
+                if (failed(pinned_status)) continue;
                 // The peer reads at the very stamp the first transaction pinned, which its claim keeps retained.
-                auto peer = second.transaction_at(opened_at_t {pinned->snapshot(), order.next_generation()});
-                if (!peer) continue;
-                commit_span_sweep_t const here = read_every_key<member_t>(*pinned, 2);
-                commit_span_sweep_t const there = read_every_key<member_t>(*peer, 2);
+                auto [peer, peer_status] =
+                    second.transaction_at(opened_at_t {pinned.snapshot(), order.next_generation()});
+                if (failed(peer_status)) continue;
+                commit_span_sweep_t const here = read_every_key<member_t>(pinned, 2);
+                commit_span_sweep_t const there = read_every_key<member_t>(peer, 2);
                 if (here.refused || there.refused) continue;
                 ++passes;
                 if (here.first_value != there.first_value) ++torn;
@@ -1097,16 +1093,16 @@ void check_group_across_orders_commits_whole() {
     } stores;
     expect_equal(stores.second.upsert(trivial_id_to_member<second_member_t>(0, 0)), success_k);
     {
-        auto group = make_transaction_group(stores.first, stores.second);
-        if (!expect_equal(group.status(), success_k)) return;
-        expect_equal(group->template participant<0>().upsert(trivial_id_to_member<first_member_t>(1, 1)), success_k);
-        expect_equal(group->template participant<1>().watch(trivial_id_to_key<second_member_t>(0)), success_k);
-        expect_equal(group->stage(), success_k);
+        auto [group, status] = make_transaction_group(stores.first, stores.second);
+        if (!expect_equal(status, success_k)) return;
+        expect_equal(group.template participant<0>().upsert(trivial_id_to_member<first_member_t>(1, 1)), success_k);
+        expect_equal(group.template participant<1>().watch(trivial_id_to_key<second_member_t>(0)), success_k);
+        expect_equal(group.stage(), success_k);
         expect_equal(stores.second.upsert(trivial_id_to_member<second_member_t>(0, 1)), success_k);
-        expect_true(failed(group->commit()));
+        expect_true(failed(group.commit()));
         expect_equal(stores.first.size(), std::size_t {0});
-        expect_equal(group->staging(), staging_t::staged_k);
-        expect_equal(group->rollback(), success_k);
+        expect_equal(group.staging(), staging_t::staged_k);
+        expect_equal(group.rollback(), success_k);
     }
 
     std::vector<std::thread> threads;
@@ -1114,11 +1110,11 @@ void check_group_across_orders_commits_whole() {
     for (std::size_t thread_index = 0; thread_index != sharded_threads_count_k; ++thread_index)
         threads.emplace_back([&, thread_index]() noexcept {
             for (std::size_t round = 0; round != rounds; ++round) {
-                auto group = make_transaction_group(stores.first, stores.second);
-                if (!group) break;
+                auto [group, group_status] = make_transaction_group(stores.first, stores.second);
+                if (failed(group_status)) break;
                 std::size_t const value = 2 + round * sharded_threads_count_k + thread_index;
                 [[maybe_unused]] status_t const committed =
-                    group->commit_with([&](auto &first, auto &second) noexcept -> status_t {
+                    group.commit_with([&](auto &first, auto &second) noexcept -> status_t {
                         status_t status = first.upsert(trivial_id_to_member<first_member_t>(0, value));
                         if (succeeded(status)) status = second.upsert(trivial_id_to_member<second_member_t>(0, value));
                         return status;
@@ -1127,11 +1123,12 @@ void check_group_across_orders_commits_whole() {
         });
     for (std::thread &thread : threads) thread.join();
 
-    auto first_reader = stores.first.transaction();
-    auto second_reader = stores.second.transaction();
-    if (!expect_true(first_reader && second_reader)) return;
-    expect_equal(read_every_key<first_member_t>(*first_reader, 1).first_value,
-                 read_every_key<second_member_t>(*second_reader, 1).first_value);
+    auto [first_reader, first_status] = stores.first.transaction();
+    auto [second_reader, second_status] = stores.second.transaction();
+    if (!expect_equal(first_status, success_k)) return;
+    if (!expect_equal(second_status, success_k)) return;
+    expect_equal(read_every_key<first_member_t>(first_reader, 1).first_value,
+                 read_every_key<second_member_t>(second_reader, 1).first_value);
 }
 
 /**
@@ -1169,14 +1166,14 @@ void test_a_dropped_staged_transaction_is_unwound_under_the_lock() {
 
     expect_true(spin_until([&] { return readers_ready.load() == sharded_threads_count_k; }));
     for (std::size_t round = 0; round != rounds; ++round) {
-        auto abandoned = store.transaction();
-        if (!expect_true(abandoned.has_value())) break;
+        auto [abandoned, status] = store.transaction();
+        if (!expect_equal(status, success_k)) break;
         for (trivial_id_t identifier = 0; identifier != 8; ++identifier) {
             trivial_id_t const fresh = static_cast<trivial_id_t>(1000 + (round % 64) * 8 + identifier);
-            expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(fresh, 9)), success_k);
-            expect_equal(abandoned->upsert(trivial_id_to_member<member_t>(identifier, 9)), success_k);
+            expect_equal(abandoned.upsert(trivial_id_to_member<member_t>(fresh, 9)), success_k);
+            expect_equal(abandoned.upsert(trivial_id_to_member<member_t>(identifier, 9)), success_k);
         }
-        expect_equal(abandoned->stage(), success_k);
+        expect_equal(abandoned.stage(), success_k);
     }
     dropping.store(false);
     for (std::thread &thread : threads) thread.join();

@@ -585,28 +585,28 @@ struct budgeted_key_t {
     budgeted_key_t &operator=(budgeted_key_t &&) noexcept = default;
 
     static expected<budgeted_key_t> make(trivial_id_t identifier) noexcept {
-        auto made = heavy_key_t::make(identifier);
-        if (!made) return made.status();
+        auto [encoded, status] = heavy_key_t::make(identifier);
+        if (failed(status)) return status;
         budgeted_key_t result;
-        result.text = *std::move(made);
+        result.text = std::move(encoded);
         return result;
     }
 
     static expected<budgeted_key_t> make(std::string_view std_string) noexcept {
-        auto made = heavy_key_t::make(std_string);
-        if (!made) return made.status();
+        auto [encoded, status] = heavy_key_t::make(std_string);
+        if (failed(status)) return status;
         budgeted_key_t result;
-        result.text = *std::move(made);
+        result.text = std::move(encoded);
         return result;
     }
 
     expected<budgeted_key_t> copy() const noexcept {
         if (copy_budget_t::spend() == budget_outcome_t::refused_k)
             return expected<budgeted_key_t>(status_t::out_of_memory_heap_k);
-        auto copied = text.copy();
-        if (!copied) return copied.status();
+        auto [copied_text, status] = text.copy();
+        if (failed(status)) return status;
         budgeted_key_t result;
-        result.text = *std::move(copied);
+        result.text = std::move(copied_text);
         return result;
     }
 
@@ -735,9 +735,9 @@ struct counting_hash_t {
 template <typename member_type_>
 auto trivial_id_to_key(trivial_id_t value) {
     if constexpr (has_make_method<member_type_, trivial_id_t>) {
-        auto made = member_type_::make(value);
-        expect_true(made.has_value(), "the fixture key must be constructible from an identifier");
-        return *std::move(made);
+        auto [key, status] = member_type_::make(value);
+        expect_equal(status, success_k, "the fixture key must be constructible from an identifier");
+        return std::move(key);
     }
     else if constexpr (is_mapping<member_type_>) return trivial_id_to_key<typename member_type_::key_type>(value);
     else return member_type_ {value};
@@ -747,9 +747,9 @@ auto trivial_id_to_key(trivial_id_t value) {
 template <typename member_type_>
 auto trivial_id_to_member(trivial_id_t value) {
     if constexpr (has_make_method<member_type_, trivial_id_t>) {
-        auto made = member_type_::make(value);
-        expect_true(made.has_value(), "the fixture member must be constructible from an identifier");
-        return *std::move(made);
+        auto [member, status] = member_type_::make(value);
+        expect_equal(status, success_k, "the fixture member must be constructible from an identifier");
+        return std::move(member);
     }
     else if constexpr (is_mapping<member_type_>)
         return member_type_ {trivial_id_to_key<member_type_>(value), typename member_type_::mapped_type(value)};
@@ -1115,9 +1115,9 @@ void check_bulk_upsert_with_duplicates() {
 
     // Verify that overlapping keys (5-9) have UPDATED values (for int-valued maps only)
     for (std::size_t index = 5; index < 10; ++index) {
-        auto found_entry = container.find_copy(trivial_id_to_key<member_t>(index));
-        if (!expect_true(found_entry.has_value(), "key missing after bulk upsert")) return;
-        expect_equal(found_entry->mapped, static_cast<int>(index * 100));
+        auto [found_entry, status] = container.find_copy(trivial_id_to_key<member_t>(index));
+        if (!expect_equal(status, success_k, "key missing after bulk upsert")) return;
+        expect_equal(found_entry.mapped, static_cast<int>(index * 100));
     }
 
     // Verify new keys (10-14) were inserted
@@ -1169,13 +1169,13 @@ void check_range_query_head_state(std::size_t size = 100) {
     for (std::size_t index = 0; index + 1 < size; ++index) {
         auto const sought_key = trivial_id_to_key<member_t>(index);
 
-        auto const above = container.upper_bound_copy(sought_key);
-        if (!expect_equal(above.status(), success_k)) return;
-        expect_equal(mapping_key_or_itself(*above), trivial_id_to_key<member_t>(index + 1));
+        auto [above, above_status] = container.upper_bound_copy(sought_key);
+        if (!expect_equal(above_status, success_k)) return;
+        expect_equal(mapping_key_or_itself(above), trivial_id_to_key<member_t>(index + 1));
 
-        auto const at_or_above = container.lower_bound_copy(sought_key);
-        if (!expect_equal(at_or_above.status(), success_k)) return;
-        expect_equal(mapping_key_or_itself(*at_or_above), sought_key);
+        auto [at_or_above, at_or_above_status] = container.lower_bound_copy(sought_key);
+        if (!expect_equal(at_or_above_status, success_k)) return;
+        expect_equal(mapping_key_or_itself(at_or_above), sought_key);
     }
 }
 
@@ -1227,29 +1227,24 @@ void check_heterogeneous_composite_find() {
 
     // Test heterogeneous lookups
     for (std::size_t i = 0; i < 10; ++i) {
-        auto lookup_by_id = container.find_copy(static_cast<trivial_id_t>(i));
-        auto lookup_by_key = container.find_copy(trivial_id_to_key<member_t>(i));
+        auto [lookup_by_id, lookup_by_id_status] = container.find_copy(static_cast<trivial_id_t>(i));
+        auto [lookup_by_key, lookup_by_key_status] = container.find_copy(trivial_id_to_key<member_t>(i));
 
-        if (!expect_true(lookup_by_id.has_value(), "heterogeneous lookup must find the key")) return;
-        if (!expect_true(lookup_by_key.has_value(), "key lookup must find the key")) return;
+        if (!expect_equal(lookup_by_id_status, success_k, "heterogeneous lookup must find the key")) return;
+        if (!expect_equal(lookup_by_key_status, success_k, "key lookup must find the key")) return;
 
-        expect_equal(mapping_key_or_itself<member_t>(*lookup_by_id).unique_id, i);
-        expect_equal(mapping_key_or_itself<member_t>(*lookup_by_key).unique_id, i);
+        expect_equal(mapping_key_or_itself<member_t>(lookup_by_id).unique_id, i);
+        expect_equal(mapping_key_or_itself<member_t>(lookup_by_key).unique_id, i);
 
         if constexpr (container_t::is_associative::value) {
-            expect_equal(lookup_by_id->key.some_metadata, i * 100);
-            expect_equal(lookup_by_key->key.some_metadata, i * 100);
+            expect_equal(lookup_by_id.key.some_metadata, i * 100);
+            expect_equal(lookup_by_key.key.some_metadata, i * 100);
         }
     }
 
     // Test that non-existent keys are not found
-    {
-        auto lookup_by_id = container.find_copy(static_cast<trivial_id_t>(999));
-        auto lookup_by_key = container.find_copy(trivial_id_to_key<member_t>(999));
-
-        expect_true(!(lookup_by_id));
-        expect_true(!(lookup_by_key));
-    }
+    expect_true(failed(container.find_copy(static_cast<trivial_id_t>(999)).status()));
+    expect_true(failed(container.find_copy(trivial_id_to_key<member_t>(999)).status()));
 }
 
 /** Tests heterogeneous lookup for @c heavy_key_t by @c std::string_view. @c heavy_key_t stores
@@ -1266,7 +1261,11 @@ void check_heterogeneous_heavy_string_view_find() {
     using namespace std::literals::string_view_literals;
     std::vector<std::string_view> test_strings = {"hello"sv, "world"sv, "foo"sv, "bar"sv, "baz"sv};
 
-    auto make_new_key = [&](std::string_view text) { return *heavy_key_t::make(text); };
+    auto make_new_key = [&](std::string_view text) {
+        auto [key, status] = heavy_key_t::make(text);
+        expect_equal(status, success_k);
+        return std::move(key);
+    };
     auto make_new_member = [&](std::string_view text) {
         if constexpr (container_t::is_associative::value) return member_t {make_new_key(text), mapped_t {}};
         else return member_t {make_new_key(text)};
@@ -1281,24 +1280,19 @@ void check_heterogeneous_heavy_string_view_find() {
     // Test heterogeneous lookup
     for (auto const &text : test_strings) {
 
-        auto lookup_by_id = container.find_copy(text);
-        auto lookup_by_key = container.find_copy(make_new_key(text));
+        auto [lookup_by_id, lookup_by_id_status] = container.find_copy(text);
+        auto [lookup_by_key, lookup_by_key_status] = container.find_copy(make_new_key(text));
 
-        if (!expect_true(lookup_by_id.has_value(), "heterogeneous lookup must find the string key")) return;
-        if (!expect_true(lookup_by_key.has_value(), "key lookup must find the string key")) return;
+        if (!expect_equal(lookup_by_id_status, success_k, "heterogeneous lookup must find the string key")) return;
+        if (!expect_equal(lookup_by_key_status, success_k, "key lookup must find the string key")) return;
 
-        expect_equal(mapping_key_or_itself<member_t>(*lookup_by_id), text);
-        expect_equal(mapping_key_or_itself<member_t>(*lookup_by_key), text);
+        expect_equal(mapping_key_or_itself<member_t>(lookup_by_id), text);
+        expect_equal(mapping_key_or_itself<member_t>(lookup_by_key), text);
     }
 
     // Test that non-existent keys are not found
-    {
-        auto lookup_by_id = container.find_copy("missing"sv);
-        auto lookup_by_key = container.find_copy(make_new_key("missing"sv));
-
-        expect_true(!(lookup_by_id));
-        expect_true(!(lookup_by_key));
-    }
+    expect_true(failed(container.find_copy("missing"sv).status()));
+    expect_true(failed(container.find_copy(make_new_key("missing"sv)).status()));
 }
 
 #pragma endregion Heterogeneous Lookup Test Templates

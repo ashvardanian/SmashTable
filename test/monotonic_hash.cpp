@@ -96,18 +96,18 @@ static void check_point_insert_strategies() {
     using member_t = typename container_t::value_type;
 
     container_t container;
-    auto first = container.transaction();
-    if (!expect_true(first.has_value())) return;
+    auto [first, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
 
-    expect_equal(first->insert(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(first->insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
-    expect_equal(first->insert_if_missing(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(first->upsert(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(first->update(trivial_id_to_member<member_t>(1)), success_k);
-    expect_equal(first->update(trivial_id_to_member<member_t>(2)), status_t::key_not_found_k);
+    expect_equal(first.insert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(first.insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
+    expect_equal(first.insert_if_missing(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(first.upsert(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(first.update(trivial_id_to_member<member_t>(1)), success_k);
+    expect_equal(first.update(trivial_id_to_member<member_t>(2)), status_t::key_not_found_k);
 
-    expect_equal(first->stage(), success_k);
-    expect_equal(first->commit(), success_k);
+    expect_equal(first.stage(), success_k);
+    expect_equal(first.commit(), success_k);
     expect_equal(container.size(), 1);
     expect_equal(container.contains(trivial_id_to_key<member_t>(1)), true);
     expect_equal(container.contains(trivial_id_to_key<member_t>(2)), false);
@@ -125,16 +125,16 @@ static void check_point_erase_visibility() {
         expect_equal(container.upsert(trivial_id_to_member<member_t>(index)), success_k);
     expect_equal(container.size(), 8);
 
-    auto erasing = container.transaction();
-    if (!expect_true(erasing.has_value())) return;
+    auto [erasing, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (std::size_t index = 0; index < 4; ++index)
-        expect_equal(erasing->erase(trivial_id_to_key<member_t>(index)), success_k);
-    expect_equal(erasing->stage(), success_k);
+        expect_equal(erasing.erase(trivial_id_to_key<member_t>(index)), success_k);
+    expect_equal(erasing.stage(), success_k);
     for (std::size_t index = 0; index < 4; ++index) {
         expect_equal(container.contains(trivial_id_to_key<member_t>(index)), true);
     }
 
-    expect_equal(erasing->commit(), success_k);
+    expect_equal(erasing.commit(), success_k);
     for (std::size_t index = 0; index < 4; ++index) {
         expect_equal(container.contains(trivial_id_to_key<member_t>(index)), false);
     }
@@ -153,12 +153,12 @@ static void check_point_rollback_restores_store() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1)), success_k);
 
-    auto writing = container.transaction();
-    if (!expect_true(writing.has_value())) return;
+    auto [writing, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (std::size_t index = 1; index <= 5; ++index)
-        expect_equal(writing->upsert(trivial_id_to_member<member_t>(index)), success_k);
-    expect_equal(writing->stage(), success_k);
-    expect_equal(writing->rollback(), success_k);
+        expect_equal(writing.upsert(trivial_id_to_member<member_t>(index)), success_k);
+    expect_equal(writing.stage(), success_k);
+    expect_equal(writing.rollback(), success_k);
 
     expect_equal(container.size(), 1);
     expect_equal(container.contains(trivial_id_to_key<member_t>(1)), true);
@@ -167,8 +167,8 @@ static void check_point_rollback_restores_store() {
     }
 
     // The rolled-back versions are still the transaction's, so a second staging lands them all
-    expect_equal(writing->stage(), success_k);
-    expect_equal(writing->commit(), success_k);
+    expect_equal(writing.stage(), success_k);
+    expect_equal(writing.commit(), success_k);
     expect_equal(container.size(), 5);
 }
 
@@ -180,12 +180,12 @@ static void check_point_staging_survives_growth(std::size_t size = 500) {
     using member_t = typename container_t::value_type;
 
     container_t container;
-    auto writing = container.transaction();
-    if (!expect_true(writing.has_value())) return;
+    auto [writing, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (std::size_t index = 0; index < size; ++index)
-        expect_equal(writing->upsert(trivial_id_to_member<member_t>(index)), success_k);
-    expect_equal(writing->stage(), success_k);
-    expect_equal(writing->commit(), success_k);
+        expect_equal(writing.upsert(trivial_id_to_member<member_t>(index)), success_k);
+    expect_equal(writing.stage(), success_k);
+    expect_equal(writing.commit(), success_k);
 
     expect_equal(container.size(), size);
     for (std::size_t index = 0; index < size; ++index) {
@@ -227,14 +227,14 @@ static void check_point_enumeration_visits_every_member() {
     for (std::size_t index = 0; index < size; ++index) expect_equal(tally[index], 1);
 
     // A transaction reports its own staged writes and hides its own tombstones.
-    auto writing = container.transaction();
-    if (!expect_true(writing.has_value())) return;
-    expect_equal(writing->erase(trivial_id_to_key<member_t>(0)), success_k);
-    expect_equal(writing->upsert(trivial_id_to_member<member_t>(size)), success_k);
+    auto [writing, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(writing.erase(trivial_id_to_key<member_t>(0)), success_k);
+    expect_equal(writing.upsert(trivial_id_to_member<member_t>(size)), success_k);
 
     std::vector<std::size_t> staged_tally(size + 1, 0);
     std::size_t staged_visits = 0;
-    expect_equal(writing->for_each([&](member_t const &member) noexcept {
+    expect_equal(writing.for_each([&](member_t const &member) noexcept {
         ++staged_visits;
         ++staged_tally[key_slot<member_t>(member, keys)];
     }),
@@ -244,7 +244,7 @@ static void check_point_enumeration_visits_every_member() {
     for (std::size_t index = 1; index < size; ++index) expect_equal(staged_tally[index], 1);
 
     // Nothing the transaction staged is published, so the store still reports what it did before.
-    expect_equal(writing->stage(), success_k);
+    expect_equal(writing.stage(), success_k);
     std::size_t published_visits = 0;
     expect_equal(container.for_each([&](member_t const &) noexcept { ++published_visits; }), success_k);
     expect_equal(published_visits, size);
@@ -477,33 +477,33 @@ static void check_watch_on_erased_version_commits() {
 
     container_t container;
     {
-        auto writer = container.transaction();
-        if (!expect_true(writer.has_value())) return;
-        expect_equal(writer->insert(trivial_id_to_member<member_t>(1)), success_k);
-        expect_equal(writer->stage(), success_k);
-        expect_equal(writer->commit(), success_k);
+        auto [writer, writer_status] = container.transaction();
+        if (!expect_equal(writer_status, success_k)) return;
+        expect_equal(writer.insert(trivial_id_to_member<member_t>(1)), success_k);
+        expect_equal(writer.stage(), success_k);
+        expect_equal(writer.commit(), success_k);
     }
 
     generation_t erased_generation = 0;
     {
-        auto eraser = container.transaction();
-        if (!expect_true(eraser.has_value())) return;
-        expect_equal(eraser->erase(trivial_id_to_key<member_t>(1)), success_k);
-        erased_generation = eraser->generation();
-        expect_equal(eraser->stage(), success_k);
-        expect_equal(eraser->commit(), success_k);
+        auto [eraser, eraser_status] = container.transaction();
+        if (!expect_equal(eraser_status, success_k)) return;
+        expect_equal(eraser.erase(trivial_id_to_key<member_t>(1)), success_k);
+        erased_generation = eraser.generation();
+        expect_equal(eraser.stage(), success_k);
+        expect_equal(eraser.commit(), success_k);
     }
     expect_equal(container.contains(trivial_id_to_key<member_t>(1)), false);
 
-    auto watcher = container.transaction();
-    if (!expect_true(watcher.has_value())) return;
+    auto [watcher, watcher_status] = container.transaction();
+    if (!expect_equal(watcher_status, success_k)) return;
     versioned_entry_t tombstone {trivial_id_to_member<member_t>(1)};
     tombstone.generation = erased_generation;
     tombstone.presence = presence_t::erased_k;
-    expect_equal(watcher->watch(tombstone), success_k);
-    expect_equal(watcher->insert(trivial_id_to_member<member_t>(2)), success_k);
-    expect_equal(watcher->stage(), success_k);
-    expect_equal(watcher->commit(), success_k);
+    expect_equal(watcher.watch(tombstone), success_k);
+    expect_equal(watcher.insert(trivial_id_to_member<member_t>(2)), success_k);
+    expect_equal(watcher.stage(), success_k);
+    expect_equal(watcher.commit(), success_k);
     expect_equal(container.contains(trivial_id_to_key<member_t>(2)), true);
 }
 

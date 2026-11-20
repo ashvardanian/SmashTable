@@ -98,51 +98,51 @@ void test_random_writes_match_the_oracle() {
         trivial_id_t const identifier = trivial_id_t(generator() % fuzz_keyspace_k);
         int const value = int(generator() % 1000);
 
-        auto engine_transaction = engine.transaction();
-        if (!expect_true(engine_transaction.has_value())) return;
-        auto oracle_transaction = oracle.transaction();
-        if (!expect_true(oracle_transaction.has_value())) return;
+        auto [engine_transaction, engine_transaction_status] = engine.transaction();
+        if (!expect_equal(engine_transaction_status, success_k)) return;
+        auto [oracle_transaction, oracle_transaction_status] = oracle.transaction();
+        if (!expect_equal(oracle_transaction_status, success_k)) return;
 
         // A tombstone staged before the write is what separates the merged view from the store, so
         // roughly a third of the rounds erase first and then ask a strict writer about the same key.
         bool const erasing_first = (generator() % 3) == 0;
         if (erasing_first) {
-            [[maybe_unused]] status_t const from_engine = engine_transaction->erase(trivial_key_t {identifier});
-            [[maybe_unused]] status_t const from_oracle = oracle_transaction->erase(trivial_key_t {identifier});
+            [[maybe_unused]] status_t const from_engine = engine_transaction.erase(trivial_key_t {identifier});
+            [[maybe_unused]] status_t const from_oracle = oracle_transaction.erase(trivial_key_t {identifier});
         }
 
         status_t from_engine = success_k;
         status_t from_oracle = success_k;
         switch (generator() % 4) {
         case 0:
-            from_engine = engine_transaction->upsert(trivial_id_to_member<member_t>(identifier, value));
-            from_oracle = oracle_transaction->upsert(trivial_id_to_member<member_t>(identifier, value));
+            from_engine = engine_transaction.upsert(trivial_id_to_member<member_t>(identifier, value));
+            from_oracle = oracle_transaction.upsert(trivial_id_to_member<member_t>(identifier, value));
             break;
         case 1:
-            from_engine = engine_transaction->insert(trivial_id_to_member<member_t>(identifier, value));
-            from_oracle = oracle_transaction->insert(trivial_id_to_member<member_t>(identifier, value));
+            from_engine = engine_transaction.insert(trivial_id_to_member<member_t>(identifier, value));
+            from_oracle = oracle_transaction.insert(trivial_id_to_member<member_t>(identifier, value));
             break;
         case 2:
-            from_engine = engine_transaction->insert_if_missing(trivial_id_to_member<member_t>(identifier, value));
-            from_oracle = oracle_transaction->insert_if_missing(trivial_id_to_member<member_t>(identifier, value));
+            from_engine = engine_transaction.insert_if_missing(trivial_id_to_member<member_t>(identifier, value));
+            from_oracle = oracle_transaction.insert_if_missing(trivial_id_to_member<member_t>(identifier, value));
             break;
         default:
-            from_engine = engine_transaction->update(trivial_id_to_member<member_t>(identifier, value));
-            from_oracle = oracle_transaction->update(trivial_id_to_member<member_t>(identifier, value));
+            from_engine = engine_transaction.update(trivial_id_to_member<member_t>(identifier, value));
+            from_oracle = oracle_transaction.update(trivial_id_to_member<member_t>(identifier, value));
             break;
         }
         expect_equal(from_engine, from_oracle, "an engine and the oracle answered a strict write differently");
 
-        expected<bool> const engine_sees = engine_transaction->contains(trivial_key_t {identifier});
-        expected<bool> const oracle_sees = oracle_transaction->contains(trivial_key_t {identifier});
-        if (!expect_true(engine_sees.has_value())) return;
-        if (!expect_true(oracle_sees.has_value())) return;
-        expect_equal((*engine_sees), (*oracle_sees), "a transaction disagreed with the oracle about its own view");
+        auto const [engine_sees, engine_sees_status] = engine_transaction.contains(trivial_key_t {identifier});
+        auto const [oracle_sees, oracle_sees_status] = oracle_transaction.contains(trivial_key_t {identifier});
+        if (!expect_equal(engine_sees_status, success_k)) return;
+        if (!expect_equal(oracle_sees_status, success_k)) return;
+        expect_equal(engine_sees, oracle_sees, "a transaction disagreed with the oracle about its own view");
 
-        expect_equal(engine_transaction->stage(), success_k);
-        expect_equal(oracle_transaction->stage(), success_k);
-        expect_equal(engine_transaction->commit(), success_k);
-        expect_equal(oracle_transaction->commit(), success_k);
+        expect_equal(engine_transaction.stage(), success_k);
+        expect_equal(oracle_transaction.stage(), success_k);
+        expect_equal(engine_transaction.commit(), success_k);
+        expect_equal(oracle_transaction.commit(), success_k);
 
         expect_equal(engine.size(), oracle.size(), "a committed round left the two holding different counts");
         expect_equal(fuzz_snapshot_of(engine), fuzz_snapshot_of(oracle),
@@ -183,43 +183,43 @@ void test_a_reused_transaction_matches_a_map() {
         }
     };
 
-    auto writer = engine.transaction();
-    if (!expect_true(writer.has_value())) return;
+    auto [writer, writer_status] = engine.transaction();
+    if (!expect_equal(writer_status, success_k)) return;
 
     for (std::size_t round = 0; round != rounds; ++round) {
         std::map<trivial_id_t, int> intended = model;
         {
-            auto pinned = engine.transaction();
-            if (!expect_true(pinned.has_value())) return;
+            auto [pinned, pinned_status] = engine.transaction();
+            if (!expect_equal(pinned_status, success_k)) return;
 
             for (std::size_t written = 0, writes = 1 + generator() % 3; written != writes; ++written) {
                 trivial_id_t const identifier = trivial_id_t(generator() % fuzz_keyspace_k);
                 if ((generator() % 4) == 0) {
-                    [[maybe_unused]] status_t const erased = writer->erase(trivial_key_t {identifier});
+                    [[maybe_unused]] status_t const erased = writer.erase(trivial_key_t {identifier});
                     intended.erase(identifier);
                 }
                 else {
                     int const value = int(generator() % 1000);
-                    expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
+                    expect_equal(writer.upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
                     intended[identifier] = value;
                 }
             }
 
-            expect_equal(writer->stage(), success_k);
-            expect_reads(*pinned, model, "a reader pinned before the round, while the writer is staged");
+            expect_equal(writer.stage(), success_k);
+            expect_reads(pinned, model, "a reader pinned before the round, while the writer is staged");
             expect_reads(engine, model, "the store, while the writer is staged");
 
             switch (generator() % 3) {
             case 0:
-                expect_equal(writer->commit(), success_k);
+                expect_equal(writer.commit(), success_k);
                 model = intended;
                 break;
-            case 1: expect_equal(writer->reset(), success_k); break;
+            case 1: expect_equal(writer.reset(), success_k); break;
             default:
-                expect_equal(writer->rollback(), success_k);
+                expect_equal(writer.rollback(), success_k);
                 expect_reads(engine, model, "the store, after the writer rolled back");
-                expect_equal(writer->stage(), success_k);
-                expect_equal(writer->commit(), success_k);
+                expect_equal(writer.stage(), success_k);
+                expect_equal(writer.commit(), success_k);
                 model = intended;
                 break;
             }
@@ -228,21 +228,21 @@ void test_a_reused_transaction_matches_a_map() {
         // Erased and written again with no reader open, so each commit prunes all it masked, the
         // tombstone itself included, and the rewrite lands over whatever that pruning left.
         trivial_id_t const rewritten = trivial_id_t(generator() % fuzz_keyspace_k);
-        [[maybe_unused]] status_t const erased = writer->erase(trivial_key_t {rewritten});
-        expect_equal(writer->stage(), success_k);
-        expect_equal(writer->commit(), success_k);
+        [[maybe_unused]] status_t const erased = writer.erase(trivial_key_t {rewritten});
+        expect_equal(writer.stage(), success_k);
+        expect_equal(writer.commit(), success_k);
         model.erase(rewritten);
         expect_reads(engine, model, "the store, after the erase");
         int const value = int(generator() % 1000);
-        expect_equal(writer->upsert(trivial_id_to_member<member_t>(rewritten, value)), success_k);
-        expect_equal(writer->stage(), success_k);
-        expect_equal(writer->commit(), success_k);
+        expect_equal(writer.upsert(trivial_id_to_member<member_t>(rewritten, value)), success_k);
+        expect_equal(writer.stage(), success_k);
+        expect_equal(writer.commit(), success_k);
         model[rewritten] = value;
 
         expect_reads(engine, model, "the store, after the round");
         expect_equal(engine.size(), model.size(), "a reused transaction left the store miscounting its members");
         if constexpr (requires { engine.versions_count(); }) {
-            expect_true(engine.vacuum().has_value());
+            expect_equal(engine.vacuum().status(), success_k);
             expect_equal(engine.versions_count(), engine.size(),
                          "a vacuum with no reader open keeps one version a key");
         }
@@ -268,16 +268,16 @@ void test_random_windows_match_the_oracle() {
     fuzz_oracle_t oracle;
 
     for (std::size_t round = 0; round != rounds; ++round) {
-        auto engine_transaction = engine.transaction();
-        if (!expect_true(engine_transaction.has_value())) return;
-        auto oracle_transaction = oracle.transaction();
-        if (!expect_true(oracle_transaction.has_value())) return;
+        auto [engine_transaction, engine_transaction_status] = engine.transaction();
+        if (!expect_equal(engine_transaction_status, success_k)) return;
+        auto [oracle_transaction, oracle_transaction_status] = oracle.transaction();
+        if (!expect_equal(oracle_transaction_status, success_k)) return;
 
         for (std::size_t written = 0; written != 4; ++written) {
             trivial_id_t const identifier = trivial_id_t(generator() % fuzz_keyspace_k);
             int const value = int(generator() % 1000);
-            expect_equal(engine_transaction->upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
-            expect_equal(oracle_transaction->upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
+            expect_equal(engine_transaction.upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
+            expect_equal(oracle_transaction.upsert(trivial_id_to_member<member_t>(identifier, value)), success_k);
         }
 
         // A window drawn from the same keyspace, so it usually holds something rather than testing
@@ -287,14 +287,14 @@ void test_random_windows_match_the_oracle() {
             trivial_id_t const second = trivial_id_t(generator() % fuzz_keyspace_k);
             trivial_key_t const lower {first < second ? first : second};
             trivial_key_t const upper {first < second ? second : first};
-            expect_equal(engine_transaction->erase_range(lower, upper, no_op_t {}), success_k);
-            expect_equal(oracle_transaction->erase_range(lower, upper, no_op_t {}), success_k);
+            expect_equal(engine_transaction.erase_range(lower, upper, no_op_t {}), success_k);
+            expect_equal(oracle_transaction.erase_range(lower, upper, no_op_t {}), success_k);
         }
 
-        expect_equal(engine_transaction->stage(), success_k);
-        expect_equal(oracle_transaction->stage(), success_k);
-        expect_equal(engine_transaction->commit(), success_k);
-        expect_equal(oracle_transaction->commit(), success_k);
+        expect_equal(engine_transaction.stage(), success_k);
+        expect_equal(oracle_transaction.stage(), success_k);
+        expect_equal(engine_transaction.commit(), success_k);
+        expect_equal(oracle_transaction.commit(), success_k);
 
         expect_equal(engine.size(), oracle.size(), "a window mutator left the two holding different counts");
         expect_equal(fuzz_snapshot_of(engine), fuzz_snapshot_of(oracle),
@@ -347,10 +347,10 @@ void test_a_refused_group_publishes_nothing() {
         trivial_id_t const watched = trivial_id_t(generator() % fuzz_keyspace_k);
         trivial_id_t const written = trivial_id_t(generator() % fuzz_keyspace_k);
 
-        auto group = make_transaction_group(alpha, beta);
-        if (!expect_true(group.has_value())) return;
-        auto &into_alpha = group->template participant<0>();
-        auto &into_beta = group->template participant<1>();
+        auto [group, status] = make_transaction_group(alpha, beta);
+        if (!expect_equal(status, success_k)) return;
+        auto &into_alpha = group.template participant<0>();
+        auto &into_beta = group.template participant<1>();
 
         // The participant carrying the watch writes the watched key too, so the refusal is always the
         // write set catching it rather than the read set - one code to assert instead of two.
@@ -364,7 +364,7 @@ void test_a_refused_group_publishes_nothing() {
             expect_equal(into_beta.upsert(trivial_id_to_member<second_member_t>(written, int(round) + 1)), success_k);
             expect_equal(into_alpha.watch(trivial_key_t {watched}), success_k);
         }
-        expect_equal(group->stage(), success_k);
+        expect_equal(group.stage(), success_k);
 
         // Published over while the group is staged, which is the one thing a validated commit still
         // has to catch and the only refusal a staged group can meet.
@@ -373,12 +373,12 @@ void test_a_refused_group_publishes_nothing() {
 
         fuzz_snapshot_t const alpha_before = fuzz_snapshot_of(alpha);
         fuzz_snapshot_t const beta_before = fuzz_snapshot_of(beta);
-        status_t const refused = group->commit();
+        status_t const refused = group.commit();
         expect_equal(refused, status_t::write_conflict_k, "a commit over a published watch must be refused");
         expect_equal(fuzz_snapshot_of(alpha), alpha_before, "a refused group published its first participant");
         expect_equal(fuzz_snapshot_of(beta), beta_before, "a refused group published its second participant");
-        expect_equal(group->staging(), staging_t::staged_k, "a refused group must stay staged to be unwindable");
-        expect_equal(group->rollback(), success_k);
+        expect_equal(group.staging(), staging_t::staged_k, "a refused group must stay staged to be unwindable");
+        expect_equal(group.rollback(), success_k);
     }
 }
 
@@ -409,8 +409,8 @@ void test_an_accepted_group_publishes_everything() {
     std::size_t published_rounds = 0;
 
     // One group across every round, so each commit restages keys the same participants published.
-    auto group = make_transaction_group(alpha, beta);
-    if (!expect_true(group.has_value())) return;
+    auto [group, status] = make_transaction_group(alpha, beta);
+    if (!expect_equal(status, success_k)) return;
     std::vector<model_member_t> pending;
 
     for (std::size_t round = 0; round != rounds; ++round) {
@@ -418,17 +418,17 @@ void test_an_accepted_group_publishes_everything() {
         int const value = int(round) + 1;
         bool const unwinding = (generator() % 4) == 0;
 
-        expect_equal(group->template participant<0>().upsert(trivial_id_to_member<first_member_t>(identifier, value)),
+        expect_equal(group.template participant<0>().upsert(trivial_id_to_member<first_member_t>(identifier, value)),
                      success_k);
-        expect_equal(group->template participant<1>().upsert(trivial_id_to_member<second_member_t>(identifier, value)),
+        expect_equal(group.template participant<1>().upsert(trivial_id_to_member<second_member_t>(identifier, value)),
                      success_k);
         pending.push_back(trivial_id_to_member<model_member_t>(identifier, value));
-        expect_equal(group->stage(), success_k);
+        expect_equal(group.stage(), success_k);
 
         // A rollback keeps the round's writes pending, so the next commit publishes them as well.
-        if (unwinding) { expect_equal(group->rollback(), success_k); }
+        if (unwinding) { expect_equal(group.rollback(), success_k); }
         else {
-            expect_equal(group->commit(), success_k);
+            expect_equal(group.commit(), success_k);
             for (model_member_t const &member : pending) expect_equal(model.upsert(model_member_t(member)), success_k);
             pending.clear();
             ++published_rounds;

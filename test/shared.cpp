@@ -644,9 +644,9 @@ static void test_extended_atomics_reach_the_pinned_table() {
     counting_extended_ref<std::uint64_t>::posted_flips.store(0);
     counting_extended_ref<std::uint64_t>::posted_writes.store(0);
 
-    auto allocated = hash_set<std::uint64_t>::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the table to be pinned must build")) return;
-    extended_table_t pinned = extended_table_t::adopt((*std::move(allocated)).release());
+    auto [table, status] = hash_set<std::uint64_t>::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the table to be pinned must build")) return;
+    extended_table_t pinned = extended_table_t::adopt(std::move(table).release());
 
     expect_equal(pinned.emplace(std::uint64_t {42}), success_k);
     expect_equal(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {1},
@@ -721,9 +721,9 @@ static void test_waiting_policy_substitutes_in_the_mutex() {
 static void test_waiting_policy_substitutes_in_the_slot_lock() {
     yielding_waiting_policy_t::pauses.store(0);
 
-    auto allocated = hash_set<std::uint64_t>::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the table to be pinned must build")) return;
-    yielding_table_t pinned = yielding_table_t::adopt((*std::move(allocated)).release());
+    auto [table, status] = hash_set<std::uint64_t>::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the table to be pinned must build")) return;
+    yielding_table_t pinned = yielding_table_t::adopt(std::move(table).release());
     expect_equal(pinned.emplace(std::uint64_t {42}), success_k);
 
     // A found callback runs under the slot's lock, which is the one way to hold a slot from outside.
@@ -738,7 +738,7 @@ static void test_waiting_policy_substitutes_in_the_slot_lock() {
     expect_true(spin_until([&] { return holding.load(); }));
 
     std::thread prober {
-        [&]() noexcept { [[maybe_unused]] expected<bool> const seen = pinned.contains(std::uint64_t {42}); }};
+        [&]() noexcept { [[maybe_unused]] status_t const seen = pinned.contains(std::uint64_t {42}).status(); }};
 
     // Every attempt the prober spends on the held slot goes to the policy, so one tally is enough to
     // know the lock is spinning through it rather than through a hint of its own.
@@ -802,10 +802,11 @@ struct recording_store {
 
     struct transaction_t {
         // Pointers, not references: the transaction has to stay move-assignable.
-        std::vector<recorded_call_t> *log;
-        std::size_t position;
-        refusals_t const *refusals;
+        std::vector<recorded_call_t> *log {nullptr};
+        std::size_t position {0};
+        refusals_t const *refusals {nullptr};
 
+        transaction_t() noexcept = default;
         transaction_t(transaction_t &&) noexcept = default;
         transaction_t &operator=(transaction_t &&) noexcept = default;
         transaction_t(transaction_t const &) = delete;
@@ -864,9 +865,10 @@ struct store_committing_on_reset_t {
 
     struct transaction_t {
         // A pointer, not a reference: the transaction has to stay move-assignable.
-        order_t *commit_order;
-        generation_t read_at;
+        order_t *commit_order {nullptr};
+        generation_t read_at {0};
 
+        transaction_t() noexcept = default;
         transaction_t(transaction_t &&) noexcept = default;
         transaction_t &operator=(transaction_t &&) noexcept = default;
         transaction_t(transaction_t const &) = delete;
@@ -920,9 +922,8 @@ static void test_transaction_group_walks_one_order() {
     std::vector<recorded_call_t> log;
     recording_store<> first {log, 0}, second {log, 1}, third {log, 2};
 
-    auto group_result = make_transaction_group(first, second, third);
-    if (!expect_equal(group_result.status(), success_k)) return;
-    auto &group = *group_result;
+    auto [group, status] = make_transaction_group(first, second, third);
+    if (!expect_equal(status, success_k)) return;
 
     expect_equal(group.stage(), success_k);
     std::vector<std::size_t> const ordered = stores_visited(log, phase_t::stage_k);
@@ -958,9 +959,8 @@ static void test_transaction_group_rollback_stops_at_refusal() {
     std::array<recording_store<>, 3> stores {{{log, 0}, {log, 1}, {log, 2}}};
     stores[1].refusals.rollback = operation_would_block_k;
 
-    auto group_result = make_transaction_group(stores[0], stores[1], stores[2]);
-    if (!expect_equal(group_result.status(), success_k)) return;
-    auto &group = *group_result;
+    auto [group, status] = make_transaction_group(stores[0], stores[1], stores[2]);
+    if (!expect_equal(status, success_k)) return;
 
     expect_equal(group.stage(), success_k);
     log.clear();
@@ -988,18 +988,15 @@ static void test_transaction_group_refuses_a_duplicate_store() {
     std::vector<recorded_call_t> log;
     recording_store<> only {log, 0}, other {log, 1};
 
-    auto duplicated = make_transaction_group(only, only);
-    expect_equal(duplicated.status(), invalid_argument_k);
+    expect_equal(make_transaction_group(only, only).status(), invalid_argument_k);
     expect_true(log.empty());
 
     // A repeat is caught wherever it sits, not only next to itself.
-    auto separated = make_transaction_group(only, other, only);
-    expect_equal(separated.status(), invalid_argument_k);
+    expect_equal(make_transaction_group(only, other, only).status(), invalid_argument_k);
     expect_true(log.empty());
 
     // Two distinct stores are what the refusal is not about.
-    auto distinct = make_transaction_group(only, other);
-    expect_equal(distinct.status(), success_k);
+    expect_equal(make_transaction_group(only, other).status(), success_k);
     std::vector<std::size_t> const opened {0, 1};
     expect_true(stores_visited(log, phase_t::open_k) == opened);
 }
@@ -1010,13 +1007,11 @@ static void test_transaction_group_reports_what_refused_to_open() {
     recording_store<> first {log, 0}, second {log, 1};
 
     second.refusals.opening = operation_not_permitted_k;
-    auto refused = make_transaction_group(first, second);
-    expect_equal(refused.status(), operation_not_permitted_k);
+    expect_equal(make_transaction_group(first, second).status(), operation_not_permitted_k);
 
     // Two refusals fold to the one the caller named first, in argument order.
     first.refusals.opening = capacity_exhausted_k;
-    auto both_refused = make_transaction_group(first, second);
-    expect_equal(both_refused.status(), capacity_exhausted_k);
+    expect_equal(make_transaction_group(first, second).status(), capacity_exhausted_k);
 }
 
 /** A rollback failing inside a refused stage replaces the refusal and resets every participant. */
@@ -1027,9 +1022,8 @@ static void test_transaction_group_failed_unwind_resets() {
     stores[0].refusals.rollback = consistency_k;
     stores[1].refusals.stage = write_conflict_k;
 
-    auto group_result = make_transaction_group(stores[0], stores[1]);
-    if (!expect_equal(group_result.status(), success_k)) return;
-    auto &group = *group_result;
+    auto [group, status] = make_transaction_group(stores[0], stores[1]);
+    if (!expect_equal(status, success_k)) return;
     expect_equal(group.stage(), consistency_k);
     expect_equal(group.staging(), staging_t::pending_k);
     std::vector<std::size_t> const every {0, 1};
@@ -1050,9 +1044,8 @@ static void test_transaction_group_torn_commit_stops_claiming_staged() {
 
     // The first participant refusing publishes nothing, so the group is staged and still retryable.
     stores[0].refusals.commit = write_conflict_k;
-    auto intact_result = make_transaction_group(stores[0], stores[1], stores[2]);
-    if (!expect_equal(intact_result.status(), success_k)) return;
-    auto &intact = *intact_result;
+    auto [intact, intact_status] = make_transaction_group(stores[0], stores[1], stores[2]);
+    if (!expect_equal(intact_status, success_k)) return;
     expect_equal(intact.stage(), success_k);
     expect_equal(intact.commit(), write_conflict_k);
     expect_equal(intact.staging(), staging_t::staged_k);
@@ -1061,9 +1054,8 @@ static void test_transaction_group_torn_commit_stops_claiming_staged() {
     // A refusal after one participant published cannot be pulled back, so the group stops saying staged.
     stores[0].refusals.commit = success_k;
     stores[1].refusals.commit = write_conflict_k;
-    auto torn_result = make_transaction_group(stores[0], stores[1], stores[2]);
-    if (!expect_equal(torn_result.status(), success_k)) return;
-    auto &torn = *torn_result;
+    auto [torn, torn_status] = make_transaction_group(stores[0], stores[1], stores[2]);
+    if (!expect_equal(torn_status, success_k)) return;
     expect_equal(torn.stage(), success_k);
     expect_equal(torn.commit(), write_conflict_k);
     expect_equal(torn.staging(), staging_t::pending_k);
@@ -1088,9 +1080,8 @@ static void test_transaction_group_split_commit_publishes_nothing_on_refusal() {
     std::array<store_t, 2> stores {{{log, 0}, {log, 1}}};
     stores[1].refusals.validate_for_commit = write_conflict_k;
 
-    auto group_result = make_transaction_group(stores[0], stores[1]);
-    if (!expect_equal(group_result.status(), success_k)) return;
-    auto &group = *group_result;
+    auto [group, status] = make_transaction_group(stores[0], stores[1]);
+    if (!expect_equal(status, success_k)) return;
 
     expect_equal(group.stage(), success_k);
     log.clear();
@@ -1123,14 +1114,14 @@ static void test_transaction_group_resets_every_participant_at_one_snapshot() {
     store_committing_on_reset_t first {order}, second {order};
     values_t values {order};
 
-    auto group = make_transaction_group(first, second, values);
-    if (!expect_equal(group.status(), success_k)) return;
+    auto [group, status] = make_transaction_group(first, second, values);
+    if (!expect_equal(status, success_k)) return;
     generation_t const drawn = order.published_stamp();
-    expect_equal(group->reset(), success_k);
+    expect_equal(group.reset(), success_k);
     expect_equal(order.published_stamp(), drawn + 2, "each committing participant landed a commit mid-reset");
 
     // Every reset but the first follows a landed commit, whatever order the group visits them in.
-    auto [first_read, second_read, values_read] = group->participants();
+    auto [first_read, second_read, values_read] = group.participants();
     expect_equal(first_read.snapshot(), drawn);
     expect_equal(second_read.snapshot(), drawn);
     expect_equal(values_read.snapshot(), drawn, "a commit landing mid-reset must not split the group");
@@ -1158,21 +1149,22 @@ static void test_dynamic_transaction_group_commits_kinds_under_one_stamp() {
     grouped_map_t values {order};
     grouped_set_t edges {order};
 
-    auto group = dynamic_group_t::make(order);
-    if (!expect_equal(group.status(), success_k)) return;
-    generation_t const before = group->snapshot();
-    auto values_joined = group->join(values);
-    auto edges_joined = group->join(edges);
-    if (!expect_true(values_joined && edges_joined)) return;
-    expect_equal((*values_joined)->upsert(grouped_member_t {1u, 100}), success_k);
-    expect_equal((*edges_joined)->upsert(std::uint64_t {7}), success_k);
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
+    auto [group, group_status] = dynamic_group_t::make(order);
+    if (!expect_equal(group_status, success_k)) return;
+    generation_t const before = group.snapshot();
+    auto const [values_joined, values_status] = group.join(values);
+    if (!expect_equal(values_status, success_k)) return;
+    auto const [edges_joined, edges_status] = group.join(edges);
+    if (!expect_equal(edges_status, success_k)) return;
+    expect_equal(values_joined->upsert(grouped_member_t {1u, 100}), success_k);
+    expect_equal(edges_joined->upsert(std::uint64_t {7}), success_k);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
 
     expect_equal(order.published_stamp(), before + 1, "one stamp for every kind the group spans");
-    expect_equal(group->commit_stamp(), before + 1);
+    expect_equal(group.commit_stamp(), before + 1);
     expect_true(!holds_at(values, before, 1) && !holds_at(edges, before, 7));
-    expect_true(holds_at(values, group->commit_stamp(), 1) && holds_at(edges, group->commit_stamp(), 7));
+    expect_true(holds_at(values, group.commit_stamp(), 1) && holds_at(edges, group.commit_stamp(), 7));
 }
 
 /** A conflict in one participant refuses the commit before any participant publishes. */
@@ -1181,31 +1173,33 @@ static void test_dynamic_transaction_group_conflict_publishes_nothing() {
     grouped_map_t values {order};
     grouped_set_t edges {order};
 
-    auto group = dynamic_group_t::make(order);
-    if (!expect_equal(group.status(), success_k)) return;
-    grouped_map_t::transaction_t *const watching = *group->join(values);
-    grouped_set_t::transaction_t *const writing = *group->join(edges);
+    auto [group, group_status] = dynamic_group_t::make(order);
+    if (!expect_equal(group_status, success_k)) return;
+    auto const [watching, watching_status] = group.join(values);
+    if (!expect_equal(watching_status, success_k)) return;
+    auto const [writing, writing_status] = group.join(edges);
+    if (!expect_equal(writing_status, success_k)) return;
     expect_equal(watching->watch(5), success_k);
     expect_equal(watching->upsert(grouped_member_t {1u, 100}), success_k);
     expect_equal(writing->upsert(std::uint64_t {7}), success_k);
-    expect_equal(group->stage(), success_k);
+    expect_equal(group.stage(), success_k);
 
     // The watched key moves between the stage and the commit, from outside the group.
     {
-        auto interloper = values.transaction();
-        if (!expect_equal(interloper.status(), success_k)) return;
-        expect_equal(interloper->upsert(grouped_member_t {5u, 500}), success_k);
-        expect_equal(interloper->stage(), success_k);
-        expect_equal(interloper->commit(), success_k);
+        auto [interloper, interloper_status] = values.transaction();
+        if (!expect_equal(interloper_status, success_k)) return;
+        expect_equal(interloper.upsert(grouped_member_t {5u, 500}), success_k);
+        expect_equal(interloper.stage(), success_k);
+        expect_equal(interloper.commit(), success_k);
     }
 
     generation_t const published = order.published_stamp();
-    expect_equal(group->commit(), read_conflict_k);
+    expect_equal(group.commit(), read_conflict_k);
     expect_equal(order.published_stamp(), published, "a refused group draws no stamp");
     expect_true(!holds_at(values, published, 1) && !holds_at(edges, published, 7));
-    expect_equal(group->staging(), staging_t::staged_k);
-    expect_equal(group->participants_count(), std::size_t {2});
-    expect_equal(group->rollback(), success_k);
+    expect_equal(group.staging(), staging_t::staged_k);
+    expect_equal(group.participants_count(), std::size_t {2});
+    expect_equal(group.rollback(), success_k);
 }
 
 /** More stores of one kind than a type would list join one group, and their transactions stay put
@@ -1217,28 +1211,28 @@ static void test_dynamic_transaction_group_commits_many_stores_of_one_kind() {
     stores.reserve(stores_count);
     for (std::size_t index = 0; index != stores_count; ++index) stores.emplace_back(order);
 
-    auto group = dynamic_group_t::make(order);
-    if (!expect_equal(group.status(), success_k)) return;
+    auto [group, group_status] = dynamic_group_t::make(order);
+    if (!expect_equal(group_status, success_k)) return;
     std::vector<grouped_map_t::transaction_t *> joined;
     for (grouped_map_t &store : stores) {
-        auto participant = group->join(store);
-        if (!expect_equal(participant.status(), success_k)) return;
-        joined.push_back(*participant);
+        auto const [participant, participant_status] = group.join(store);
+        if (!expect_equal(participant_status, success_k)) return;
+        joined.push_back(participant);
     }
-    expect_equal(group->participants_count(), stores_count);
+    expect_equal(group.participants_count(), stores_count);
 
     // Written only once every store joined, through the pointers the earliest joins handed out.
     for (std::size_t index = 0; index != stores_count; ++index) {
-        expect_true(group->participant(stores[index]) == joined[index]);
+        expect_true(group.participant(stores[index]) == joined[index]);
         expect_equal(joined[index]->upsert(grouped_member_t {index, static_cast<int>(index)}), success_k);
     }
 
     generation_t const before = order.published_stamp();
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
     expect_equal(order.published_stamp(), before + 1);
     for (std::size_t index = 0; index != stores_count; ++index)
-        expect_true(holds_at(stores[index], group->commit_stamp(), index) && !holds_at(stores[index], before, index));
+        expect_true(holds_at(stores[index], group.commit_stamp(), index) && !holds_at(stores[index], before, index));
 }
 
 /** A store joins once, and a store it cannot stamp alongside the rest never joins. */
@@ -1248,19 +1242,21 @@ static void test_dynamic_transaction_group_joins_each_store_once() {
     grouped_set_t edges {order};
     grouped_map_t apart;
 
-    auto group = dynamic_group_t::make(order);
-    if (!expect_equal(group.status(), success_k)) return;
-    expect_true(group->participant(values) == nullptr);
-    auto first = group->join(values);
-    auto again = group->join(values);
-    if (!expect_true(first && again && *first == *again)) return;
-    expect_true(group->participant(values) == *first);
-    expect_equal(group->participants_count(), std::size_t {1});
+    auto [group, group_status] = dynamic_group_t::make(order);
+    if (!expect_equal(group_status, success_k)) return;
+    expect_true(group.participant(values) == nullptr);
+    auto const [first, first_status] = group.join(values);
+    if (!expect_equal(first_status, success_k)) return;
+    auto const [again, again_status] = group.join(values);
+    if (!expect_equal(again_status, success_k)) return;
+    if (!expect_true(first == again)) return;
+    expect_true(group.participant(values) == first);
+    expect_equal(group.participants_count(), std::size_t {1});
 
-    expect_equal(group->join(apart).status(), invalid_argument_k, "a store in its own order has another stamp");
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->join(edges).status(), operation_not_permitted_k, "a staged group takes no one new");
-    expect_equal(group->participants_count(), std::size_t {1});
+    expect_equal(group.join(apart).status(), invalid_argument_k, "a store in its own order has another stamp");
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.join(edges).status(), operation_not_permitted_k, "a staged group takes no one new");
+    expect_equal(group.participants_count(), std::size_t {1});
 }
 
 /** A commit and a reset each leave the group empty, and the next join reads a newer snapshot. */
@@ -1268,39 +1264,40 @@ static void test_dynamic_transaction_group_empties_on_commit_and_reset() {
     grouped_order_t order;
     grouped_map_t values {order};
 
-    auto group = dynamic_group_t::make(order);
-    if (!expect_equal(group.status(), success_k)) return;
-    expect_equal((*group->join(values))->upsert(grouped_member_t {1u, 100}), success_k);
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
-    expect_equal(group->participants_count(), std::size_t {0});
-    expect_true(group->participant(values) == nullptr);
-    expect_true(group->snapshot() >= group->commit_stamp());
+    auto [group, group_status] = dynamic_group_t::make(order);
+    if (!expect_equal(group_status, success_k)) return;
+    expect_equal((*group.join(values))->upsert(grouped_member_t {1u, 100}), success_k);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
+    expect_equal(group.participants_count(), std::size_t {0});
+    expect_true(group.participant(values) == nullptr);
+    expect_true(group.snapshot() >= group.commit_stamp());
 
-    grouped_map_t::transaction_t *const reader = *group->join(values);
-    expect_equal(reader->snapshot(), group->snapshot());
+    auto const [reader, reader_status] = group.join(values);
+    if (!expect_equal(reader_status, success_k)) return;
+    expect_equal(reader->snapshot(), group.snapshot());
     expect_equal(reader->find_copy(std::uint64_t {1}).status(), success_k);
 
     {
-        auto interloper = values.transaction();
-        if (!expect_equal(interloper.status(), success_k)) return;
-        expect_equal(interloper->upsert(grouped_member_t {2u, 200}), success_k);
-        expect_equal(interloper->stage(), success_k);
-        expect_equal(interloper->commit(), success_k);
+        auto [interloper, interloper_status] = values.transaction();
+        if (!expect_equal(interloper_status, success_k)) return;
+        expect_equal(interloper.upsert(grouped_member_t {2u, 200}), success_k);
+        expect_equal(interloper.stage(), success_k);
+        expect_equal(interloper.commit(), success_k);
     }
     expect_equal(reader->find_copy(std::uint64_t {2}).status(), key_not_found_k);
 
-    expect_equal(group->reset(), success_k);
-    expect_equal(group->participants_count(), std::size_t {0});
-    expect_equal((*group->join(values))->find_copy(std::uint64_t {2}).status(), success_k);
+    expect_equal(group.reset(), success_k);
+    expect_equal(group.participants_count(), std::size_t {0});
+    expect_equal((*group.join(values))->find_copy(std::uint64_t {2}).status(), success_k);
 
     // Emptied once more, the group has nothing to publish and draws no stamp for it.
-    expect_equal(group->reset(), success_k);
+    expect_equal(group.reset(), success_k);
     generation_t const published = order.published_stamp();
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
     expect_equal(order.published_stamp(), published);
-    expect_equal(group->commit_stamp(), generation_t {0});
+    expect_equal(group.commit_stamp(), generation_t {0});
 }
 
 /** A long-lived group rewriting the same keys of the same stores asks the allocator for nothing
@@ -1311,33 +1308,33 @@ static void test_dynamic_group_allocates_nothing_once_warm() {
     grouped_map_t values {order};
     grouped_set_t edges {order};
 
-    auto group = dynamic_group_t::make(order);
-    if (!expect_equal(group.status(), success_k)) return;
+    auto [group, group_status] = dynamic_group_t::make(order);
+    if (!expect_equal(group_status, success_k)) return;
     std::size_t warming_allocations = 0, allocations = 0, distinct_stamps = 0;
     generation_t last_stamp = 0;
     for (std::size_t round = 0; round != warm_rounds_k + counted_rounds_k; ++round) {
         std::size_t const before = test_run.nothrow_allocations.load();
-        bool passed = succeeded(group->reset());
-        auto values_joined = group->join(values);
-        auto edges_joined = group->join(edges);
-        passed = passed && values_joined && edges_joined &&
-                 succeeded((*values_joined)->upsert(grouped_member_t {1u, static_cast<int>(round)})) &&
-                 succeeded((*edges_joined)->upsert(std::uint64_t {7})) && succeeded(group->stage()) &&
-                 succeeded(group->commit());
-        group->clear();
+        bool passed = succeeded(group.reset());
+        auto const [values_joined, values_status] = group.join(values);
+        auto const [edges_joined, edges_status] = group.join(edges);
+        passed = passed && succeeded(values_status) && succeeded(edges_status) &&
+                 succeeded(values_joined->upsert(grouped_member_t {1u, static_cast<int>(round)})) &&
+                 succeeded(edges_joined->upsert(std::uint64_t {7})) && succeeded(group.stage()) &&
+                 succeeded(group.commit());
+        group.clear();
         if (!expect_true(passed)) return;
         if (round < warm_rounds_k) {
             warming_allocations += test_run.nothrow_allocations.load() - before;
             continue;
         }
         allocations += test_run.nothrow_allocations.load() - before;
-        distinct_stamps += group->commit_stamp() > last_stamp;
-        last_stamp = group->commit_stamp();
+        distinct_stamps += group.commit_stamp() > last_stamp;
+        last_stamp = group.commit_stamp();
     }
     expect_true(warming_allocations != 0, "the counter sees what the first joins and writes allocate");
     expect_equal(allocations, std::size_t {0}, "a warm group reuses its participants and the stores their nodes");
     expect_equal(distinct_stamps, counted_rounds_k);
-    expect_equal(group->capacity(), std::size_t {2});
+    expect_equal(group.capacity(), std::size_t {2});
     expect_true(holds_at(values, last_stamp, 1) && holds_at(edges, last_stamp, 7));
 }
 
@@ -1347,44 +1344,45 @@ static void test_dynamic_group_allocates_nothing_across_retries() {
     grouped_order_t order;
     grouped_map_t values {order};
 
-    auto group = dynamic_group_t::make(order);
-    if (!expect_equal(group.status(), success_k)) return;
+    auto [group, group_status] = dynamic_group_t::make(order);
+    if (!expect_equal(group_status, success_k)) return;
     std::size_t allocations = 0;
     for (std::size_t round = 0; round != warm_rounds_k + counted_rounds_k; ++round) {
         std::size_t before = test_run.nothrow_allocations.load();
-        bool passed = succeeded(group->reset());
-        auto first_attempt = group->join(values);
-        passed = passed && first_attempt && succeeded((*first_attempt)->watch(5)) &&
-                 succeeded((*first_attempt)->upsert(grouped_member_t {1u, static_cast<int>(round)})) &&
-                 succeeded(group->stage());
+        bool passed = succeeded(group.reset());
+        auto const [first_attempt, first_attempt_status] = group.join(values);
+        passed = passed && succeeded(first_attempt_status) && succeeded(first_attempt->watch(5)) &&
+                 succeeded(first_attempt->upsert(grouped_member_t {1u, static_cast<int>(round)})) &&
+                 succeeded(group.stage());
         std::size_t spent = test_run.nothrow_allocations.load() - before;
 
         // The watched key moves between the stage and the commit, from outside the group.
         {
-            auto interloper = values.transaction();
-            if (!expect_equal(interloper.status(), success_k)) return;
-            expect_equal(interloper->upsert(grouped_member_t {5u, static_cast<int>(round)}), success_k);
-            expect_equal(interloper->stage(), success_k);
-            expect_equal(interloper->commit(), success_k);
+            auto [interloper, interloper_status] = values.transaction();
+            if (!expect_equal(interloper_status, success_k)) return;
+            expect_equal(interloper.upsert(grouped_member_t {5u, static_cast<int>(round)}), success_k);
+            expect_equal(interloper.stage(), success_k);
+            expect_equal(interloper.commit(), success_k);
         }
 
         before = test_run.nothrow_allocations.load();
-        passed = passed && group->commit() == read_conflict_k && succeeded(group->reset());
-        auto second_attempt = group->join(values);
-        passed = passed && second_attempt && first_attempt && *second_attempt == *first_attempt &&
-                 succeeded((*second_attempt)->watch(5)) &&
-                 succeeded((*second_attempt)->upsert(grouped_member_t {1u, static_cast<int>(round)})) &&
-                 succeeded(group->stage()) && succeeded(group->commit());
-        group->clear();
+        passed = passed && group.commit() == read_conflict_k && succeeded(group.reset());
+        auto const [second_attempt, second_attempt_status] = group.join(values);
+        passed = passed && succeeded(second_attempt_status) && second_attempt == first_attempt &&
+                 succeeded(second_attempt->watch(5)) &&
+                 succeeded(second_attempt->upsert(grouped_member_t {1u, static_cast<int>(round)})) &&
+                 succeeded(group.stage()) && succeeded(group.commit());
+        group.clear();
         spent += test_run.nothrow_allocations.load() - before;
         if (!expect_true(passed)) return;
         if (round >= warm_rounds_k) allocations += spent;
 
-        auto committed = values.find_copy(std::uint64_t {1});
-        expect_true(committed && committed->mapped == static_cast<int>(round));
+        auto const [committed, committed_status] = values.find_copy(std::uint64_t {1});
+        expect_equal(committed_status, success_k);
+        expect_equal(committed.mapped, static_cast<int>(round));
     }
     expect_equal(allocations, std::size_t {0}, "a retry reopens the participant the refused attempt closed");
-    expect_equal(group->capacity(), std::size_t {1});
+    expect_equal(group.capacity(), std::size_t {1});
 }
 
 /** A spare participant opens on whichever store of its kind joins next, and every store ends up
@@ -1394,30 +1392,30 @@ static void test_dynamic_group_rebinds_spares_to_other_stores() {
     grouped_map_t first {order}, second {order}, third {order};
     grouped_set_t edges {order};
 
-    auto group = dynamic_group_t::make(order);
-    if (!expect_equal(group.status(), success_k)) return;
-    expect_equal(group->capacity(), std::size_t {0});
+    auto [group, group_status] = dynamic_group_t::make(order);
+    if (!expect_equal(group_status, success_k)) return;
+    expect_equal(group.capacity(), std::size_t {0});
 
-    expect_equal((*group->join(first))->upsert(grouped_member_t {1u, 10}), success_k);
-    expect_equal((*group->join(second))->upsert(grouped_member_t {2u, 20}), success_k);
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
-    expect_equal(group->participants_count(), std::size_t {0});
-    expect_equal(group->capacity(), std::size_t {2});
+    expect_equal((*group.join(first))->upsert(grouped_member_t {1u, 10}), success_k);
+    expect_equal((*group.join(second))->upsert(grouped_member_t {2u, 20}), success_k);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
+    expect_equal(group.participants_count(), std::size_t {0});
+    expect_equal(group.capacity(), std::size_t {2});
 
-    expect_equal((*group->join(third))->upsert(grouped_member_t {3u, 30}), success_k);
-    expect_equal((*group->join(first))->upsert(grouped_member_t {4u, 40}), success_k);
-    expect_equal(group->capacity(), std::size_t {2}, "both joins reopened a spare");
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
+    expect_equal((*group.join(third))->upsert(grouped_member_t {3u, 30}), success_k);
+    expect_equal((*group.join(first))->upsert(grouped_member_t {4u, 40}), success_k);
+    expect_equal(group.capacity(), std::size_t {2}, "both joins reopened a spare");
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
 
-    expect_equal((*group->join(edges))->upsert(std::uint64_t {9}), success_k);
-    expect_equal(group->participants_count(), std::size_t {1});
-    expect_equal(group->capacity(), std::size_t {3}, "a spare of another kind is no use to a set");
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
+    expect_equal((*group.join(edges))->upsert(std::uint64_t {9}), success_k);
+    expect_equal(group.participants_count(), std::size_t {1});
+    expect_equal(group.capacity(), std::size_t {3}, "a spare of another kind is no use to a set");
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
 
-    generation_t const stamp = group->commit_stamp();
+    generation_t const stamp = group.commit_stamp();
     expect_true(holds_at(first, stamp, 1) && !holds_at(first, stamp, 2) && !holds_at(first, stamp, 3) &&
                 holds_at(first, stamp, 4));
     expect_true(!holds_at(second, stamp, 1) && holds_at(second, stamp, 2) && !holds_at(second, stamp, 3) &&
@@ -1426,10 +1424,11 @@ static void test_dynamic_group_rebinds_spares_to_other_stores() {
                 !holds_at(third, stamp, 4));
     expect_true(holds_at(edges, stamp, 9));
 
-    grouped_map_t::transaction_t *const kept = *group->join(second);
-    group->shrink_to_fit();
-    expect_equal(group->capacity(), std::size_t {1});
-    expect_true(group->participant(second) == kept);
+    auto const [kept, kept_status] = group.join(second);
+    if (!expect_equal(kept_status, success_k)) return;
+    group.shrink_to_fit();
+    expect_equal(group.capacity(), std::size_t {1});
+    expect_true(group.participant(second) == kept);
     expect_equal(kept->find_copy(std::uint64_t {2}).status(), success_k);
 }
 
@@ -1437,33 +1436,33 @@ static void test_dynamic_group_rebinds_spares_to_other_stores() {
  *  built where they stood. */
 static void test_spares_outlive_their_store() {
     grouped_order_t order;
-    auto group = dynamic_group_t::make(order);
-    if (!expect_equal(group.status(), success_k)) return;
+    auto [group, status] = dynamic_group_t::make(order);
+    if (!expect_equal(status, success_k)) return;
 
     std::unique_ptr<grouped_map_t> values = std::make_unique<grouped_map_t>(order);
-    expect_equal((*group->join(*values))->upsert(grouped_member_t {1u, 100}), success_k);
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
-    group->clear();
+    expect_equal((*group.join(*values))->upsert(grouped_member_t {1u, 100}), success_k);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
+    group.clear();
     values.reset();
 
     std::unique_ptr<grouped_set_t> edges = std::make_unique<grouped_set_t>(order);
-    expect_equal(group->reset(), success_k);
-    expect_equal((*group->join(*edges))->upsert(std::uint64_t {7}), success_k);
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
-    expect_true(holds_at(*edges, group->commit_stamp(), 7));
-    group->clear();
+    expect_equal(group.reset(), success_k);
+    expect_equal((*group.join(*edges))->upsert(std::uint64_t {7}), success_k);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
+    expect_true(holds_at(*edges, group.commit_stamp(), 7));
+    group.clear();
     edges.reset();
 
     values = std::make_unique<grouped_map_t>(order);
-    expect_equal(group->reset(), success_k);
-    expect_equal((*group->join(*values))->upsert(grouped_member_t {2u, 200}), success_k);
-    expect_equal(group->capacity(), std::size_t {2}, "the map's spare reopened on the new map");
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
-    expect_true(holds_at(*values, group->commit_stamp(), 2) && !holds_at(*values, group->commit_stamp(), 1));
-    group->clear();
+    expect_equal(group.reset(), success_k);
+    expect_equal((*group.join(*values))->upsert(grouped_member_t {2u, 200}), success_k);
+    expect_equal(group.capacity(), std::size_t {2}, "the map's spare reopened on the new map");
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
+    expect_true(holds_at(*values, group.commit_stamp(), 2) && !holds_at(*values, group.commit_stamp(), 1));
+    group.clear();
     values.reset();
 }
 
@@ -1473,33 +1472,33 @@ static void test_cleared_group_pins_nothing() {
     grouped_order_t order;
     grouped_map_t values {order};
 
-    auto group = dynamic_group_t::make(order);
-    if (!expect_equal(group.status(), success_k)) return;
-    expect_equal((*group->join(values))->upsert(grouped_member_t {1u, 100}), success_k);
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
-    generation_t const pinned = group->snapshot();
+    auto [group, group_status] = dynamic_group_t::make(order);
+    if (!expect_equal(group_status, success_k)) return;
+    expect_equal((*group.join(values))->upsert(grouped_member_t {1u, 100}), success_k);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
+    generation_t const pinned = group.snapshot();
 
     auto const commit_apart = [&](std::uint64_t key) {
-        auto apart = values.transaction();
-        if (!expect_equal(apart.status(), success_k)) return;
-        expect_equal(apart->upsert(grouped_member_t {key, 0}), success_k);
-        expect_equal(apart->stage(), success_k);
-        expect_equal(apart->commit(), success_k);
+        auto [apart, apart_status] = values.transaction();
+        if (!expect_equal(apart_status, success_k)) return;
+        expect_equal(apart.upsert(grouped_member_t {key, 0}), success_k);
+        expect_equal(apart.stage(), success_k);
+        expect_equal(apart.commit(), success_k);
     };
     commit_apart(2);
     expect_equal(order.low_water_mark(), pinned, "the group's claim still pins its snapshot");
 
-    group->clear();
-    expect_equal(group->participants_count(), std::size_t {0});
+    group.clear();
+    expect_equal(group.participants_count(), std::size_t {0});
     commit_apart(3);
     expect_true(order.low_water_mark() > pinned, "a cleared group pins nothing");
 
-    expect_equal(group->join(values).status(), operation_not_permitted_k, "a cleared group has no snapshot to join at");
-    expect_equal(group->reset(), success_k);
-    auto rejoined = group->join(values);
-    if (!expect_true(static_cast<bool>(rejoined))) return;
-    expect_equal((*rejoined)->find_copy(std::uint64_t {3}).status(), success_k);
+    expect_equal(group.join(values).status(), operation_not_permitted_k, "a cleared group has no snapshot to join at");
+    expect_equal(group.reset(), success_k);
+    auto const [rejoined, rejoined_status] = group.join(values);
+    if (!expect_equal(rejoined_status, success_k)) return;
+    expect_equal(rejoined->find_copy(std::uint64_t {3}).status(), success_k);
 }
 
 #pragma endregion Transaction Group Tests
@@ -1545,18 +1544,19 @@ static void test_commit_order_resume_reaches_its_stores() {
     grouped_set_t edges {order};
     expect_equal(order.resume(durable), success_k, "building a store into an order draws nothing from it");
 
-    auto group = dynamic_group_t::make(order);
-    if (!expect_equal(group.status(), success_k)) return;
-    expect_equal(group->snapshot(), durable);
-    auto values_joined = group->join(values);
-    auto edges_joined = group->join(edges);
-    if (!expect_true(values_joined && edges_joined)) return;
-    expect_equal((*values_joined)->upsert(grouped_member_t {1u, 100}), success_k);
-    expect_equal((*edges_joined)->upsert(std::uint64_t {7}), success_k);
-    expect_equal(group->stage(), success_k);
-    expect_equal(group->commit(), success_k);
+    auto [group, group_status] = dynamic_group_t::make(order);
+    if (!expect_equal(group_status, success_k)) return;
+    expect_equal(group.snapshot(), durable);
+    auto const [values_joined, values_status] = group.join(values);
+    if (!expect_equal(values_status, success_k)) return;
+    auto const [edges_joined, edges_status] = group.join(edges);
+    if (!expect_equal(edges_status, success_k)) return;
+    expect_equal(values_joined->upsert(grouped_member_t {1u, 100}), success_k);
+    expect_equal(edges_joined->upsert(std::uint64_t {7}), success_k);
+    expect_equal(group.stage(), success_k);
+    expect_equal(group.commit(), success_k);
 
-    expect_equal(group->commit_stamp(), durable + 1);
+    expect_equal(group.commit_stamp(), durable + 1);
     expect_true(!holds_at(values, durable, 1) && !holds_at(edges, durable, 7));
     expect_true(holds_at(values, durable + 1, 1) && holds_at(edges, durable + 1, 7));
 }

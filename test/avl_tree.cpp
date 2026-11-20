@@ -659,10 +659,10 @@ static void check_copy_preserves_parent_links() {
     for (trivial_id_t identifier : {5u, 2u, 8u, 1u, 3u, 7u, 9u})
         expect_true(!tree.upsert(trivial_id_to_member<member_t>(identifier)).failed());
 
-    auto copied = tree.copy();
-    if (!expect_true(copied.has_value())) return;
-    check_invariants(*copied);
-    expect_equal(std::distance(copied->begin(), copied->end()), tree.size());
+    auto [copied, status] = tree.copy();
+    if (!expect_equal(status, success_k)) return;
+    check_invariants(copied);
+    expect_equal(std::distance(copied.begin(), copied.end()), tree.size());
 }
 
 /** The perfectly balanced tree built from a sorted range must be linked both ways. */

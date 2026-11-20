@@ -57,9 +57,12 @@ void check_ordered_readonly(container_type_ const &layout, std::span<typename co
     for (key_t const key : wanted) {
         std::size_t const expected_rank = lower_bound_of(sorted, key);
         expect_equal(layout.rank(key), expected_rank);
-        expected<std::size_t> const found = layout.find(key);
-        if (expected_rank < sorted.size() && sorted[expected_rank] == key) expect_equal(found, expected_rank);
-        else expect_equal(found.status(), status_t::key_not_found_k);
+        auto const [found, status] = layout.find(key);
+        if (expected_rank < sorted.size() && sorted[expected_rank] == key) {
+            expect_equal(status, success_k);
+            expect_equal(found, expected_rank);
+        }
+        else expect_equal(status, status_t::key_not_found_k);
         // A range walk from the bound must continue in sorted order.
         typename container_type_::iterator walk = layout.lower_bound(key);
         for (std::size_t step = 0; step < 6 && expected_rank + step < sorted.size(); ++step, ++walk) {
@@ -119,8 +122,8 @@ void check_ordered_readonly_mapping(std::size_t size = 300) {
     }
     for (std::size_t index = 0; index < size / 2; ++index) {
         key_t const key = static_cast<key_t>(index);
-        auto [in_map, in_map_status] = map.find(key);
-        auto [in_set, in_set_status] = set.find(key);
+        auto const [in_map, in_map_status] = map.find(key);
+        auto const [in_set, in_set_status] = set.find(key);
         if (!expect_equal(in_map_status, success_k)) return;
         if (!expect_equal(in_set_status, success_k)) return;
         expect_equal(in_map, in_set);

@@ -33,28 +33,28 @@ void test_capacity_rules() {
     using refused_ring_t = basic_ring<int, refusing_allocator<int>>;
     expect_equal(refused_ring_t::make(16).status(), status_t::out_of_memory_heap_k);
 
-    auto empty = basic_ring<int>::make(0);
-    if (!expect_equal(empty.status(), success_k)) return;
-    expect_true(empty->empty());
-    expect_true(empty->full());
-    expect_equal(empty->push(1), status_t::capacity_exhausted_k);
+    auto [empty, empty_status] = basic_ring<int>::make(0);
+    if (!expect_equal(empty_status, success_k)) return;
+    expect_true(empty.empty());
+    expect_true(empty.full());
+    expect_equal(empty.push(1), status_t::capacity_exhausted_k);
     int destination = 0;
-    expect_equal(empty->pop_into(destination), status_t::operation_would_block_k);
+    expect_equal(empty.pop_into(destination), status_t::operation_would_block_k);
 
-    auto ring = basic_ring<int>::make(4);
-    if (!expect_equal(ring.status(), success_k)) return;
-    for (int value = 0; value < 4; ++value) expect_equal(ring->push(int {value}), success_k);
-    expect_true(ring->full());
-    expect_equal(ring->push(9), status_t::capacity_exhausted_k);
-    expect_equal(ring->size(), 4u);
-    expect_equal(ring->free_space(), 0u);
+    auto [ring, ring_status] = basic_ring<int>::make(4);
+    if (!expect_equal(ring_status, success_k)) return;
+    for (int value = 0; value < 4; ++value) expect_equal(ring.push(int {value}), success_k);
+    expect_true(ring.full());
+    expect_equal(ring.push(9), status_t::capacity_exhausted_k);
+    expect_equal(ring.size(), 4u);
+    expect_equal(ring.free_space(), 0u);
 }
 
 /** Random pushes and pops across many wraparounds match an unbounded queue in a plain array. */
 void test_order_across_wraparound() {
     split_mix_generator_t generator {case_stream_key()};
-    auto ring = basic_ring<std::uint64_t>::make(16);
-    if (!expect_equal(ring.status(), success_k)) return;
+    auto [ring, ring_status] = basic_ring<std::uint64_t>::make(16);
+    if (!expect_equal(ring_status, success_k)) return;
     std::uint64_t oracle[1 << 16];
     std::size_t oracle_first = 0;
     std::size_t oracle_end = 0;
@@ -62,7 +62,7 @@ void test_order_across_wraparound() {
     for (std::size_t round = 0; round < 3000 && oracle_end + 32 < std::size(oracle); ++round) {
         std::size_t const pushes = generator() % 9;
         for (std::size_t push = 0; push < pushes; ++push) {
-            status_t const status = ring->push(std::uint64_t {next_value});
+            status_t const status = ring.push(std::uint64_t {next_value});
             if (oracle_end - oracle_first == 16) expect_equal(status, status_t::capacity_exhausted_k);
             else {
                 expect_equal(status, success_k);
@@ -70,20 +70,20 @@ void test_order_across_wraparound() {
             }
             ++next_value;
         }
-        expect_equal(ring->size(), oracle_end - oracle_first);
-        for (std::size_t index = 0; index < ring->size(); ++index) {
-            expect_equal((*ring)[index], oracle[oracle_first + index]);
-            expect_equal(*ring->at(index), oracle[oracle_first + index]);
+        expect_equal(ring.size(), oracle_end - oracle_first);
+        for (std::size_t index = 0; index < ring.size(); ++index) {
+            expect_equal(ring[index], oracle[oracle_first + index]);
+            expect_equal(*ring.at(index), oracle[oracle_first + index]);
         }
-        expect_equal(ring->at(ring->size()), nullptr);
-        if (!ring->empty()) {
-            expect_equal(ring->oldest(), oracle[oracle_first]);
-            expect_equal(ring->newest(), oracle[oracle_end - 1]);
+        expect_equal(ring.at(ring.size()), nullptr);
+        if (!ring.empty()) {
+            expect_equal(ring.oldest(), oracle[oracle_first]);
+            expect_equal(ring.newest(), oracle[oracle_end - 1]);
         }
         std::size_t const pops = generator() % 9;
         for (std::size_t pop = 0; pop < pops; ++pop) {
             std::uint64_t popped = 0;
-            status_t const status = ring->pop_into(popped);
+            status_t const status = ring.pop_into(popped);
             if (oracle_first == oracle_end) expect_equal(status, status_t::operation_would_block_k);
             else {
                 expect_equal(status, success_k);
@@ -95,35 +95,35 @@ void test_order_across_wraparound() {
 
 /** An evicting push moves the oldest out only when the ring is full. */
 void test_push_evicting() {
-    auto ring = basic_ring<int>::make(2);
-    if (!expect_equal(ring.status(), success_k)) return;
+    auto [ring, status] = basic_ring<int>::make(2);
+    if (!expect_equal(status, success_k)) return;
     int evicted = -1;
-    expect_equal(ring->push_evicting(1, evicted), ring_eviction_t::kept_every_element_k);
-    expect_equal(ring->push_evicting(2, evicted), ring_eviction_t::kept_every_element_k);
+    expect_equal(ring.push_evicting(1, evicted), ring_eviction_t::kept_every_element_k);
+    expect_equal(ring.push_evicting(2, evicted), ring_eviction_t::kept_every_element_k);
     expect_equal(evicted, -1);
-    expect_equal(ring->push_evicting(3, evicted), ring_eviction_t::evicted_oldest_k);
+    expect_equal(ring.push_evicting(3, evicted), ring_eviction_t::evicted_oldest_k);
     expect_equal(evicted, 1);
-    expect_equal(ring->oldest(), 2);
-    expect_equal(ring->newest(), 3);
-    ring->pop();
-    expect_equal(ring->push(assume_reserved, 4), success_k);
-    expect_equal((*ring)[0], 3);
-    expect_equal((*ring)[1], 4);
+    expect_equal(ring.oldest(), 2);
+    expect_equal(ring.newest(), 3);
+    ring.pop();
+    expect_equal(ring.push(assume_reserved, 4), success_k);
+    expect_equal(ring[0], 3);
+    expect_equal(ring[1], 4);
 }
 
 /** Bulk calls take as much as fits and report how much that was. */
 void test_bulk_push_and_pop() {
-    auto ring = basic_ring<int>::make(8);
-    if (!expect_equal(ring.status(), success_k)) return;
+    auto [ring, status] = basic_ring<int>::make(8);
+    if (!expect_equal(status, success_k)) return;
     int const incoming[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    expect_equal(ring->push_many(std::span<int const>(incoming, 5)), 5u);
-    expect_equal(ring->push_many(std::span<int const>(incoming + 5, 6)), 3u);
+    expect_equal(ring.push_many(std::span<int const>(incoming, 5)), 5u);
+    expect_equal(ring.push_many(std::span<int const>(incoming + 5, 6)), 3u);
     int outgoing[16] = {};
-    expect_equal(ring->pop_many(std::span<int>(outgoing, 3)), 3u);
-    expect_equal(ring->push_many(std::span<int const>(incoming + 8, 3)), 3u);
-    expect_equal(ring->pop_many(std::span<int>(outgoing + 3, 16 - 3)), 8u);
+    expect_equal(ring.pop_many(std::span<int>(outgoing, 3)), 3u);
+    expect_equal(ring.push_many(std::span<int const>(incoming + 8, 3)), 3u);
+    expect_equal(ring.pop_many(std::span<int>(outgoing + 3, 16 - 3)), 8u);
     for (int index = 0; index < 11; ++index) expect_equal(outgoing[index], index);
-    expect_true(ring->empty());
+    expect_true(ring.empty());
 }
 
 /** Every element in a slot is destroyed exactly once: popped, cleared, or dropped with the ring. */

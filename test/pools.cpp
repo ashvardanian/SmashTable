@@ -99,55 +99,55 @@ void test_fixed_pool_take_until_refused() {
     using refused_pool_t = basic_fixed_pool<std::uint64_t, std::uint32_t, refusing_allocator<std::byte>>;
     expect_equal(refused_pool_t::make(4).status(), status_t::out_of_memory_heap_k);
 
-    auto empty = pool_t::make(0);
-    if (!expect_equal(empty.status(), success_k)) return;
-    expect_equal(empty->take(), pool_t::absent_k);
+    auto [empty, empty_status] = pool_t::make(0);
+    if (!expect_equal(empty_status, success_k)) return;
+    expect_equal(empty.take(), pool_t::absent_k);
 
-    auto pool = pool_t::make(5);
-    if (!expect_equal(pool.status(), success_k)) return;
-    for (std::uint32_t expected = 0; expected != 5; ++expected) expect_equal(pool->take(), expected);
-    expect_true(pool->full());
-    expect_equal(pool->take(), pool_t::absent_k);
-    pool->vacate(2);
-    expect_equal(pool->size(), 4u);
-    expect_equal(pool->take(), 2u);
-    expect_equal(pool->index_of((*pool)[3]), 3u);
-    expect_equal(pool->records().size(), 5u);
+    auto [pool, pool_status] = pool_t::make(5);
+    if (!expect_equal(pool_status, success_k)) return;
+    for (std::uint32_t expected = 0; expected != 5; ++expected) expect_equal(pool.take(), expected);
+    expect_true(pool.full());
+    expect_equal(pool.take(), pool_t::absent_k);
+    pool.vacate(2);
+    expect_equal(pool.size(), 4u);
+    expect_equal(pool.take(), 2u);
+    expect_equal(pool.index_of(pool[3]), 3u);
+    expect_equal(pool.records().size(), 5u);
 }
 
 /** A handle resolves while its record is taken, and to nothing once it was vacated, even after
  *  the same index is taken again. */
 void test_fixed_pool_stale_handle_resolves_to_nothing() {
     using pool_t = basic_fixed_pool<watched_record_t>;
-    auto pool = pool_t::make(2);
-    if (!expect_equal(pool.status(), success_k)) return;
-    std::uint32_t const taken = pool->take();
-    (*pool)[taken].descriptor = 7;
-    pool_t::handle_t const first = pool->handle_of(taken);
-    expect_equal(pool->at(first), &(*pool)[taken]);
+    auto [pool, status] = pool_t::make(2);
+    if (!expect_equal(status, success_k)) return;
+    std::uint32_t const taken = pool.take();
+    pool[taken].descriptor = 7;
+    pool_t::handle_t const first = pool.handle_of(taken);
+    expect_equal(pool.at(first), &pool[taken]);
 
-    pool->vacate(taken);
-    expect_equal(pool->at(first), nullptr);
-    expect_equal(pool->take(), taken);
-    expect_equal(pool->at(first), nullptr, "the next holder is not the one the handle named");
-    expect_equal((*pool)[taken].descriptor, 7u, "a record is handed out as its last holder left it");
-    pool_t::handle_t const second = pool->handle_of(taken);
-    expect_equal(pool->at(second), &(*pool)[taken]);
-    expect_equal(pool->at(pool_t::handle_t {2, 0}), nullptr, "an index past the pool");
+    pool.vacate(taken);
+    expect_equal(pool.at(first), nullptr);
+    expect_equal(pool.take(), taken);
+    expect_equal(pool.at(first), nullptr, "the next holder is not the one the handle named");
+    expect_equal(pool[taken].descriptor, 7u, "a record is handed out as its last holder left it");
+    pool_t::handle_t const second = pool.handle_of(taken);
+    expect_equal(pool.at(second), &pool[taken]);
+    expect_equal(pool.at(pool_t::handle_t {2, 0}), nullptr, "an index past the pool");
 }
 
 /** Every record is built once at @c make and destroyed once with the pool, whatever is taken. */
 void test_fixed_pool_records_live_with_the_pool() {
     counted_key_t::reset();
     {
-        auto pool = basic_fixed_pool<counted_key_t>::make(6);
-        if (!expect_equal(pool.status(), success_k)) return;
+        auto [pool, status] = basic_fixed_pool<counted_key_t>::make(6);
+        if (!expect_equal(status, success_k)) return;
         expect_equal(counted_key_t::alive(), std::ptrdiff_t {6});
-        std::uint32_t const taken = pool->take();
-        (*pool)[taken].unique_id = 9;
-        pool->vacate(taken);
+        std::uint32_t const taken = pool.take();
+        pool[taken].unique_id = 9;
+        pool.vacate(taken);
         expect_equal(counted_key_t::alive(), std::ptrdiff_t {6}, "taking and vacating builds nothing");
-        basic_fixed_pool<counted_key_t> moved = std::move(*pool);
+        basic_fixed_pool<counted_key_t> moved = std::move(pool);
         expect_equal(moved[taken].unique_id, trivial_id_t {9});
         expect_equal(counted_key_t::alive(), std::ptrdiff_t {6});
     }
@@ -162,61 +162,61 @@ void test_growing_pool_grows_without_moving() {
     expect_equal(pool_t::make(0, pool_t::capacity_max_k + 1).status(), status_t::invalid_argument_k);
 
     constexpr std::uint32_t limit = 100;
-    auto pool = pool_t::make(3, limit);
-    if (!expect_equal(pool.status(), success_k)) return;
-    expect_equal(pool->capacity(), 4u, "the first chunk rounds up to a power of two");
-    expect_equal(pool->capacity_limit(), std::size_t {limit});
+    auto [pool, pool_status] = pool_t::make(3, limit);
+    if (!expect_equal(pool_status, success_k)) return;
+    expect_equal(pool.capacity(), 4u, "the first chunk rounds up to a power of two");
+    expect_equal(pool.capacity_limit(), std::size_t {limit});
     watched_record_t *addresses[limit];
     pool_t::handle_t handles[limit];
     for (std::uint32_t expected = 0; expected != limit; ++expected) {
-        expect_equal(pool->take(), expected);
-        (*pool)[expected].descriptor = expected * 3;
-        addresses[expected] = &(*pool)[expected];
-        handles[expected] = pool->handle_of(expected);
+        expect_equal(pool.take(), expected);
+        pool[expected].descriptor = expected * 3;
+        addresses[expected] = &pool[expected];
+        handles[expected] = pool.handle_of(expected);
     }
-    expect_equal(pool->capacity(), std::size_t {limit}, "the last chunk is clipped to the limit");
-    expect_true(pool->full());
-    expect_equal(pool->take(), pool_t::absent_k);
+    expect_equal(pool.capacity(), std::size_t {limit}, "the last chunk is clipped to the limit");
+    expect_true(pool.full());
+    expect_equal(pool.take(), pool_t::absent_k);
     for (std::uint32_t index = 0; index != limit; ++index) {
-        expect_equal(&(*pool)[index], addresses[index], "a record keeps its address as the pool grows");
-        expect_equal(pool->at(handles[index]), addresses[index]);
-        expect_equal(pool->index_of(*addresses[index]), index);
-        expect_equal((*pool)[index].descriptor, index * 3);
+        expect_equal(&pool[index], addresses[index], "a record keeps its address as the pool grows");
+        expect_equal(pool.at(handles[index]), addresses[index]);
+        expect_equal(pool.index_of(*addresses[index]), index);
+        expect_equal(pool[index].descriptor, index * 3);
     }
     std::uint32_t walked = 0;
-    for (watched_record_t const &record : pool->records()) expect_equal(record.descriptor, walked++ * 3);
+    for (watched_record_t const &record : pool.records()) expect_equal(record.descriptor, walked++ * 3);
     expect_equal(walked, limit);
 
-    pool->vacate(70);
-    expect_equal(pool->at(handles[70]), nullptr);
-    expect_equal(pool->take(), 70u);
+    pool.vacate(70);
+    expect_equal(pool.at(handles[70]), nullptr);
+    expect_equal(pool.take(), 70u);
 
     allocation_ledger_t ledger;
     using ledgered_t = basic_growing_pool<watched_record_t, std::uint32_t, stateful_allocator_t>;
-    auto limited = ledgered_t::make(2, 64, stateful_allocator_t {ledger});
-    if (!expect_equal(limited.status(), success_k)) return;
-    expect_equal(limited->take(), 0u);
-    expect_equal(limited->take(), 1u);
-    ledgered_t::handle_t const kept = limited->handle_of(1);
+    auto [limited, limited_status] = ledgered_t::make(2, 64, stateful_allocator_t {ledger});
+    if (!expect_equal(limited_status, success_k)) return;
+    expect_equal(limited.take(), 0u);
+    expect_equal(limited.take(), 1u);
+    ledgered_t::handle_t const kept = limited.handle_of(1);
     ledger.refuse_everything();
-    expect_equal(limited->take(), ledgered_t::absent_k, "a refused growth answers absent");
-    expect_equal(limited->capacity(), 2u);
-    expect_true(!limited->full(), "the pool may still grow once the allocator allows");
-    expect_equal(limited->at(kept), &(*limited)[1]);
+    expect_equal(limited.take(), ledgered_t::absent_k, "a refused growth answers absent");
+    expect_equal(limited.capacity(), 2u);
+    expect_true(!limited.full(), "the pool may still grow once the allocator allows");
+    expect_equal(limited.at(kept), &limited[1]);
     ledger.reset();
-    expect_equal(limited->take(), 2u);
-    expect_equal(limited->capacity(), 4u);
+    expect_equal(limited.take(), 2u);
+    expect_equal(limited.capacity(), 4u);
 }
 
 /** Every chunk a growing pool adds keeps an over-aligned record on its alignment. */
 void test_growing_pool_over_aligned_records() {
     using pool_t = basic_growing_pool<over_aligned_record_t>;
     constexpr std::uint32_t limit = 100;
-    auto pool = pool_t::make(1, limit);
-    if (!expect_equal(pool.status(), success_k)) return;
+    auto [pool, status] = pool_t::make(1, limit);
+    if (!expect_equal(status, success_k)) return;
     for (std::uint32_t expected = 0; expected != limit; ++expected) {
-        expect_equal(pool->take(), expected);
-        expect_equal(reinterpret_cast<std::uintptr_t>(&(*pool)[expected]) % alignof(over_aligned_record_t),
+        expect_equal(pool.take(), expected);
+        expect_equal(reinterpret_cast<std::uintptr_t>(&pool[expected]) % alignof(over_aligned_record_t),
                      std::uintptr_t {0});
     }
 }
@@ -226,13 +226,13 @@ void test_growing_pool_over_aligned_records() {
 void test_growing_pool_readers_beside_growth() {
     using pool_t = basic_growing_pool<watched_record_t>;
     constexpr std::uint32_t limit = 1u << 14, early = 8;
-    auto pool = pool_t::make(1, limit);
-    if (!expect_equal(pool.status(), success_k)) return;
+    auto [pool, status] = pool_t::make(1, limit);
+    if (!expect_equal(status, success_k)) return;
     pool_t::handle_t handles[early];
     for (pool_t::handle_t &handle : handles) {
-        std::uint32_t const taken = pool->take();
-        (*pool)[taken].descriptor = taken + 1;
-        handle = pool->handle_of(taken);
+        std::uint32_t const taken = pool.take();
+        pool[taken].descriptor = taken + 1;
+        handle = pool.handle_of(taken);
     }
     std::uint32_t done = 0, reading = 0;
     std::size_t misses = 0, resolved = 0, probed = 0;
@@ -240,26 +240,26 @@ void test_growing_pool_readers_beside_growth() {
         // Probing past the earlier handles reads records of chunks as they are published.
         for (std::uint32_t probe = 0; !atomic_load(done); probe = (probe + 1) % limit) {
             for (pool_t::handle_t const &handle : handles) {
-                watched_record_t const *const record = pool->at(handle);
+                watched_record_t const *const record = pool.at(handle);
                 misses += !record || record->descriptor != handle.index + 1;
                 ++resolved;
             }
-            probed += pool->at(pool_t::handle_t {probe, 0}) != nullptr;
+            probed += pool.at(pool_t::handle_t {probe, 0}) != nullptr;
             atomic_store(reading, 1u);
         }
     });
     // A loaded machine may start the reader only after the owner finished growing, so it waits.
     expect_true(spin_until([&] { return atomic_load(reading) != 0; }));
     for (std::uint32_t index = early; index != limit; ++index) {
-        std::uint32_t const taken = pool->take();
-        (*pool)[taken].descriptor = taken + 1;
+        std::uint32_t const taken = pool.take();
+        pool[taken].descriptor = taken + 1;
     }
     atomic_store(done, 1u);
     reader.join();
     expect_equal(misses, 0u);
     expect_true(resolved > 0u);
     expect_true(probed > 0u);
-    expect_equal(pool->take(), pool_t::absent_k);
+    expect_equal(pool.take(), pool_t::absent_k);
 }
 
 /** Records without @c previous unlink by a walk from the oldest. */
@@ -270,9 +270,9 @@ void test_intrusive_list_singly_linked() {
 
 /** Records with @c previous unlink in place, here kept in a fixed pool. */
 void test_intrusive_list_doubly_linked() {
-    auto records = basic_fixed_pool<doubly_linked_record_t>::make(6);
-    if (!expect_equal(records.status(), success_k)) return;
-    check_list_unlinks(*records);
+    auto [records, status] = basic_fixed_pool<doubly_linked_record_t>::make(6);
+    if (!expect_equal(status, success_k)) return;
+    check_list_unlinks(records);
 }
 
 #pragma endregion Tests

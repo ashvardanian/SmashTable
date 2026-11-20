@@ -26,10 +26,10 @@ void check_direct_write_spares_staged_version() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(7, 100)), success_k);
-    expect_equal(transaction->stage(), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(7, 100)), success_k);
+    expect_equal(transaction.stage(), success_k);
 
     // A staged version is invisible, so the store still reports an empty container.
     expect_equal(container.size(), 0);
@@ -39,11 +39,11 @@ void check_direct_write_spares_staged_version() {
     expect_equal(container.contains(trivial_id_to_key<member_t>(7)), true);
 
     // The staged version survived the direct write and is what the commit publishes.
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.commit(), success_k);
     expect_equal(container.size(), 1);
-    auto committed = container.find_copy(trivial_id_to_key<member_t>(7));
-    if (!expect_true(committed.has_value())) return;
-    if constexpr (is_mapping<member_t>) expect_equal(committed->mapped, typename member_t::mapped_type(100));
+    auto [committed, committed_status] = container.find_copy(trivial_id_to_key<member_t>(7));
+    if (!expect_equal(committed_status, success_k)) return;
+    if constexpr (is_mapping<member_t>) expect_equal(committed.mapped, typename member_t::mapped_type(100));
 }
 
 /** A direct erase takes the published version only, so the staged one still commits. */
@@ -58,19 +58,19 @@ void check_direct_erase_spares_staged_version() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(3, 1)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3, 42)), success_k);
-    expect_equal(transaction->stage(), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(3, 42)), success_k);
+    expect_equal(transaction.stage(), success_k);
 
     expect_equal(container.erase(trivial_id_to_key<member_t>(3)), success_k);
     expect_equal(container.size(), 0);
 
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.commit(), success_k);
     expect_equal(container.size(), 1);
-    auto committed = container.find_copy(trivial_id_to_key<member_t>(3));
-    if (!expect_true(committed.has_value())) return;
-    if constexpr (is_mapping<member_t>) expect_equal(committed->mapped, typename member_t::mapped_type(42));
+    auto [committed, committed_status] = container.find_copy(trivial_id_to_key<member_t>(3));
+    if (!expect_equal(committed_status, success_k)) return;
+    if constexpr (is_mapping<member_t>) expect_equal(committed.mapped, typename member_t::mapped_type(42));
 }
 
 /** A ranged erase takes published versions only, so an overlapping staged write still commits. */
@@ -86,19 +86,19 @@ void check_erase_range_spares_staged_versions() {
     for (std::size_t index = 0; index != 8; ++index)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(index, index)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(4, 400)), success_k);
-    expect_equal(transaction->stage(), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(4, 400)), success_k);
+    expect_equal(transaction.stage(), success_k);
 
     expect_equal(container.erase_range(trivial_id_to_key<member_t>(2), trivial_id_to_key<member_t>(6)), success_k);
     expect_equal(container.size(), 4);
 
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.commit(), success_k);
     expect_equal(container.size(), 5);
-    auto committed = container.find_copy(trivial_id_to_key<member_t>(4));
-    if (!expect_true(committed.has_value())) return;
-    if constexpr (is_mapping<member_t>) expect_equal(committed->mapped, typename member_t::mapped_type(400));
+    auto [committed, committed_status] = container.find_copy(trivial_id_to_key<member_t>(4));
+    if (!expect_equal(committed_status, success_k)) return;
+    if constexpr (is_mapping<member_t>) expect_equal(committed.mapped, typename member_t::mapped_type(400));
 }
 
 /** Clearing keeps handing out fresh stamps, so a later transaction never reuses a live one. */
@@ -112,15 +112,15 @@ void check_clear_keeps_generations_moving() {
 
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
-    auto before = container.transaction();
-    if (!expect_true(before.has_value())) return;
-    auto const stamp_before = before->generation();
+    auto [before, before_status] = container.transaction();
+    if (!expect_equal(before_status, success_k)) return;
+    auto const stamp_before = before.generation();
 
     expect_equal(container.clear(), success_k);
 
-    auto after = container.transaction();
-    if (!expect_true(after.has_value())) return;
-    expect_true(after->generation() > stamp_before);
+    auto [after, after_status] = container.transaction();
+    if (!expect_equal(after_status, success_k)) return;
+    expect_true(after.generation() > stamp_before);
 }
 
 #pragma endregion Staging Window
@@ -140,11 +140,11 @@ void check_committed_erase_hidden_from_point_reads() {
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
     expect_equal(container.upsert(trivial_id_to_member<member_t>(2, 2)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(2)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(2)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
 
     expect_equal(container.size(), 1);
     expect_equal(container.contains(trivial_id_to_key<member_t>(2)), false);
@@ -170,11 +170,11 @@ void check_committed_erase_hidden_from_ordered_reads() {
     for (std::size_t index = 0; index != 4; ++index)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(index, index)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(2)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(2)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
     expect_equal(container.size(), 3);
 
     std::size_t walked = 0;
@@ -228,11 +228,11 @@ void check_committed_erase_hidden_from_update_range() {
     for (std::size_t index = 0; index != 4; ++index)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(index, index)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(2)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(2)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
 
     std::size_t visited = 0;
     expect_equal(container.update_range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(4),
@@ -263,25 +263,25 @@ void check_vacuum_reclaims_committed_tombstones() {
     for (std::size_t index = 0; index != 6; ++index)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(index, index)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(1)), success_k);
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(4)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(4)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
     expect_equal(container.size(), 4);
 
-    auto reclaimed = container.vacuum();
-    if (!expect_true(reclaimed.has_value())) return;
-    expect_equal(*reclaimed, 2);
+    auto const [reclaimed, reclaimed_status] = container.vacuum();
+    if (!expect_equal(reclaimed_status, success_k)) return;
+    expect_equal(reclaimed, 2);
     expect_equal(container.size(), 4);
     expect_equal(container.contains(trivial_id_to_key<member_t>(1)), false);
     expect_equal(container.contains(trivial_id_to_key<member_t>(0)), true);
 
     // Nothing is left to reclaim, and a live key is never mistaken for a tombstone.
-    auto second_pass = container.vacuum();
-    if (!expect_true(second_pass.has_value())) return;
-    expect_equal(*second_pass, 0);
+    auto const [second_pass, second_pass_status] = container.vacuum();
+    if (!expect_equal(second_pass_status, success_k)) return;
+    expect_equal(second_pass, 0);
     expect_equal(container.size(), 4);
 }
 
@@ -297,22 +297,22 @@ void check_vacuum_spares_staged_versions() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(5, 5)), success_k);
 
-    auto erasing = container.transaction();
-    if (!expect_true(erasing.has_value())) return;
-    expect_equal(erasing->erase(trivial_id_to_key<member_t>(5)), success_k);
-    expect_equal(erasing->stage(), success_k);
-    expect_equal(erasing->commit(), success_k);
+    auto [erasing, erasing_status] = container.transaction();
+    if (!expect_equal(erasing_status, success_k)) return;
+    expect_equal(erasing.erase(trivial_id_to_key<member_t>(5)), success_k);
+    expect_equal(erasing.stage(), success_k);
+    expect_equal(erasing.commit(), success_k);
 
-    auto rewriting = container.transaction();
-    if (!expect_true(rewriting.has_value())) return;
-    expect_equal(rewriting->upsert(trivial_id_to_member<member_t>(5, 55)), success_k);
-    expect_equal(rewriting->stage(), success_k);
+    auto [rewriting, rewriting_status] = container.transaction();
+    if (!expect_equal(rewriting_status, success_k)) return;
+    expect_equal(rewriting.upsert(trivial_id_to_member<member_t>(5, 55)), success_k);
+    expect_equal(rewriting.stage(), success_k);
 
-    auto reclaimed = container.vacuum();
-    if (!expect_true(reclaimed.has_value())) return;
-    expect_equal(*reclaimed, 0);
+    auto const [reclaimed, reclaimed_status] = container.vacuum();
+    if (!expect_equal(reclaimed_status, success_k)) return;
+    expect_equal(reclaimed, 0);
 
-    expect_equal(rewriting->commit(), success_k);
+    expect_equal(rewriting.commit(), success_k);
     expect_equal(container.size(), 1);
     expect_equal(container.contains(trivial_id_to_key<member_t>(5)), true);
 }
@@ -330,24 +330,26 @@ void check_windowed_vacuum_reclaims_one_slice() {
     for (std::size_t index = 0; index != 8; ++index)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(index, index)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(1)), success_k);
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(6)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->commit(), success_k);
+    auto [transaction, transaction_status] = container.transaction();
+    if (!expect_equal(transaction_status, success_k)) return;
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(6)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.commit(), success_k);
 
-    auto lower_slice = container.vacuum(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(4));
-    if (!expect_true(lower_slice.has_value())) return;
-    expect_equal(*lower_slice, 1);
+    auto const [lower_slice, lower_slice_status] =
+        container.vacuum(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(4));
+    if (!expect_equal(lower_slice_status, success_k)) return;
+    expect_equal(lower_slice, 1);
 
-    auto upper_slice = container.vacuum(trivial_id_to_key<member_t>(4), trivial_id_to_key<member_t>(8));
-    if (!expect_true(upper_slice.has_value())) return;
-    expect_equal(*upper_slice, 1);
+    auto const [upper_slice, upper_slice_status] =
+        container.vacuum(trivial_id_to_key<member_t>(4), trivial_id_to_key<member_t>(8));
+    if (!expect_equal(upper_slice_status, success_k)) return;
+    expect_equal(upper_slice, 1);
 
-    auto exhausted = container.vacuum();
-    if (!expect_true(exhausted.has_value())) return;
-    expect_equal(*exhausted, 0);
+    auto const [exhausted, exhausted_status] = container.vacuum();
+    if (!expect_equal(exhausted_status, success_k)) return;
+    expect_equal(exhausted, 0);
     expect_equal(container.size(), 6);
 }
 
@@ -369,33 +371,33 @@ void check_transaction_range_interleaves_staged_and_committed() {
     for (std::size_t index : {0u, 2u, 4u, 6u})
         expect_equal(container.upsert(trivial_id_to_member<member_t>(index, index)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
     for (std::size_t index : {1u, 3u, 5u})
-        expect_equal(transaction->upsert(trivial_id_to_member<member_t>(index, index)), success_k);
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(4)), success_k);
+        expect_equal(transaction.upsert(trivial_id_to_member<member_t>(index, index)), success_k);
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(4)), success_k);
 
     std::size_t const expected_ids[] = {0, 1, 2, 3, 5, 6};
     std::size_t walked = 0;
-    expect_equal(transaction->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(8),
-                                    [&](member_t const &member) noexcept {
-                                        expect_true(walked < 6);
-                                        expect_true(trivial_id_to_key<member_t>(expected_ids[walked]) ==
-                                                    mapping_key_or_itself<member_t>(member));
-                                        ++walked;
-                                    }),
+    expect_equal(transaction.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(8),
+                                   [&](member_t const &member) noexcept {
+                                       expect_true(walked < 6);
+                                       expect_true(trivial_id_to_key<member_t>(expected_ids[walked]) ==
+                                                   mapping_key_or_itself<member_t>(member));
+                                       ++walked;
+                                   }),
                  success_k);
     expect_equal(walked, 6);
 
     // A half-open window sees the same order, and the bound still excludes its upper key.
     walked = 0;
-    expect_equal(transaction->range(trivial_id_to_key<member_t>(1), trivial_id_to_key<member_t>(5),
-                                    [&](member_t const &member) noexcept {
-                                        expect_true(walked < 3);
-                                        expect_true(trivial_id_to_key<member_t>(expected_ids[walked + 1]) ==
-                                                    mapping_key_or_itself<member_t>(member));
-                                        ++walked;
-                                    }),
+    expect_equal(transaction.range(trivial_id_to_key<member_t>(1), trivial_id_to_key<member_t>(5),
+                                   [&](member_t const &member) noexcept {
+                                       expect_true(walked < 3);
+                                       expect_true(trivial_id_to_key<member_t>(expected_ids[walked + 1]) ==
+                                                   mapping_key_or_itself<member_t>(member));
+                                       ++walked;
+                                   }),
                  success_k);
     expect_equal(walked, 3);
 }
@@ -412,30 +414,30 @@ void check_transaction_equal_range_sees_staged_writes() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(2, 22)), success_k);
-    expect_equal(transaction->erase(trivial_id_to_key<member_t>(1)), success_k);
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(2, 22)), success_k);
+    expect_equal(transaction.erase(trivial_id_to_key<member_t>(1)), success_k);
 
     std::size_t staged_matches = 0;
-    expect_equal(transaction->equal_range(trivial_id_to_key<member_t>(2),
-                                          [&](member_t const &member) noexcept {
-                                              ++staged_matches;
-                                              if constexpr (is_mapping<member_t>)
-                                                  expect_equal(member.mapped, typename member_t::mapped_type(22));
-                                          }),
+    expect_equal(transaction.equal_range(trivial_id_to_key<member_t>(2),
+                                         [&](member_t const &member) noexcept {
+                                             ++staged_matches;
+                                             if constexpr (is_mapping<member_t>)
+                                                 expect_equal(member.mapped, typename member_t::mapped_type(22));
+                                         }),
                  success_k);
     expect_equal(staged_matches, 1);
 
     std::size_t erased_matches = 0;
     expect_equal(
-        transaction->equal_range(trivial_id_to_key<member_t>(1), [&](member_t const &) noexcept { ++erased_matches; }),
+        transaction.equal_range(trivial_id_to_key<member_t>(1), [&](member_t const &) noexcept { ++erased_matches; }),
         success_k);
     expect_equal(erased_matches, 0);
 
     std::size_t absent_matches = 0;
     expect_equal(
-        transaction->equal_range(trivial_id_to_key<member_t>(9), [&](member_t const &) noexcept { ++absent_matches; }),
+        transaction.equal_range(trivial_id_to_key<member_t>(9), [&](member_t const &) noexcept { ++absent_matches; }),
         success_k);
     expect_equal(absent_matches, 0);
 }
@@ -458,9 +460,9 @@ void check_insert_reports_key_already_exists() {
 
     expect_equal(container.insert(trivial_id_to_member<member_t>(1, 9)), status_t::key_already_exists_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->insert(trivial_id_to_member<member_t>(1, 9)), status_t::key_already_exists_k);
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(transaction.insert(trivial_id_to_member<member_t>(1, 9)), status_t::key_already_exists_k);
 
     if constexpr (std::is_copy_constructible_v<member_t>) {
         member_t const batch[] = {trivial_id_to_member<member_t>(1, 9), trivial_id_to_member<member_t>(2, 2)};
@@ -480,15 +482,11 @@ void check_find_copy_reports_key_not_found() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
 
-    auto missing = container.find_copy(trivial_id_to_key<member_t>(2));
-    expect_true(!missing.has_value());
-    expect_equal(missing.status(), status_t::key_not_found_k);
+    expect_equal(container.find_copy(trivial_id_to_key<member_t>(2)).status(), status_t::key_not_found_k);
 
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    auto missing_in_transaction = transaction->find_copy(trivial_id_to_key<member_t>(2));
-    expect_true(!missing_in_transaction.has_value());
-    expect_equal(missing_in_transaction.status(), status_t::key_not_found_k);
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(transaction.find_copy(trivial_id_to_key<member_t>(2)).status(), status_t::key_not_found_k);
 }
 
 /** Staging twice is refused, so a second pass cannot file the same keys again. */
@@ -501,13 +499,13 @@ void check_second_stage_is_rejected() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    auto transaction = container.transaction();
-    if (!expect_true(transaction.has_value())) return;
-    expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
-    expect_equal(transaction->stage(), success_k);
-    expect_equal(transaction->stage(), status_t::operation_not_permitted_k);
+    auto [transaction, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(transaction.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
+    expect_equal(transaction.stage(), success_k);
+    expect_equal(transaction.stage(), status_t::operation_not_permitted_k);
 
-    expect_equal(transaction->commit(), success_k);
+    expect_equal(transaction.commit(), success_k);
     expect_equal(container.size(), 1);
     expect_equal(container.contains(trivial_id_to_key<member_t>(1)), true);
 }
@@ -528,20 +526,20 @@ void test_validate_refuses_before_publishing() {
     container_t container;
     expect_equal(container.upsert(trivial_id_to_member<member_t>(1, 100)), success_k);
 
-    auto writer = container.transaction();
-    if (!expect_true(writer.has_value())) return;
-    expect_equal(writer->watch(trivial_id_to_key<member_t>(1)), success_k);
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(2, 200)), success_k);
-    expect_equal(writer->stage(), success_k);
+    auto [writer, writer_status] = container.transaction();
+    if (!expect_equal(writer_status, success_k)) return;
+    expect_equal(writer.watch(trivial_id_to_key<member_t>(1)), success_k);
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(2, 200)), success_k);
+    expect_equal(writer.stage(), success_k);
 
     // Somebody moves the watched key while this transaction sits staged.
-    auto outsider = container.transaction();
-    if (!expect_true(outsider.has_value())) return;
-    expect_equal(outsider->upsert(trivial_id_to_member<member_t>(1, 999)), success_k);
-    expect_equal(outsider->stage(), success_k);
-    expect_equal(outsider->commit(), success_k);
+    auto [outsider, outsider_status] = container.transaction();
+    if (!expect_equal(outsider_status, success_k)) return;
+    expect_equal(outsider.upsert(trivial_id_to_member<member_t>(1, 999)), success_k);
+    expect_equal(outsider.stage(), success_k);
+    expect_equal(outsider.commit(), success_k);
 
-    expect_equal(writer->validate_for_commit(), status_t::read_conflict_k);
+    expect_equal(writer.validate_for_commit(), status_t::read_conflict_k);
     expect_equal(container.contains(trivial_id_to_key<member_t>(2)), false);
 }
 
@@ -563,26 +561,26 @@ void test_publish_cannot_refuse() {
     for (trivial_id_t identifier = 1; identifier != 5; ++identifier)
         expect_equal(container.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
-    auto writer = container.transaction();
-    if (!expect_true(writer.has_value())) return;
+    auto [writer, writer_status] = container.transaction();
+    if (!expect_equal(writer_status, success_k)) return;
     for (trivial_id_t identifier = 1; identifier != 5; ++identifier)
-        expect_equal(writer->upsert(trivial_id_to_member<member_t>(identifier, identifier * 10)), success_k);
-    expect_equal(writer->stage(), success_k);
+        expect_equal(writer.upsert(trivial_id_to_member<member_t>(identifier, identifier * 10)), success_k);
+    expect_equal(writer.stage(), success_k);
 
     // Another transaction publishes over two of the same keys.
-    auto peer = container.transaction();
-    if (!expect_true(peer.has_value())) return;
-    expect_equal(peer->upsert(trivial_id_to_member<member_t>(1, 7)), success_k);
-    expect_equal(peer->upsert(trivial_id_to_member<member_t>(2, 7)), success_k);
-    expect_equal(peer->stage(), success_k);
-    expect_equal(peer->commit(), success_k);
+    auto [peer, peer_status] = container.transaction();
+    if (!expect_equal(peer_status, success_k)) return;
+    expect_equal(peer.upsert(trivial_id_to_member<member_t>(1, 7)), success_k);
+    expect_equal(peer.upsert(trivial_id_to_member<member_t>(2, 7)), success_k);
+    expect_equal(peer.stage(), success_k);
+    expect_equal(peer.commit(), success_k);
 
     // A direct erase retires the published version of a third, and reclamation sweeps behind it.
     [[maybe_unused]] status_t const erased = container.erase(trivial_id_to_key<member_t>(3));
-    [[maybe_unused]] auto const reclaimed = container.vacuum();
+    [[maybe_unused]] status_t const reclaimed = container.vacuum().status();
 
-    expect_equal(writer->validate_for_commit(), success_k);
-    writer->publish_under();
+    expect_equal(writer.validate_for_commit(), success_k);
+    writer.publish_under();
 
     for (trivial_id_t identifier = 1; identifier != 5; ++identifier)
         expect_equal(container.contains(trivial_id_to_key<member_t>(identifier)), true);
@@ -596,14 +594,14 @@ void test_clear_refuses_while_staged() {
     using member_t = typename container_t::value_type;
 
     container_t container;
-    auto writer = container.transaction();
-    if (!expect_true(writer.has_value())) return;
-    expect_equal(writer->upsert(trivial_id_to_member<member_t>(5, 500)), success_k);
-    expect_equal(writer->stage(), success_k);
+    auto [writer, status] = container.transaction();
+    if (!expect_equal(status, success_k)) return;
+    expect_equal(writer.upsert(trivial_id_to_member<member_t>(5, 500)), success_k);
+    expect_equal(writer.stage(), success_k);
 
     expect_equal(container.clear(), status_t::operation_not_permitted_k);
 
-    expect_equal(writer->rollback(), success_k);
+    expect_equal(writer.rollback(), success_k);
     expect_equal(container.clear(), success_k);
 }
 

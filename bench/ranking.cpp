@@ -190,15 +190,15 @@ void bench_layout(environment_t const &env, std::string const &prefix, char cons
                     layout_name, name_of(layout_type_::kit_t::kit_k));
     if (!env.settings.regex_filter.selects(name)) return;
     auto const built_at = steady_clock_t::now();
-    auto layout = layout_type_::make(sorted);
+    auto [layout, status] = layout_type_::make(sorted);
     double const build_seconds = std::chrono::duration<double>(steady_clock_t::now() - built_at).count();
     run(env, name, binary, [&](loop_t &loop) noexcept {
-        if (!layout) return loop.skip(name_of(layout.status()));
-        if (reinterpret_cast<std::uintptr_t>(layout->words().data()) % cache_line_bytes_k != 0)
+        if (failed(status)) return loop.skip(name_of(status));
+        if (reinterpret_cast<std::uintptr_t>(layout.words().data()) % cache_line_bytes_k != 0)
             return loop.skip("rows start off the cache line");
-        loop.counter("MB", static_cast<double>(layout->size_bytes()) / (1 << 20));
+        loop.counter("MB", static_cast<double>(layout.size_bytes()) / (1 << 20));
         loop.counter("build seconds", build_seconds);
-        search_queries(loop, queries.size(), [&](std::size_t query) noexcept { return layout->rank(queries[query]); });
+        search_queries(loop, queries.size(), [&](std::size_t query) noexcept { return layout.rank(queries[query]); });
     });
 }
 

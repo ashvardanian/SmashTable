@@ -212,9 +212,8 @@ void check_unordered_empty_container_operations() {
     expect_true(!(container.erase(unordered_key_from<key_t>(7))));
 
     // The same operations must also survive on a container that owns memory but holds nothing.
-    auto allocated = container_t::make(128);
-    if (!expect_true(allocated.has_value(), "allocating a small table must succeed")) return;
-    container_t reserved = *std::move(allocated);
+    auto [reserved, status] = container_t::make(128);
+    if (!expect_equal(status, success_k, "allocating a small table must succeed")) return;
     expect_true(reserved.empty());
     expect_equal(reserved.size(), 0u);
     expect_true(reserved.bucket_count() > 0u);
@@ -591,9 +590,8 @@ void check_unordered_exhausted_allocator_insertions(std::size_t attempts = 4000)
     allocation_ledger_t ledger;
     ledger.allow(1);
     {
-        auto allocated = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
-        if (!expect_true(allocated.has_value(), "the one permitted allocation must succeed")) return;
-        container_t container = *std::move(allocated);
+        auto [container, status] = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
+        if (!expect_equal(status, success_k, "the one permitted allocation must succeed")) return;
         std::size_t const slots = container.slots_count().raw;
         expect_true(slots > 0u);
 
@@ -662,9 +660,8 @@ void check_unordered_insert_reports_refusal() {
     allocation_ledger_t ledger;
     ledger.allow(1);
     {
-        auto allocated = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
-        if (!expect_true(allocated.has_value(), "the one permitted allocation must succeed")) return;
-        container_t container = *std::move(allocated);
+        auto [container, status] = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
+        if (!expect_equal(status, success_k, "the one permitted allocation must succeed")) return;
         std::size_t const slots = container.slots_count().raw;
         for (std::size_t identifier = 0; identifier < slots; ++identifier)
             unordered_emplace(container, identifier, assume_reserved_t {}, assume_unique_t {});
@@ -698,9 +695,8 @@ void check_unordered_present_key_needs_no_room() {
     // The table is sized so that its load factor leaves no headroom once it is filled below.
     allocation_ledger_t ledger;
     {
-        auto allocated = container_t::make(std::size_t {24}, {}, {}, stateful_allocator<std::byte> {ledger});
-        if (!expect_true(allocated.has_value(), "the first allocation must succeed")) return;
-        container_t container = *std::move(allocated);
+        auto [container, status] = container_t::make(std::size_t {24}, {}, {}, stateful_allocator<std::byte> {ledger});
+        if (!expect_equal(status, success_k, "the first allocation must succeed")) return;
         std::size_t const threshold = container.capacity();
         expect_true(threshold > 0u);
 
@@ -754,9 +750,8 @@ void check_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
 
     using container_t = container_type_;
 
-    auto allocated = container_t::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the table must build")) return;
-    container_t container = *std::move(allocated);
+    auto [container, status] = container_t::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the table must build")) return;
     std::size_t const slots = container.slots_count().raw;
 
     // Promising the reservation is what lets the table run past its own load factor, right up to
@@ -848,8 +843,8 @@ void check_unordered_unrepresentable_capacity() {
     constexpr std::size_t past_every_power_of_two_k = (std::numeric_limits<std::size_t>::max)();
 
     for (std::size_t elements : {past_the_load_factor_k, wrapping_to_nothing_k, past_every_power_of_two_k}) {
-        auto allocated = container_t::make(elements);
-        expect_true(!(allocated), "an unrepresentable element count must not report success");
+        expect_true(failed(container_t::make(elements).status()),
+                    "an unrepresentable element count must not report success");
 
         container_t container;
         expect_equal(container.reserve(elements), reserve_result_t::failed_k,
@@ -893,9 +888,9 @@ void check_unordered_pinned_reports_status() {
     using mapped_t = typename container_t::mapped_type;
     static_assert(unordered_has_values<container_t>, "The pinned suites are written for maps");
 
-    auto allocated = container_t::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the growable table must build")) return;
-    auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
+    auto [growable, status] = container_t::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the growable table must build")) return;
+    auto container = unordered_pinned<container_t>::adopt(std::move(growable).release());
 
     expect_equal(container.emplace(unordered_key_from<key_t>(1), unordered_value_from<mapped_t>(1)), success_k,
                  "an empty pinned table must take the first key");
@@ -938,9 +933,9 @@ void check_unordered_pinned_saturation() {
 
     static_assert(unordered_has_values<container_t>, "The pinned suites are written for maps");
 
-    auto allocated = container_t::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the growable table must build")) return;
-    auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
+    auto [growable, status] = container_t::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the growable table must build")) return;
+    auto container = unordered_pinned<container_t>::adopt(std::move(growable).release());
     std::size_t const slots = container.slots_count();
     expect_true(slots > 0u);
 
@@ -994,9 +989,9 @@ void check_unordered_pinned_tombstone_saturation() {
     using mapped_t = typename container_t::mapped_type;
     static_assert(unordered_has_values<container_t>, "The pinned suites are written for maps");
 
-    auto allocated = container_t::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the growable table must build")) return;
-    auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
+    auto [growable, status] = container_t::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the growable table must build")) return;
+    auto container = unordered_pinned<container_t>::adopt(std::move(growable).release());
     std::size_t const slots = container.slots_count();
     expect_true(slots > 0u);
 
@@ -1034,9 +1029,9 @@ void check_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) 
     static_assert(unordered_has_values<container_t>, "The atomic suites are written for maps");
 
     std::size_t const total = unordered_threads_count_k * per_thread;
-    auto allocated = container_t::make(total * 2);
-    if (!expect_true(allocated.has_value(), "the growable table must build")) return;
-    auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
+    auto [growable, growable_status] = container_t::make(total * 2);
+    if (!expect_equal(growable_status, success_k, "the growable table must build")) return;
+    auto container = unordered_pinned<container_t>::adopt(std::move(growable).release());
     expect_true(container.capacity() >= total, "the pinned table must hold what the writers will store");
     auto const slots_before = container.slots_count();
 
@@ -1069,9 +1064,9 @@ void check_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) 
                 auto const key = unordered_key_from<key_t>(identifier);
                 // A refusal is tallied rather than checked here, so the verdict waits for the join
                 // rather than racing siblings still writing into the container.
-                expected<bool> const seen = container.contains(key);
-                if (!seen) ++refusals;
-                else if (*seen) ++contains_hits;
+                auto const [seen, seen_status] = container.contains(key);
+                if (failed(seen_status)) ++refusals;
+                else if (seen) ++contains_hits;
                 status_t const walked = container.find(key, [&](auto const &address) noexcept {
                     ++callback_hits;
                     if (!(address.value() == unordered_value_from<mapped_t>(identifier))) ++mismatches;
@@ -1093,9 +1088,9 @@ void check_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) 
     // The single-threaded view must agree with what the threads believe they wrote.
     std::size_t single_threaded_hits = 0;
     for (std::size_t identifier = 0; identifier < total; ++identifier) {
-        expected<bool> const seen = container.contains(unordered_key_from<key_t>(identifier));
-        if (!expect_equal(seen.status(), success_k)) return;
-        if (*seen) ++single_threaded_hits;
+        auto const [seen, seen_status] = container.contains(unordered_key_from<key_t>(identifier));
+        if (!expect_equal(seen_status, success_k)) return;
+        if (seen) ++single_threaded_hits;
     }
     expect_equal(single_threaded_hits, total);
 }
@@ -1116,9 +1111,8 @@ void check_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) 
     static_assert(unordered_has_values<container_t>, "The atomic suites are written for maps");
 
     std::size_t const total = unordered_threads_count_k * per_thread;
-    auto allocated = container_t::make(total * 2);
-    if (!expect_true(allocated.has_value(), "the growable table must build")) return;
-    container_t growable = *std::move(allocated);
+    auto [growable, status] = container_t::make(total * 2);
+    if (!expect_equal(status, success_k, "the growable table must build")) return;
     for (std::size_t identifier = 0; identifier < total; ++identifier)
         unordered_emplace(growable, identifier, assume_reserved_t {});
     expect_equal(growable.size(), total);
@@ -1241,9 +1235,8 @@ inline std::vector<std::size_t> unordered_visit_generations(versioned_set_t cons
  *  the foreign keys sharing it. */
 inline void check_unordered_visit_every_match(std::size_t versions = 5) {
 
-    auto allocated = versioned_set_t::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the table must build")) return;
-    versioned_set_t container = *std::move(allocated);
+    auto [container, status] = versioned_set_t::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the table must build")) return;
     std::size_t const slots = container.slots_count().raw;
 
     // Two identifiers a slot count apart hash to the same home slot, so their versions interleave
@@ -1269,9 +1262,8 @@ inline void check_unordered_visit_every_match(std::size_t versions = 5) {
 /** Tests that a @c halt_k reply stops the walk before the next slot is even read. */
 inline void check_unordered_visit_early_exit(std::size_t versions = 5) {
 
-    auto allocated = versioned_set_t::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the table must build")) return;
-    versioned_set_t container = *std::move(allocated);
+    auto [container, status] = versioned_set_t::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the table must build")) return;
     for (std::size_t generation = 0; generation < versions; ++generation)
         container.emplace(versioned_key_t {1, generation}, assume_reserved_t {}, assume_unique_t {});
 
@@ -1288,9 +1280,8 @@ inline void check_unordered_visit_early_exit(std::size_t versions = 5) {
 /** Tests that a tombstone between two matches does not truncate the walk. */
 inline void check_unordered_visit_across_tombstones(std::size_t versions = 6) {
 
-    auto allocated = versioned_set_t::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the table must build")) return;
-    versioned_set_t container = *std::move(allocated);
+    auto [container, status] = versioned_set_t::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the table must build")) return;
     for (std::size_t generation = 0; generation < versions; ++generation)
         container.emplace(versioned_key_t {1, generation}, assume_reserved_t {}, assume_unique_t {});
 
@@ -1310,9 +1301,8 @@ inline void check_unordered_visit_empty_table() {
     versioned_set_t unallocated;
     expect_equal(unordered_visit_generations(unallocated, 1).size(), 0u);
 
-    auto allocated = versioned_set_t::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the table must build")) return;
-    versioned_set_t container = *std::move(allocated);
+    auto [container, status] = versioned_set_t::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the table must build")) return;
     expect_equal(unordered_visit_generations(container, 1).size(), 0u);
 
     // A table emptied back out by erasures must behave like one that never held anything.
@@ -1324,9 +1314,8 @@ inline void check_unordered_visit_empty_table() {
 /** Tests that a run starting in the last slot wraps to the front instead of ending there. */
 inline void check_unordered_visit_wraparound(std::size_t versions = 5) {
 
-    auto allocated = versioned_set_t::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the table must build")) return;
-    versioned_set_t container = *std::move(allocated);
+    auto [container, status] = versioned_set_t::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the table must build")) return;
     std::size_t const slots = container.slots_count().raw;
 
     std::size_t const last = slots - 1;
@@ -1346,9 +1335,8 @@ inline void check_unordered_visit_wraparound(std::size_t versions = 5) {
  */
 inline void check_unordered_visit_full_table() {
 
-    auto allocated = versioned_set_t::make(std::size_t {64});
-    if (!expect_true(allocated.has_value(), "the table must build")) return;
-    versioned_set_t container = *std::move(allocated);
+    auto [container, status] = versioned_set_t::make(std::size_t {64});
+    if (!expect_equal(status, success_k, "the table must build")) return;
     std::size_t const slots = container.slots_count().raw;
 
     // Every slot taken by one identifier, so the run has neither a free slot nor a foreign key to end on.

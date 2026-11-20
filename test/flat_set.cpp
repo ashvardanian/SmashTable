@@ -118,12 +118,12 @@ void check_random_operations(split_mix_generator_t &generator) {
     expect_equal(set.insert_if_missing(incoming, incoming + 64), success_k);
     check_against_presence(set, std::span<std::uint8_t const, domain_size_k>(present));
 
-    auto copied = set.copy();
-    if (!expect_equal(copied.status(), success_k)) return;
-    check_against_presence(*copied, std::span<std::uint8_t const, domain_size_k>(present));
+    auto [copied, status] = set.copy();
+    if (!expect_equal(status, success_k)) return;
+    check_against_presence(copied, std::span<std::uint8_t const, domain_size_k>(present));
     set.clear();
     expect_true(set.empty());
-    expect_equal(copied->size() > 0, true);
+    expect_equal(copied.size() > 0, true);
 }
 
 template <typename kit_type_>
@@ -158,10 +158,10 @@ void test_refused_allocation() {
     expect_equal(set.insert_if_missing(incoming, incoming + 3), status_t::out_of_memory_heap_k);
     expect_true(set.empty());
 
-    auto made = basic_flat_set<std::uint64_t>::make(32);
-    if (!expect_equal(made.status(), success_k)) return;
-    expect_true(made->capacity() >= 32u);
-    basic_flat_set<std::uint64_t> moved = std::move(*made);
+    auto [built, status] = basic_flat_set<std::uint64_t>::make(32);
+    if (!expect_equal(status, success_k)) return;
+    expect_true(built.capacity() >= 32u);
+    basic_flat_set<std::uint64_t> moved = std::move(built);
     expect_equal(moved.insert(3), success_k);
     expect_equal(moved.insert(1), success_k);
     expect_equal(moved[0], 1u);

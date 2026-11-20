@@ -433,22 +433,22 @@ void drive_watch_conflict_cause(store_type_ &store, observed_causes_t &observed,
 
     using member_t = typename store_type_::value_type;
     if constexpr (store_type_::is_transactional::value) {
-        auto contested = store.transaction();
-        if (!expect_true(contested.has_value(), "a store must be able to open a transaction")) return;
-        expect_equal(contested->watch(trivial_id_to_key<member_t>(1)), success_k);
-        expect_equal(contested->upsert(trivial_id_to_member<member_t>(size * 5, size * 5)), success_k);
+        auto [contested, status] = store.transaction();
+        if (!expect_equal(status, success_k, "a store must be able to open a transaction")) return;
+        expect_equal(contested.watch(trivial_id_to_key<member_t>(1)), success_k);
+        expect_equal(contested.upsert(trivial_id_to_member<member_t>(size * 5, size * 5)), success_k);
 
         // An outside writer moves the watched key, which is what the validation has to catch.
         expect_equal(store.upsert(trivial_id_to_member<member_t>(1, size * 9)), success_k);
 
         store_footprint_t const before = footprint_of(store);
-        status_t refused = contested->stage();
-        if (succeeded(refused)) refused = contested->commit();
+        status_t refused = contested.stage();
+        if (succeeded(refused)) refused = contested.commit();
         store_footprint_t const after = footprint_of(store);
 
         observed.note(failure_cause_t::watch_conflicted_k, refused);
         expect_equal(before, after, "a refused commit must publish none of what it staged");
-        [[maybe_unused]] status_t const unwound = contested->rollback();
+        [[maybe_unused]] status_t const unwound = contested.rollback();
     }
 }
 
@@ -486,9 +486,8 @@ void check_store_maps_causes_to_distinct_statuses(std::size_t size = 32) {
     using store_t = store_type_;
     using member_t = typename store_t::value_type;
 
-    auto built = store_t::make();
-    if (!expect_true(built.has_value(), "the store under test must build")) return;
-    store_t &store = *built;
+    auto [store, status] = store_t::make();
+    if (!expect_equal(status, success_k, "the store under test must build")) return;
     for (std::size_t identifier = 0; identifier != size; ++identifier)
         expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
@@ -512,9 +511,8 @@ void check_budgeted_store_maps_causes_to_distinct_statuses(std::size_t size = 32
 
     allocation_ledger_t ledger;
     {
-        auto built = store_t::make(allocator_t {ledger});
-        if (!expect_true(built.has_value(), "the budgeted store under test must build")) return;
-        store_t &store = *built;
+        auto [store, status] = store_t::make(allocator_t {ledger});
+        if (!expect_equal(status, success_k, "the budgeted store under test must build")) return;
         for (std::size_t identifier = 0; identifier != size; ++identifier)
             expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
@@ -561,9 +559,8 @@ void check_wrapper_relays_every_cause(std::size_t size = 64) {
     using member_t = typename store_type_::value_type;
 
     refusal_plan_t::reset();
-    auto built = store_type_::make();
-    if (!expect_true(built.has_value(), "the wrapper under test must build")) return;
-    store_type_ &store = *built;
+    auto [store, status] = store_type_::make();
+    if (!expect_equal(status, success_k, "the wrapper under test must build")) return;
     for (std::size_t identifier = 0; identifier != size; ++identifier)
         expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 
@@ -745,9 +742,8 @@ void check_one_bulk_method_matches_policy(std::size_t size, std::size_t refusing
                           "the wrapper and the detector disagree about a bulk method's failure policy");
 
         refusal_plan_t::reset();
-        auto built = store_type_::make();
-        if (!expect_true(built.has_value(), "the partitioned store under test must build")) return;
-        store_type_ &store = *built;
+        auto [store, status] = store_type_::make();
+        if (!expect_equal(status, success_k, "the partitioned store under test must build")) return;
         for (std::size_t identifier = 0; identifier != size; ++identifier)
             expect_equal(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)), success_k);
 

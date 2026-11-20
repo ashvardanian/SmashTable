@@ -171,9 +171,9 @@ void check_batch_refuses_copies_whole(std::size_t seeded = 2, std::size_t batch_
 
     using member_t = typename container_type_::value_type;
     auto const make_member = [](trivial_id_t identifier) noexcept {
-        expected<member_t> made = member_t::make(identifier);
-        expect_true(bool(made));
-        return *std::move(made);
+        auto [member, status] = member_t::make(identifier);
+        expect_equal(status, success_k);
+        return std::move(member);
     };
     std::vector<member_t> offered;
     for (std::size_t index = 0; index != batch_size; ++index)
@@ -272,8 +272,8 @@ void sweep_reused_transaction_refusals() {
     auto const expect_holds = [](store_type_ &store, model_t const &wanted, char const *when) {
         expect_equal(store.size(), wanted.size(), "{}", when);
         for (auto const &[identifier, mapped] : wanted) {
-            auto const held = store.find_copy(trivial_id_to_key<member_t>(identifier));
-            if (expect_true(held.has_value(), "{}", when)) expect_equal(held->mapped, mapped, "{}", when);
+            auto [held, status] = store.find_copy(trivial_id_to_key<member_t>(identifier));
+            if (expect_equal(status, success_k, "{}", when)) expect_equal(held.mapped, mapped, "{}", when);
         }
     };
 
@@ -286,32 +286,32 @@ void sweep_reused_transaction_refusals() {
             expect_equal(store.upsert(trivial_id_to_member<member_t>(1, 1)), success_k);
             expect_equal(store.upsert(trivial_id_to_member<member_t>(2, 1)), success_k);
 
-            auto transaction = store.transaction();
-            if (!expect_equal(transaction.status(), success_k)) return;
-            expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1, 20)), success_k);
-            expect_equal(transaction->stage(), success_k);
-            expect_equal(transaction->commit(), success_k);
+            auto [transaction, status] = store.transaction();
+            if (!expect_equal(status, success_k)) return;
+            expect_equal(transaction.upsert(trivial_id_to_member<member_t>(1, 20)), success_k);
+            expect_equal(transaction.stage(), success_k);
+            expect_equal(transaction.commit(), success_k);
 
-            expect_equal(transaction->upsert(trivial_id_to_member<member_t>(1, 30)), success_k);
+            expect_equal(transaction.upsert(trivial_id_to_member<member_t>(1, 30)), success_k);
             if constexpr (verb_ != refused_verb_t::write_k)
-                expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
-            if constexpr (verb_ == refused_verb_t::rollback_k) expect_equal(transaction->stage(), success_k);
+                expect_equal(transaction.upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
+            if constexpr (verb_ == refused_verb_t::rollback_k) expect_equal(transaction.stage(), success_k);
 
             // Armed around the one call, so nothing the oracle itself needs is refused.
             ledger.allow(refusal_index);
             status_t const reported = verb_ == refused_verb_t::write_k
-                                          ? transaction->upsert(trivial_id_to_member<member_t>(3, 30))
-                                      : verb_ == refused_verb_t::stage_k ? transaction->stage()
-                                                                         : transaction->rollback();
+                                          ? transaction.upsert(trivial_id_to_member<member_t>(3, 30))
+                                      : verb_ == refused_verb_t::stage_k ? transaction.stage()
+                                                                         : transaction.rollback();
             ledger.allow(unlimited_budget_k);
             refusals = ledger.refusals;
 
             if (failed(reported)) expect_holds(store, first_commit, "after the refused verb");
             if (verb_ == refused_verb_t::write_k && failed(reported))
-                expect_equal(transaction->upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
+                expect_equal(transaction.upsert(trivial_id_to_member<member_t>(3, 30)), success_k);
             bool const emptied = verb_ == refused_verb_t::rollback_k && failed(reported);
-            if (verb_ != refused_verb_t::stage_k || failed(reported)) expect_equal(transaction->stage(), success_k);
-            expect_equal(transaction->commit(), success_k);
+            if (verb_ != refused_verb_t::stage_k || failed(reported)) expect_equal(transaction.stage(), success_k);
+            expect_equal(transaction.commit(), success_k);
             expect_holds(store, emptied ? first_commit : both_commits, "after the retried commit");
         }
         ledger.check_balanced();
@@ -348,39 +348,40 @@ void check_warm_commits_ask_the_allocator_for_nothing() {
     allocation_ledger_t ledger;
     {
         store_type_ store {typename store_type_::allocator_t(ledger)};
-        auto transaction = store.transaction();
-        if (!expect_equal(transaction.status(), success_k)) return;
+        auto [transaction, status] = store.transaction();
+        if (!expect_equal(status, success_k)) return;
         auto const stage_overwrites = [&](int round) {
             for (trivial_id_t identifier = 1; identifier <= written_keys_k; ++identifier)
-                expect_equal(transaction->upsert(trivial_id_to_member<member_t>(identifier, round)), success_k);
-            expect_equal(transaction->stage(), success_k);
+                expect_equal(transaction.upsert(trivial_id_to_member<member_t>(identifier, round)), success_k);
+            expect_equal(transaction.stage(), success_k);
         };
 
         int round = 0;
         for (; round != warm_rounds_k; ++round) {
             stage_overwrites(round);
-            expect_equal(transaction->commit(), success_k);
+            expect_equal(transaction.commit(), success_k);
         }
         std::size_t const allocated = ledger.allocations, freed = ledger.deallocations;
 
         for (; round != warm_rounds_k + measured_rounds_k; ++round) {
             stage_overwrites(round);
-            expect_equal(transaction->commit(), success_k);
+            expect_equal(transaction.commit(), success_k);
         }
         expect_equal(ledger.allocations, allocated, "a warm commit builds in the nodes its last prune emptied");
         expect_equal(ledger.deallocations, freed, "and keeps the ones this prune empties");
 
         for (int aborted = 0; aborted != measured_rounds_k; ++aborted) {
             stage_overwrites(round + aborted);
-            expect_equal(transaction->reset(), success_k);
+            expect_equal(transaction.reset(), success_k);
         }
         expect_equal(ledger.allocations, allocated, "a staged write that is reset keeps its node for the next");
         expect_equal(ledger.deallocations, freed, "and returns none");
 
         expect_equal(store.size(), written_keys_k);
         for (trivial_id_t identifier = 1; identifier <= written_keys_k; ++identifier) {
-            auto const held = store.find_copy(trivial_id_to_key<member_t>(identifier));
-            if (expect_true(held.has_value())) expect_equal(held->mapped, round - 1, "the last commit still reads");
+            auto [held, held_status] = store.find_copy(trivial_id_to_key<member_t>(identifier));
+            if (expect_equal(held_status, success_k))
+                expect_equal(held.mapped, round - 1, "the last commit still reads");
         }
     }
     ledger.check_balanced();
