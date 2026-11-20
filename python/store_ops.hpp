@@ -45,9 +45,9 @@ concept over_aligned_for_python = alignof(object_type_) > alignof(std::max_align
  */
 template <typename target_type_, typename source_type_>
 static status_t copy_into(target_type_ &target, source_type_ const &source) noexcept {
-    auto copied = source.copy();
-    if (!copied) return copied.status();
-    target = std::move(*copied);
+    auto [copied, status] = source.copy();
+    if (failed(status)) return status;
+    target = std::move(copied);
     return success_k;
 }
 
@@ -264,9 +264,9 @@ struct store_bridge {
         status_t absorbed = success_k;
         auto keep = [&](value_t const &member) noexcept {
             if (failed(absorbed)) return;
-            auto copied = copy_safely(member);
-            if (!copied) return void(absorbed = copied.status());
-            absorbed = store_of(result).upsert(std::move(*copied));
+            auto [copied, status] = copy_safely(member);
+            if (failed(status)) return void(absorbed = status);
+            absorbed = store_of(result).upsert(std::move(copied));
         };
 
         status_t walked = success_k;
@@ -304,14 +304,14 @@ struct store_bridge {
         requires associative_k
     {
         shared_lock deferral {releases};
-        auto copied = key.copy();
-        if (!copied) return expected<value_variant_t> {copied.status()};
+        auto [copied, copied_status] = key.copy();
+        if (failed(copied_status)) return expected<value_variant_t> {copied_status};
         expected<value_variant_t> winner {value_variant_t {}, success_k};
         // One store call rather than an insert followed by a read: between two calls another thread
         // can erase the key, leaving the read with nothing and the caller with a value nobody stored.
         // Whichever branch the store takes reports the winner from inside it.
         status_t const status = store_of(store).insert_if_missing(
-            value_t {std::move(*copied), std::move(value)},
+            value_t {std::move(copied), std::move(value)},
             [&](value_t const &inserted) noexcept { winner = inserted.mapped.copy(); },
             [&](value_t const &existing) noexcept { winner = existing.mapped.copy(); });
         if (failed(status)) return expected<value_variant_t> {status};
@@ -511,14 +511,14 @@ struct store_bridge {
 
     /** Copies one element into @p into, reporting what the copy could not do. */
     static status_t collect(value_t const &element, basic_vector<entry_t> &into) noexcept {
-        auto key = mapping_key_or_itself<value_t>(element).copy();
-        if (!key) return key.status();
+        auto [key, key_status] = mapping_key_or_itself<value_t>(element).copy();
+        if (failed(key_status)) return key_status;
         entry_t taken;
-        taken.key = std::move(*key);
+        taken.key = std::move(key);
         if constexpr (associative_k) {
-            auto held = element.mapped.copy();
-            if (!held) return held.status();
-            taken.mapped = std::move(*held);
+            auto [held, held_status] = element.mapped.copy();
+            if (failed(held_status)) return held_status;
+            taken.mapped = std::move(held);
         }
         return into.push_back(std::move(taken));
     }

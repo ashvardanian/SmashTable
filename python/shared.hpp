@@ -891,7 +891,7 @@ template <typename callback_type_>
     value_variant_t found_value;
     status_t stepping = success_k;
     while (true) {
-        auto [step, step_status] = table->cursor_next(cursor, found_key, &found_value);
+        auto const [step, step_status] = table->cursor_next(cursor, found_key, &found_value);
         if (failed(step_status)) {
             stepping = step_status;
             break;

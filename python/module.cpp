@@ -269,6 +269,6 @@ PyModuleDef *smashtable_module_def() noexcept { return &smashtable_module; }
 
 } // namespace ashvardanian::smashtable::python
 
-extern "C" PyMODINIT_FUNC PyInit_smashtable(void) {
+PyMODINIT_FUNC PyInit_smashtable(void) {
     return PyModuleDef_Init(&ashvardanian::smashtable::python::smashtable_module);
 }

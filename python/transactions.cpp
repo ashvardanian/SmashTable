@@ -245,9 +245,9 @@ static int View_contains(PyObject *self, PyObject *key) noexcept {
     bool found = false;
     status_t asked = success_k;
     if (run_over_participant(view, state, [&](participant_t &part) noexcept {
-            expected<bool> const held = part.contains(needle);
-            asked = held.status();
-            found = held && *held;
+            auto const [held, status] = part.contains(needle);
+            asked = status;
+            found = held;
         }) != 0)
         return -1;
     // A read that could not record itself is a refusal, and the protocol's error answer is -1.
@@ -920,12 +920,11 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
     }
 
     // Canonical order for staging, argument order for the views handed back.
-    auto made_order = basic_vector<Py_ssize_t>::make(static_cast<std::size_t>(count));
-    if (!made_order) {
-        [[maybe_unused]] int const raised = raise_for(state, made_order.status());
+    auto [order, order_status] = basic_vector<Py_ssize_t>::make(static_cast<std::size_t>(count));
+    if (failed(order_status)) {
+        [[maybe_unused]] int const raised = raise_for(state, order_status);
         return nullptr;
     }
-    basic_vector<Py_ssize_t> order = std::move(*made_order);
     for (Py_ssize_t index = 0; index != count; ++index) [[maybe_unused]]
         auto appended = order.push_back(assume_reserved, Py_ssize_t {index});
     std::sort(order.begin(), order.end(), [&](Py_ssize_t left, Py_ssize_t right) noexcept {

@@ -575,10 +575,10 @@ static PyObject *Map_update(PyObject *self, PyObject *other) noexcept {
     // half-way through leaves the store untouched rather than half-updated. This is marshalling,
     // not a workaround: turning Python objects into stored ones is the binding's own job.
     Py_ssize_t const total = PySequence_Fast_GET_SIZE(fast);
-    auto staged = basic_vector<entry_t>::make(static_cast<std::size_t>(total));
-    if (!staged) {
+    auto [staged, staged_status] = basic_vector<entry_t>::make(static_cast<std::size_t>(total));
+    if (failed(staged_status)) {
         Py_DECREF(fast);
-        [[maybe_unused]] int const raised = raise_for(state, staged.status());
+        [[maybe_unused]] int const raised = raise_for(state, staged_status);
         return nullptr;
     }
 
@@ -607,7 +607,7 @@ static PyObject *Map_update(PyObject *self, PyObject *other) noexcept {
             Py_DECREF(fast);
             return nullptr;
         }
-        if (status_t const recorded = (*staged).push_back(assume_reserved, entry_t {std::move(key), std::move(value)});
+        if (status_t const recorded = staged.push_back(assume_reserved, entry_t {std::move(key), std::move(value)});
             failed(recorded)) {
             Py_DECREF(fast);
             [[maybe_unused]] int const raised = raise_for(state, recorded);
@@ -618,8 +618,8 @@ static PyObject *Map_update(PyObject *self, PyObject *other) noexcept {
 
     status_t status = success_k;
     run_over_values(container->mode, [&]() noexcept {
-        status = container->store_ops->upsert_entries(container->releases, container->store, (*staged).data(),
-                                                      (*staged).size());
+        status =
+            container->store_ops->upsert_entries(container->releases, container->store, staged.data(), staged.size());
     });
     if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
@@ -766,10 +766,10 @@ static PyObject *Set_update(PyObject *self, PyObject *other) noexcept {
 
     // Converted in full first, so a member the store cannot hold leaves it untouched rather than
     // partly grown. Marshalling Python objects into stored ones is the binding's own work.
-    auto staged = basic_vector<key_variant_t>::make(static_cast<std::size_t>(total));
-    if (!staged) {
+    auto [staged, staged_status] = basic_vector<key_variant_t>::make(static_cast<std::size_t>(total));
+    if (failed(staged_status)) {
         Py_DECREF(fast);
-        [[maybe_unused]] int const raised = raise_for(state, staged.status());
+        [[maybe_unused]] int const raised = raise_for(state, staged_status);
         return nullptr;
     }
     for (Py_ssize_t index = 0; index != total; ++index) {
@@ -778,7 +778,7 @@ static PyObject *Set_update(PyObject *self, PyObject *other) noexcept {
             Py_DECREF(fast);
             return nullptr;
         }
-        if (status_t const recorded = (*staged).push_back(assume_reserved, std::move(member)); failed(recorded)) {
+        if (status_t const recorded = staged.push_back(assume_reserved, std::move(member)); failed(recorded)) {
             Py_DECREF(fast);
             [[maybe_unused]] int const raised = raise_for(state, recorded);
             return nullptr;
@@ -788,8 +788,8 @@ static PyObject *Set_update(PyObject *self, PyObject *other) noexcept {
 
     status_t status = success_k;
     run_over_values(container->mode, [&]() noexcept {
-        status = container->store_ops->upsert_members(container->releases, container->store, (*staged).data(),
-                                                      (*staged).size());
+        status =
+            container->store_ops->upsert_members(container->releases, container->store, staged.data(), staged.size());
     });
     if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
@@ -945,9 +945,9 @@ static PyObject *Set_isdisjoint(PyObject *self, PyObject *other) noexcept {
     if (auto *twin = same_layout_set(self, other)) {
         auto *mine = object_as<container_object_t>(self);
         store_ops_t const *table = mine->store_ops;
-        expected<bool> const apart = table->is_disjoint(mine->store, twin->store);
-        if (!apart) return raise_for(state_of_type(self), apart.status()), nullptr;
-        return PyBool_FromLong(*apart ? 1 : 0);
+        auto const [apart, status] = table->is_disjoint(mine->store, twin->store);
+        if (failed(status)) return raise_for(state_of_type(self), status), nullptr;
+        return PyBool_FromLong(apart ? 1 : 0);
     }
 
     auto const *container = object_as<container_object_t>(self);
@@ -1216,15 +1216,15 @@ static PyObject *Map_richcompare(PyObject *self, PyObject *other, int operation)
                 PyObject *their_value = nullptr;
                 if (twin) {
                     // Same layout, so the key stays a stored scalar and never becomes a Python object.
-                    auto probed = twin->store_ops->find(twin->releases, twin->store, key);
+                    auto [probed, probed_status] = twin->store_ops->find(twin->releases, twin->store, key);
                     // A read that could not be answered is not a key the twin lacks, and must not settle
                     // the comparison as though it were.
-                    if (!probed && probed.status() != key_not_found_k) {
-                        [[maybe_unused]] int const failed_read = raise_for(state_of_type(self), probed.status());
+                    if (failed(probed_status) && probed_status != key_not_found_k) {
+                        [[maybe_unused]] int const failed_read = raise_for(state_of_type(self), probed_status);
                         return void(raised = true);
                     }
-                    present = static_cast<bool>(probed);
-                    if (present) theirs = std::move(*probed);
+                    present = succeeded(probed_status);
+                    if (present) theirs = std::move(probed);
                 }
                 else {
                     PyObject *key_object = key_to_python(key);
@@ -1271,9 +1271,9 @@ static int set_is_subset(PyObject *self, PyObject *other, bool *answer) noexcept
         if (auto *twin = same_layout_set(self, other)) {
             auto *mine = object_as<container_object_t>(self);
             store_ops_t const *table = mine->store_ops;
-            expected<bool> const contained = table->is_subset(mine->store, twin->store);
-            if (!contained) return raise_for(state, contained.status());
-            *answer = *contained;
+            auto const [contained, status] = table->is_subset(mine->store, twin->store);
+            if (failed(status)) return raise_for(state, status);
+            *answer = contained;
             return 0;
         }
     PyErr_Clear();

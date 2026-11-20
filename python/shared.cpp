@@ -28,7 +28,7 @@ namespace ashvardanian::smashtable::python {
 
 /**
  *  @brief Reads the alternative this layout guarantees, checked in debug and free in release.
- *  @param[in] value The key, which the store has already validated against its layout.
+ *  @param[in] key The key, which the store has already validated against its layout.
  *  @return Reference to the stored alternative.
  */
 template <typename alternative_type_>
