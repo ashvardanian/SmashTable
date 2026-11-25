@@ -358,7 +358,8 @@ void check_kit(kit_type_) {
 }
 
 void check_through(row_kit_t kit) {
-    if (row_kit_supported(kit)) visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { check_kit(kit_instance); });
+    if (row_kit_supported(kit))
+        visit_row_kit(kit, [](a_row_kit auto kit_instance) noexcept { check_kit(kit_instance); });
 }
 
 static void test_serial_kit() { check_through(row_kit_t::serial_k); }

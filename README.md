@@ -628,8 +628,8 @@ Expect depth around 1.88 log₂(n) against AVL's 1.44, in exchange for O(1) amor
 
 `basic_flat_set` is an ordered set in one contiguous allocation, growable and allocator-aware like `basic_avl_tree`, differing only in where elements live.
 Inserting and erasing shift the tail, so it suits a few hundred elements rather than millions, in exchange for a search that reads adjacent memory and allocates nothing.
-That search is the same row search the immutable trees below use, wherever the element is a `row_searchable_key` ordered by `less_t`, and a plain binary search otherwise — `basic_flat_set` takes the kit as its third template argument.
-It answers the same `ordered_collection` surface the trees do — bounds, ranges and half-open erasure — so the shared suites hold it to the same contract.
+That search is the same row search the immutable trees below use, wherever the element is `a_row_searchable_key` ordered by `less_t`, and a plain binary search otherwise — `basic_flat_set` takes the kit as its third template argument.
+It answers the same `an_ordered_collection` surface the trees do — bounds, ranges and half-open erasure — so the shared suites hold it to the same contract.
 
 `basic_ring` is a first-in first-out queue over one allocation whose capacity is a power of two fixed at `make`, for batching and read-ahead.
 Two 32-bit counters of pushes and pops wrap together, so their difference is the size and a full ring is told from an empty one without a spare slot.

@@ -20,15 +20,15 @@ namespace ashvardanian::smashtable {
 
 /** Records indexed by position, each naming the one after it through an index @c next. */
 template <typename records_type_, typename index_type_>
-concept singly_linked_records = requires(records_type_ &records, index_type_ index) {
+concept a_singly_linked_record_array = requires(records_type_ &records, index_type_ index) {
     records[index].next = index;
     { records[index].next } -> std::convertible_to<index_type_>;
 };
 
 /** Linked records also naming the one before them through @c previous, absent when unlinked. */
 template <typename records_type_, typename index_type_>
-concept doubly_linked_records =
-    singly_linked_records<records_type_, index_type_> && requires(records_type_ &records, index_type_ index) {
+concept a_doubly_linked_record_array =
+    a_singly_linked_record_array<records_type_, index_type_> && requires(records_type_ &records, index_type_ index) {
         records[index].previous = index;
         { records[index].previous } -> std::convertible_to<index_type_>;
     };
@@ -54,10 +54,10 @@ struct intrusive_list {
 
     /** Links the record at @p index after the newest. */
     template <typename records_type_>
-        requires singly_linked_records<records_type_, index_t>
+        requires a_singly_linked_record_array<records_type_, index_t>
     void push(records_type_ &records, index_t index) noexcept {
         records[index].next = absent_k;
-        if constexpr (doubly_linked_records<records_type_, index_t>) records[index].previous = newest;
+        if constexpr (a_doubly_linked_record_array<records_type_, index_t>) records[index].previous = newest;
         if (newest != absent_k) records[newest].next = index;
         else oldest = index;
         newest = index;
@@ -65,13 +65,13 @@ struct intrusive_list {
 
     /** Unlinks the oldest record and answers its index, or @c absent_k when the list is empty. */
     template <typename records_type_>
-        requires singly_linked_records<records_type_, index_t>
+        requires a_singly_linked_record_array<records_type_, index_t>
     index_t pop(records_type_ &records) noexcept {
         index_t const index = oldest;
         if (index == absent_k) return index;
         oldest = records[index].next;
         if (oldest == absent_k) newest = absent_k;
-        else if constexpr (doubly_linked_records<records_type_, index_t>) records[oldest].previous = absent_k;
+        else if constexpr (a_doubly_linked_record_array<records_type_, index_t>) records[oldest].previous = absent_k;
         records[index].next = absent_k;
         return index;
     }
@@ -84,10 +84,10 @@ struct intrusive_list {
      *    A record of another list is not detected.
      */
     template <typename records_type_>
-        requires singly_linked_records<records_type_, index_t>
+        requires a_singly_linked_record_array<records_type_, index_t>
     status_t erase(records_type_ &records, index_t index) noexcept {
         index_t previous = absent_k;
-        if constexpr (doubly_linked_records<records_type_, index_t>) {
+        if constexpr (a_doubly_linked_record_array<records_type_, index_t>) {
             previous = records[index].previous;
             if (previous == absent_k && oldest != index) return key_not_found_k;
         }
@@ -100,11 +100,11 @@ struct intrusive_list {
         if (previous != absent_k) records[previous].next = next;
         else oldest = next;
         if (next != absent_k) {
-            if constexpr (doubly_linked_records<records_type_, index_t>) records[next].previous = previous;
+            if constexpr (a_doubly_linked_record_array<records_type_, index_t>) records[next].previous = previous;
         }
         else newest = previous;
         records[index].next = absent_k;
-        if constexpr (doubly_linked_records<records_type_, index_t>) records[index].previous = absent_k;
+        if constexpr (a_doubly_linked_record_array<records_type_, index_t>) records[index].previous = absent_k;
         return success_k;
     }
 };

@@ -58,7 +58,7 @@ namespace ashvardanian::smashtable {
  *
  *  @see https://en.cppreference.com/w/cpp/container/vector
  */
-template <typename value_type_, allocator_of<value_type_> allocator_type_ = default_allocator<value_type_>>
+template <typename value_type_, an_allocator<value_type_> allocator_type_ = default_allocator<value_type_>>
 class basic_vector {
   public:
     using value_t = value_type_;
@@ -358,16 +358,16 @@ class basic_vector {
             return success_k;
         }
         // Slow path: potentially throwing constructor - use .make() method
-        else if constexpr (has_make_method<value_t, args_types_...>) {
+        else if constexpr (a_type_with_make_method<value_t, args_types_...>) {
             auto result = value_t::make(std::forward<args_types_>(args)...);
             if (!result) return result.status();
             new (&data_[size_++]) value_t(std::move(*result));
             return success_k;
         }
         else {
-            static_assert(
-                std::is_nothrow_constructible_v<value_t, args_types_...> || has_make_method<value_t, args_types_...>,
-                "Type must be nothrow constructible or provide a static .make(...)");
+            static_assert(std::is_nothrow_constructible_v<value_t, args_types_...> ||
+                              a_type_with_make_method<value_t, args_types_...>,
+                          "Type must be nothrow constructible or provide a static .make(...)");
             return status_t::unknown_k;
         }
     }
@@ -668,7 +668,7 @@ class basic_vector {
 };
 
 /** @c basic_vector under its usual allocator, the name products spell. */
-template <typename value_type_, allocator_of<value_type_> allocator_type_ = default_allocator<value_type_>>
+template <typename value_type_, an_allocator<value_type_> allocator_type_ = default_allocator<value_type_>>
 using vector = basic_vector<value_type_, allocator_type_>;
 
 } // namespace ashvardanian::smashtable

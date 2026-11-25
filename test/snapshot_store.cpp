@@ -117,9 +117,9 @@ using forkunion_mutex_t = spin_shared_mutex<fu::preferred_yield_t, fu::preferred
 using forkunion_order_t =
     basic_commit_order<16, 4, order_sharing_t::shared_k, fu::preferred_yield_t, fu::preferred_atomic_ref>;
 
-static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
+static_assert(an_extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
               "a reference short of the concept would pass as a ForkUnion case over the fallback loops");
-static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
+static_assert(an_extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
               "the mutex word is narrower than a stamp, and must reach the same verbs");
 
 /**
@@ -170,15 +170,15 @@ using monotonic_hash_map_t = monotonic_hash_map<trivial_key_t, int>;
 
 /** Whether a store offers the open-ended range erases, which only an ordered core can answer. */
 template <typename store_type_>
-concept erases_open_ended = requires(store_type_ &store) {
+concept a_store_with_open_ended_erase = requires(store_type_ &store) {
     store.erase_from(trivial_key_t {0});
     store.erase_up_to(trivial_key_t {0});
 };
 
-static_assert(erases_open_ended<snapshot_avl_map_t>, "an ordered core walks the keyspace from either end");
-static_assert(erases_open_ended<monotonic_avl_map_t>, "the same surface, one isolation level down");
-static_assert(erases_open_ended<reference_avl_map_t>, "the oracle is ordered by construction");
-static_assert(!erases_open_ended<snapshot_hash_map_t>,
+static_assert(a_store_with_open_ended_erase<snapshot_avl_map_t>, "an ordered core walks the keyspace from either end");
+static_assert(a_store_with_open_ended_erase<monotonic_avl_map_t>, "the same surface, one isolation level down");
+static_assert(a_store_with_open_ended_erase<reference_avl_map_t>, "the oracle is ordered by construction");
+static_assert(!a_store_with_open_ended_erase<snapshot_hash_map_t>,
               "an unordered core refuses these exactly as it refuses `erase_range`");
 
 static_assert(sharded_snapshot_map_t::isolation_k == isolation_t::snapshot_k,
@@ -268,7 +268,7 @@ static void test_isolation_traits() {
                   "the store exists to promise Snapshot Isolation");
     static_assert(at_least(store_type_::isolation_k, isolation_t::monotonic_atomic_view_k),
                   "Snapshot Isolation subsumes what `monotonic_store` promises");
-    static_assert(optimistically_concurrent_store<store_type_>,
+    static_assert(an_optimistically_concurrent_store<store_type_>,
                   "the store stages, validates and commits like every other optimistic store");
     static_assert(store_type_::is_transactional::value);
 
@@ -3569,7 +3569,7 @@ static void test_descending_range_reverses_the_forward_walk() {
         expect_true(std::find(ascending.begin(), ascending.end(), 8 * spacing_k) == ascending.end());
         check_descents_reverse(writer, ascending, bounds);
     }
-    if constexpr (offers_descending_range<store_type_>) {
+    if constexpr (a_store_with_descending_range<store_type_>) {
         auto [fresh, status] = store.transaction();
         if (!expect_equal(status, success_k)) return;
         std::vector<trivial_id_t> const newest = ascending_through(fresh);

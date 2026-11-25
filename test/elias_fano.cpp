@@ -107,7 +107,7 @@ void check_kit(kit_type_) {
 
     // Only a corrupted sequence asks past its last set bit, and the scan stops at the span instead
     // of reading beyond it - through the serial tail, and through a kit's own wider steps.
-    using scan_kit_t = std::conditional_t<select_kit<kit_type_>, kit_type_, serial_row_kit_t>;
+    using scan_kit_t = std::conditional_t<a_select_kit<kit_type_>, kit_type_, serial_row_kit_t>;
     for (std::size_t const length : {std::size_t(1), std::size_t(3), std::size_t(17)}) {
         std::vector<std::uint64_t> words(length, 0);
         words[0] = 1;
@@ -118,7 +118,7 @@ void check_kit(kit_type_) {
 /** @c check_kit through @p kit , skipped where this machine cannot run it. */
 case_result_t test_kit(row_kit_t kit) {
     if (!row_kit_supported(kit)) return case_result_t::skipped(needs_kit_reason(kit));
-    visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { check_kit(kit_instance); });
+    visit_row_kit(kit, [](a_row_kit auto kit_instance) noexcept { check_kit(kit_instance); });
     return {};
 }
 

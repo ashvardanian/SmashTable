@@ -281,9 +281,9 @@ static void test_allocator_refuses_overflowing_counts() {
 using forkunion_mutex_t = spin_shared_mutex<fu::preferred_yield_t, fu::preferred_atomic_ref>;
 using smashtable::spin_shared_mutex_t;
 
-static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
+static_assert(an_extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
               "a reference short of the concept would pass as a ForkUnion case over the fallback loops");
-static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
+static_assert(an_extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
               "the mutex word is narrower than a stamp, and must reach the same verbs");
 
 /** Readers are admitted up to half the tally, and a reader refused at a full one takes its unit
@@ -449,11 +449,11 @@ using yielding_mutex_t = spin_shared_mutex<standard_waiting_policy<yielding_wait
 using yielding_table_t =
     atomic_hash_set<std::uint64_t, default_hash_t, equal_to_t, default_allocator_t, yielding_waiting_policy_t>;
 
-static_assert(parking_waiting_policy<standard_waiting_policy_t, std::uint32_t *, std::uint32_t>,
+static_assert(a_parking_waiting_policy<standard_waiting_policy_t, std::uint32_t *, std::uint32_t>,
               "the default must satisfy the concept the mutex constrains its parameter on");
-static_assert(waiting_policy<yielding_waiting_policy_t, std::uint64_t const *, std::uint64_t>,
+static_assert(a_waiting_policy<yielding_waiting_policy_t, std::uint64_t const *, std::uint64_t>,
               "the slot lock watches a word owned through atomic_ref rather than an atomic object");
-static_assert(waiting_policy<yielding_waiting_policy_t, std::uint32_t *, std::uint32_t>,
+static_assert(a_waiting_policy<yielding_waiting_policy_t, std::uint32_t *, std::uint32_t>,
               "the mutex hands a waiter the address of its word, as it does the slot lock's");
 static_assert(sizeof(yielding_mutex_t) == sizeof(spin_shared_mutex_t), "a stateless policy costs the mutex no storage");
 static_assert(sizeof(yielding_table_t) == sizeof(atomic_hash_set<std::uint64_t>),
@@ -599,9 +599,9 @@ using extended_mutex_t = spin_shared_mutex<standard_waiting_policy_t, counting_e
 using extended_table_t = atomic_hash_set<std::uint64_t, default_hash_t, equal_to_t, default_allocator_t,
                                          bare_waiting_policy_t, counting_extended_ref>;
 
-static_assert(extended_atomic_ref<counting_extended_ref<std::uint32_t>, std::uint32_t>,
+static_assert(an_extended_atomic_ref<counting_extended_ref<std::uint32_t>, std::uint32_t>,
               "the fixture has to satisfy the concept, or the test proves nothing about dispatch");
-static_assert(!extended_atomic_ref<atomic_ref<std::uint32_t>, std::uint32_t>,
+static_assert(!an_extended_atomic_ref<atomic_ref<std::uint32_t>, std::uint32_t>,
               "and the default must not, or there is no fallback to fall back to");
 static_assert(sizeof(extended_mutex_t) == sizeof(spin_shared_mutex_t),
               "the reference is chosen at compile time and costs the mutex no storage");
@@ -1780,10 +1780,10 @@ static void test_versioned_comparator_orders_by_key_then_generation() {
     expect_true(!comparator.less(older, std::size_t {5}));
 
     // A watch dates an entry without naming one, so it is never an ordering operand.
-    static_assert(carries_generation<watch_t>, "a watch does carry a generation");
-    static_assert(!orderable_per_version<watch_t>, "but it names no key, so it cannot be ordered");
-    static_assert(orderable_per_version<versioned_t>, "an entry carries both");
-    static_assert(orderable_per_version<dated_identifier_t>, "and so does a dated identifier");
+    static_assert(a_generation_carrier<watch_t>, "a watch does carry a generation");
+    static_assert(!a_version_ordered_operand<watch_t>, "but it names no key, so it cannot be ordered");
+    static_assert(a_version_ordered_operand<versioned_t>, "an entry carries both");
+    static_assert(a_version_ordered_operand<dated_identifier_t>, "and so does a dated identifier");
 }
 
 #pragma endregion Ordering Tests
@@ -1946,9 +1946,9 @@ static void test_per_version_equals_separates_versions() {
 using avl_store_t = monotonic_avl_set<std::size_t, std::less<std::size_t>, std::allocator<std::size_t>>;
 using std_store_t = reference_store<std::size_t, std::less<std::size_t>, std::allocator<std::size_t>>;
 
-static_assert(optimistically_concurrent_store<avl_store_t>, "the tree-backed store validates and stages");
-static_assert(optimistically_concurrent_store<std_store_t>, "and so does the `std::set`-backed one");
-static_assert(!optimistically_concurrent_store<counted_t>, "a plain value is not a store");
+static_assert(an_optimistically_concurrent_store<avl_store_t>, "the tree-backed store validates and stages");
+static_assert(an_optimistically_concurrent_store<std_store_t>, "and so does the `std::set`-backed one");
+static_assert(!an_optimistically_concurrent_store<counted_t>, "a plain value is not a store");
 static_assert(at_least(avl_store_t::isolation_k, isolation_t::read_committed_k), "the floor the concept states");
 
 /** A transaction whose commit refuses with a planned status a set number of times, counting every

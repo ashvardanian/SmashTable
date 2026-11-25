@@ -70,8 +70,8 @@ struct liveness_augmentation_t {
 
 /** A core keeping a second subtree count, which a snapshot store's @c select descends on. */
 template <typename collection_type_>
-concept ranked_by_liveness = requires { typename collection_type_::augmentation_t; } &&
-                             !std::is_same_v<typename collection_type_::augmentation_t, no_augmentation_t>;
+concept a_liveness_ranked_collection = requires { typename collection_type_::augmentation_t; } &&
+                                       !std::is_same_v<typename collection_type_::augmentation_t, no_augmentation_t>;
 
 #pragma endregion Liveness Ranking
 
@@ -127,8 +127,8 @@ concept ranked_by_liveness = requires { typename collection_type_::augmentation_
  *  for a reader holding an older snapshot, which is why a transaction's own @c select walks its
  *  merged order instead.
  *
- *  @tparam collection_type_ The underlying core, satisfying @c key_addressable_collection and
- *      providing a @c rebind template alias. Cores that also satisfy @c ordered_collection unlock
+ *  @tparam collection_type_ The underlying core, satisfying @c a_key_addressable_collection and
+ *      providing a @c rebind template alias. Cores also satisfying @c an_ordered_collection unlock
  *      bounds and ranges.
  *  @tparam order_type_ The commit order this store is a member of. The default is solitary, which a
  *      store nobody shares builds for itself; a thread-safety wrapper rebinds its inner store to a
@@ -190,7 +190,7 @@ class snapshot_store {
     using dated_identifier_t = typename versioning_t::dated_identifier_t;
 
     /** Whether the core sums a second per-subtree count, unlocking @c select and @c rank. */
-    static constexpr bool ranked_core_k = ranked_by_liveness<collection_type_>;
+    static constexpr bool ranked_core_k = a_liveness_ranked_collection<collection_type_>;
 
     /** One stored version, decorated with a survivor tag only where a core descends on it. An
      *  unranked core keeps the bare entry, so nothing pays for a bit nothing reads. */
@@ -223,7 +223,7 @@ class snapshot_store {
     using values_vector_t = basic_vector<value_t, values_allocator_t>;
 
     /** Whether the core orders its keys, which is what unlocks bounds and ranges. */
-    static constexpr bool ordered_core_k = ordered_collection<dated_entries_t>;
+    static constexpr bool ordered_core_k = an_ordered_collection<dated_entries_t>;
 
     /** How the store names a position inside its versioned core, never handed out. */
     using entry_iterator_t = decltype(std::declval<dated_entries_t const &>().begin());
@@ -874,7 +874,7 @@ class snapshot_store {
         template <typename input_iterator_type_, typename... tags_types_>
         status_t stage_sorted_(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
             static_assert(
-                multipass_iterator<input_iterator_type_>,
+                a_multipass_iterator<input_iterator_type_>,
                 "a sorted build counts its range before it walks it, which a single-pass range cannot answer");
             using sorted_allocator_t = typename sorted_changes_t::allocator_type;
             sorted_changes_t sorted {sorted_allocator_t(storage_shape_t::allocator_of(store_ref().entries_))};
@@ -1031,9 +1031,9 @@ class snapshot_store {
          *  - @c operation_not_permitted_k The transaction is already staged.
          *  - Any status an element's or a key's @c copy returns passes through unchanged.
          */
-        template <readable_iterator input_iterator_type_, typename... tags_types_>
+        template <a_readable_iterator input_iterator_type_, typename... tags_types_>
         status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
-            requires(promises_about_the_range<tags_types_> && ...)
+            requires(a_range_promise<tags_types_> && ...)
         {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             if constexpr (builds_sorted_changes_k && contains_type<assume_sorted_t, tags_types_...>())
@@ -1955,7 +1955,7 @@ class snapshot_store {
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-            requires is_mapping<value_t> && ordered_core_k
+            requires a_mapping<value_t> && ordered_core_k
         {
             values_vector_t revised(values_allocator_t(storage_shape_t::allocator_of(store_ref().entries_)));
             status_t collecting = success_k;
@@ -1991,7 +1991,7 @@ class snapshot_store {
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                             callback_type_ &&callback) const noexcept
-            requires ordered_core_k && uniform_random_bits<std::remove_cvref_t<generator_type_>>
+            requires ordered_core_k && a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
         {
             std::size_t counted = 0;
             if (status_t const measured = range(lower, upper, [&](value_t const &) noexcept { ++counted; });
@@ -2021,11 +2021,11 @@ class snapshot_store {
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t,
-                  indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
+                  an_indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
         status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                   std::size_t &seen, std::size_t capacity,
                                   output_iterator_type_ &&reservoir) const noexcept
-            requires ordered_core_k && uniform_random_bits<std::remove_cvref_t<generator_type_>>
+            requires ordered_core_k && a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
         {
             static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                           "a reservoir copies into the caller's buffer, so the member must copy without throwing");
@@ -2633,7 +2633,7 @@ class snapshot_store {
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-            requires is_mapping<value_t> && ordered_core_k
+            requires a_mapping<value_t> && ordered_core_k
         {
             if (!store_) return operation_not_permitted_k;
             values_vector_t revised(values_allocator_t(storage_shape_t::allocator_of(store_->entries_)));
@@ -3956,7 +3956,7 @@ class snapshot_store {
      *    while it was being staged.
      *  - Any status the element's or a key's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_>
+    template <a_readable_iterator input_iterator_type_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [this](transaction_t &staging, value_t &&candidate) noexcept {
             auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(candidate));
@@ -3976,7 +3976,7 @@ class snapshot_store {
      *  - @c read_conflict_k From @c serializable_k up, another writer changed a key the group read.
      *  - Any status the element's or a key's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_>
+    template <a_readable_iterator input_iterator_type_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
             return staging.insert_if_missing(std::move(candidate));
@@ -3992,7 +3992,7 @@ class snapshot_store {
      *  - @c write_conflict_k Another writer took one of these keys - this path reads none of them.
      *  - Any status the element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_>
+    template <a_readable_iterator input_iterator_type_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
             return staging.upsert(std::move(candidate));
@@ -4010,7 +4010,7 @@ class snapshot_store {
      *  - @c read_conflict_k From @c serializable_k up, another writer changed a key the group read.
      *  - Any status the element's or a key's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_>
+    template <a_readable_iterator input_iterator_type_>
     status_t update(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
             return staging.update(std::move(candidate));
@@ -4194,7 +4194,7 @@ class snapshot_store {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-        requires is_mapping<value_t> && ordered_core_k
+        requires a_mapping<value_t> && ordered_core_k
     {
         return publish_group_([&](publication_t &group) noexcept {
             return group.update_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -4223,7 +4223,7 @@ class snapshot_store {
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                         callback_type_ &&callback) const noexcept
-        requires ordered_core_k && uniform_random_bits<std::remove_cvref_t<generator_type_>>
+        requires ordered_core_k && a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
     {
         std::size_t visible_count = 0;
         [[maybe_unused]] status_t const walked =
@@ -4256,10 +4256,10 @@ class snapshot_store {
      *  @param[out] reservoir Random-access iterator to that buffer.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_,
-              indexed_writable_iterator<value_t> output_iterator_type_>
+              an_indexed_writable_iterator<value_t> output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                               std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
-        requires ordered_core_k && uniform_random_bits<std::remove_cvref_t<generator_type_>>
+        requires ordered_core_k && a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
     {
         static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                       "sampling copies each drawn element into the caller's buffer, so that copy must not throw");
@@ -4367,7 +4367,7 @@ class snapshot_store {
     /** Stages every element of [ @p first, @p last ) into one transaction and commits it.
      *  @p stage_one decides what each element means, which is the only difference between the
      *  strict, lenient, overwriting and updating bulk modifiers. */
-    template <readable_iterator input_iterator_type_, typename stage_one_type_>
+    template <a_readable_iterator input_iterator_type_, typename stage_one_type_>
     status_t commit_each_(input_iterator_type_ first, input_iterator_type_ last, stage_one_type_ &&stage_one) noexcept {
         if (first == last) return success_k;
         auto opened = transaction();
@@ -4577,16 +4577,16 @@ using strict_serializable_hash_map = strict_serializable_store<
 #pragma endregion Aliases
 
 /*  The shard protocol is part of a stamped store's contract, not an option a wrapper discovers.
- *  @c partitioned_store reads @c draws_from_a_shared_order for its level and falls to
+ *  @c partitioned_store reads @c a_store_in_a_shared_order for its level and falls to
  *  @c read_committed_k when it is false, and every `if constexpr` on that concept has a clean
  *  @c else. So a concept that stops binding downgrades the advertised guarantee with no diagnostic
  *  anywhere, and the surface parity fold cannot see it: @c parity_witness asserts an implication,
  *  which a false antecedent satisfies. These turn that silence into a build failure. */
 #pragma region Contract
 
-static_assert(offers_transaction_at<snapshot_avl_map<int, int>>,
+static_assert(a_store_opening_transactions_at<snapshot_avl_map<int, int>>,
               "a stamped store opens one part of a sharded transaction at a stamp drawn elsewhere");
-static_assert(draws_from_a_shared_order<snapshot_avl_map<int, int>>,
+static_assert(a_store_in_a_shared_order<snapshot_avl_map<int, int>>,
               "a stamped store is a member of an order a shard set can stamp every part alike from");
 static_assert(snapshot_avl_map<int, int>::isolation_k == isolation_t::snapshot_k,
               "a snapshot store promises snapshot isolation");

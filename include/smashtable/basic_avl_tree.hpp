@@ -299,7 +299,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *  @note Uses single-pass reservoir sampling for O(n) time with true uniform distribution.
      */
     template <typename generator_type_>
-        requires uniform_random_bits<std::remove_cvref_t<generator_type_>>
+        requires a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
     static node_t *sample(node_t *node, generator_type_ &&generator) noexcept {
         if (!node) return nullptr;
 
@@ -326,7 +326,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *  @note Uses single-pass reservoir sampling for O(n) time with uniform distribution.
      */
     template <typename generator_type_, typename lower_type_, typename upper_type_, typename predicate_type_>
-        requires uniform_random_bits<std::remove_cvref_t<generator_type_>> &&
+        requires a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>> &&
                  std::predicate<predicate_type_ &, node_t *>
     static node_t *sample_range( //
         node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
@@ -357,8 +357,8 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *  @note Uses Algorithm R (reservoir sampling) for uniform k-sample in single pass.
      */
     template <typename generator_type_, typename lower_type_, typename upper_type_, typename predicate_type_,
-              indexed_writable_iterator<value_t> output_iterator_type_>
-        requires uniform_random_bits<std::remove_cvref_t<generator_type_>> &&
+              an_indexed_writable_iterator<value_t> output_iterator_type_>
+        requires a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>> &&
                  std::predicate<predicate_type_ &, node_t *>
     static void sample_range( //
         node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
@@ -555,7 +555,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *  @par Statuses:
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <multipass_iterator iterator_type_, allocator_of<node_t> node_allocator_type_>
+    template <a_multipass_iterator iterator_type_, an_allocator<node_t> node_allocator_type_>
     static build_result_t build_from_sorted(iterator_type_ first, std::size_t count,
                                             node_allocator_type_ &allocator) noexcept {
         if (count == 0) return {};
@@ -1146,7 +1146,7 @@ template <typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<basic_avl_node<value_type_, comparator_type_>>>
     requires std::strict_weak_order<comparator_type_ const &, typename mapping_key_type_or_itself<value_type_>::type,
                                     typename mapping_key_type_or_itself<value_type_>::type> &&
-             allocator_of<typename std::allocator_traits<allocator_type_>::template rebind_alloc<
+             an_allocator<typename std::allocator_traits<allocator_type_>::template rebind_alloc<
                               basic_avl_node<value_type_, comparator_type_>>,
                           basic_avl_node<value_type_, comparator_type_>>
 class basic_avl_tree {
@@ -1177,7 +1177,7 @@ class basic_avl_tree {
     static_assert(std::allocator_traits<allocator_t>::propagate_on_container_move_assignment::value,
                   "basic_avl_tree requires allocators that propagate on move assignment");
 
-    using is_associative = std::bool_constant<is_mapping<value_t>>;
+    using is_associative = std::bool_constant<a_mapping<value_t>>;
 
     /**
      *  @brief Rebind this tree type to different entry and comparator types. Follows STL allocator
@@ -2158,11 +2158,11 @@ class basic_avl_tree {
      *    the newcomer.
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <incumbent_policy_t policy_, readable_iterator input_iterator_type_, typename... tags_types_>
+    template <incumbent_policy_t policy_, a_readable_iterator input_iterator_type_, typename... tags_types_>
     static status_t stage_range_(basic_avl_tree &staged, input_iterator_type_ first, input_iterator_type_ last,
                                  tags_types_...) noexcept {
         if constexpr (contains_type<assume_sorted_t, tags_types_...>()) {
-            static_assert(multipass_iterator<input_iterator_type_>,
+            static_assert(a_multipass_iterator<input_iterator_type_>,
                           "a sorted build seeks the middle of its range, which a single-pass range cannot answer");
             std::size_t const count = distance_between(first, last);
             typename node_t::build_result_t const built = node_t::build_from_sorted(first, count, staged.allocator_);
@@ -2208,9 +2208,9 @@ class basic_avl_tree {
      *  @par Statuses:
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_, typename... tags_types_>
+    template <a_readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
-        requires(promises_about_the_range<tags_types_> && ...)
+        requires(a_range_promise<tags_types_> && ...)
     {
 
         if (first == last) return success_k;
@@ -2243,9 +2243,9 @@ class basic_avl_tree {
      *  - @c key_already_exists_k A key repeats inside an unsorted range or is already in this tree.
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_, typename... tags_types_>
+    template <a_readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
-        requires(promises_about_the_range<tags_types_> && ...)
+        requires(a_range_promise<tags_types_> && ...)
     {
 
         if (first == last) return success_k;
@@ -2304,9 +2304,9 @@ class basic_avl_tree {
      *  @par Statuses:
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_, typename... tags_types_>
+    template <a_readable_iterator input_iterator_type_, typename... tags_types_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
-        requires(promises_about_the_range<tags_types_> && ...)
+        requires(a_range_promise<tags_types_> && ...)
     {
 
         if (first == last) return success_k;
@@ -2364,9 +2364,9 @@ class basic_avl_tree {
      *  - @c key_not_found_k A key of the range is absent from this tree.
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_, typename... tags_types_>
+    template <a_readable_iterator input_iterator_type_, typename... tags_types_>
     status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
-        requires(promises_about_the_range<tags_types_> && ...)
+        requires(a_range_promise<tags_types_> && ...)
     {
 
         if (first == last) return success_k;
@@ -2855,11 +2855,12 @@ template <typename key_type_, typename mapped_type_, typename comparator_type_ =
           typename allocator_type_ = std::allocator<void>>
 using avl_map = basic_avl_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>;
 
-static_assert(ordered_collection<avl_set<std::uint64_t>> && ordered_collection<avl_map<std::uint64_t, double>>,
+static_assert(an_ordered_collection<avl_set<std::uint64_t>> && an_ordered_collection<avl_map<std::uint64_t, double>>,
               "an AVL tree answers a key, a bound and a range the way every ordered collection does");
-static_assert(batches_atomically<avl_set<std::uint64_t>> && batches_atomically<avl_map<std::uint64_t, double>>,
+static_assert(an_atomically_batching_collection<avl_set<std::uint64_t>> &&
+                  an_atomically_batching_collection<avl_map<std::uint64_t, double>>,
               "an AVL tree takes a whole batch or none of it");
-static_assert(set_shaped_store<avl_set<std::uint64_t>> && map_shaped_store<avl_map<std::uint64_t, double>>,
+static_assert(a_set_shaped_store<avl_set<std::uint64_t>> && a_map_shaped_store<avl_map<std::uint64_t, double>>,
               "the set and map aliases of one tree must not resolve to the same shape");
 
 #pragma endregion Split and Join

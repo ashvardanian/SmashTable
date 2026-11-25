@@ -365,7 +365,7 @@ template <typename member_type_>
 [[nodiscard]] std::size_t checksum_of_member(member_type_ const &member) noexcept {
     auto const &key = mapping_key_or_itself<member_type_>(member);
     std::size_t mixed = hash<std::remove_cvref_t<decltype(key)>> {}(key);
-    if constexpr (is_mapping<member_type_>)
+    if constexpr (a_mapping<member_type_>)
         if constexpr (std::is_convertible_v<decltype(member.mapped), std::size_t>)
             mixed ^= static_cast<std::size_t>(member.mapped) * std::size_t {0x9E3779B9};
     return mixed;

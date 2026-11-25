@@ -19,7 +19,7 @@ namespace ashvardanian::smashtable {
 
 /** A record naming the one pushed before it through a @c next pointer of its own type. */
 template <typename record_type_>
-concept pointer_linked = requires(record_type_ &record) {
+concept a_pointer_linked_record = requires(record_type_ &record) {
     { record.next } -> std::same_as<record_type_ *&>;
 };
 
@@ -30,7 +30,7 @@ concept pointer_linked = requires(record_type_ &record) {
  *  @tparam record_type_ The record, linked through its @c next pointer.
  *  @tparam atomic_reference_ The reference the top word is owned through for one operation.
  */
-template <pointer_linked record_type_, template <typename> class atomic_reference_ = atomic_ref>
+template <a_pointer_linked_record record_type_, template <typename> class atomic_reference_ = atomic_ref>
 class atomic_intrusive_stack {
   public:
     using record_t = record_type_;

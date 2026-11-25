@@ -45,7 +45,7 @@ namespace ashvardanian::smashtable {
 template <typename value_type_,
           std::size_t keys_per_row_ =
               keys_per_row<typename mapping_key_type_or_itself<value_type_>::type>(cache_line_bytes_k),
-          row_kit row_kit_type_ = native_row_kit_t, typename allocator_type_ = default_allocator<value_type_>>
+          a_row_kit row_kit_type_ = native_row_kit_t, typename allocator_type_ = default_allocator<value_type_>>
 class immutable_b_tree {
   public:
     /** The whole stored element: the key for a set, a @c mapping of both halves for a map. */
@@ -61,9 +61,9 @@ class immutable_b_tree {
     using mapped_type = mapped_t; // ? STL compatibility
 
     /** What one entry of the mapped array holds; an empty stand-in when the tree is a set. */
-    using mapped_slot_t = std::conditional_t<is_mapping<value_t>, mapped_t, placeholder_t>;
+    using mapped_slot_t = std::conditional_t<a_mapping<value_t>, mapped_t, placeholder_t>;
 
-    using is_associative = std::bool_constant<is_mapping<value_t>>;
+    using is_associative = std::bool_constant<a_mapping<value_t>>;
 
     using format_t = row_format<key_t, keys_per_row_>;
     using word_t = typename format_t::word_t;
@@ -74,7 +74,7 @@ class immutable_b_tree {
     static constexpr std::size_t keys_per_row_k = keys_per_row_;
     static constexpr std::size_t fanout_k = keys_per_row_ + 1;
 
-    static_assert(row_searchable_key<key_t>, "the row kits search the key, whatever rides beside it");
+    static_assert(a_row_searchable_key<key_t>, "the row kits search the key, whatever rides beside it");
     static_assert(std::allocator_traits<allocator_t>::propagate_on_container_move_assignment::value,
                   "immutable_b_tree requires allocators that propagate on move assignment");
 
@@ -195,7 +195,7 @@ class immutable_b_tree {
             slot = tree.next_slot_(slot);
         }
 
-        if constexpr (is_mapping<value_t>) {
+        if constexpr (a_mapping<value_t>) {
             status_t const reserved = tree.mapped_.reserve(sorted.size());
             if (failed(reserved)) return reserved;
             for (value_t const &element : sorted) {
@@ -218,7 +218,7 @@ class immutable_b_tree {
      *  for a map. */
     [[nodiscard]] static constexpr std::size_t size_bytes(std::size_t keys_count) noexcept {
         std::size_t const rows_count = keys_count / keys_per_row_k + (keys_count % keys_per_row_k != 0);
-        std::size_t const mapped_bytes = is_mapping<value_t> ? keys_count * sizeof(mapped_slot_t) : 0;
+        std::size_t const mapped_bytes = a_mapping<value_t> ? keys_count * sizeof(mapped_slot_t) : 0;
         return rows_count * format_t::bytes_per_row_k + mapped_bytes;
     }
 
@@ -246,7 +246,7 @@ class immutable_b_tree {
 
     /** The value the key at position @p ordinal carries, which must be below @c size. */
     [[nodiscard]] mapped_slot_t const &mapped_at(std::size_t ordinal) const noexcept
-        requires is_mapping<value_t>
+        requires a_mapping<value_t>
     {
         assert(ordinal < size_ && "mapped_at takes a position below size");
         return mapped_[ordinal];
@@ -341,18 +341,18 @@ class immutable_b_tree {
 
 /** An immutable B-tree of bare keys. */
 template <typename key_type_, std::size_t keys_per_row_ = keys_per_row<key_type_>(cache_line_bytes_k),
-          row_kit row_kit_type_ = native_row_kit_t, typename allocator_type_ = default_allocator<key_type_>>
+          a_row_kit row_kit_type_ = native_row_kit_t, typename allocator_type_ = default_allocator<key_type_>>
 using immutable_b_set = immutable_b_tree<key_type_, keys_per_row_, row_kit_type_, allocator_type_>;
 
 /** An immutable B-tree pairing each key with a value the rank indexes. */
 template <typename key_type_, typename mapped_type_,
           std::size_t keys_per_row_ = keys_per_row<key_type_>(cache_line_bytes_k),
-          row_kit row_kit_type_ = native_row_kit_t,
+          a_row_kit row_kit_type_ = native_row_kit_t,
           typename allocator_type_ = default_allocator<mapping<key_type_, mapped_type_>>>
 using immutable_b_map =
     immutable_b_tree<mapping<key_type_, mapped_type_>, keys_per_row_, row_kit_type_, allocator_type_>;
 
-static_assert(tagged_collection<immutable_b_set<std::uint64_t>>,
+static_assert(a_tagged_collection<immutable_b_set<std::uint64_t>>,
               "an immutable B-tree names its element, its key and its shape like every other container");
 static_assert(!immutable_b_set<std::uint64_t>::is_associative::value, "the set alias stores bare keys");
 static_assert(immutable_b_map<std::uint64_t, double>::is_associative::value, "the map alias stores a mapping");

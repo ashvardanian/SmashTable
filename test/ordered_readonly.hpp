@@ -32,12 +32,12 @@ template <typename container_type_>
 void check_ordered_readonly_tags() {
 
     using container_t = container_type_;
-    static_assert(tagged_collection<container_t>, "every container answers what it stores and whether it maps");
+    static_assert(a_tagged_collection<container_t>, "every container answers what it stores and whether it maps");
     static_assert(std::is_same_v<typename container_t::value_type, typename container_t::value_t>,
                   "the STL tag and the library alias name one type");
     static_assert(std::is_same_v<typename container_t::key_type, typename container_t::key_t>,
                   "the STL tag and the library alias name one key");
-    static_assert(container_t::is_associative::value == is_mapping<typename container_t::value_t>,
+    static_assert(container_t::is_associative::value == a_mapping<typename container_t::value_t>,
                   "the shape tag follows the element, never the other way around");
 }
 

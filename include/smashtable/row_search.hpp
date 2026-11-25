@@ -192,7 +192,7 @@ struct serial_row_kit_t {
 
     /** How many of @p keys order below @p wanted; for a sorted row, the lower bound. */
     template <typename key_type_, std::size_t extent_>
-        requires row_searchable_key<key_type_>
+        requires a_row_searchable_key<key_type_>
     [[nodiscard]] static constexpr std::size_t count_below(std::span<key_type_ const, extent_> keys,
                                                            std::type_identity_t<key_type_> wanted) noexcept {
         std::size_t below = 0;
@@ -1712,31 +1712,31 @@ struct v128_row_kit_t {
 /** A kit this build carries, ranking every key type in both 16-byte layouts and masking its
  *  @c mask_equal_width_k of equal 4-, 8- or 16-byte keys at once, at most a 32-bit mask's worth. */
 template <typename kit_type_>
-concept row_kit = kit_type_::compiled_k && (kit_type_::mask_equal_width_k <= 32) &&
-                  requires(std::span<std::uint32_t const> narrow_keys, std::span<std::int32_t const> signed_narrow_keys,
-                           std::span<std::uint64_t const> words, std::span<std::int64_t const> signed_keys,
-                           std::span<key128_t const> wide_keys,
-                           std::span<std::uint32_t const, kit_type_::mask_equal_width_k> narrow_window,
-                           std::span<std::uint64_t const, kit_type_::mask_equal_width_k> window,
-                           std::span<key128_t const, kit_type_::mask_equal_width_k> wide_window) {
-                      { kit_type_::mask_equal(narrow_window, std::uint32_t {}) } -> std::same_as<std::uint32_t>;
-                      { kit_type_::mask_equal(window, std::uint64_t {}) } -> std::same_as<std::uint32_t>;
-                      { kit_type_::mask_equal(wide_window, key128_t {}) } -> std::same_as<std::uint32_t>;
-                      { kit_type_::count_below(narrow_keys, std::uint32_t {}) } -> std::same_as<std::size_t>;
-                      { kit_type_::count_below(signed_narrow_keys, std::int32_t {}) } -> std::same_as<std::size_t>;
-                      { kit_type_::count_below(words, std::uint64_t {}) } -> std::same_as<std::size_t>;
-                      { kit_type_::count_below(signed_keys, std::int64_t {}) } -> std::same_as<std::size_t>;
-                      { kit_type_::count_below(wide_keys, key128_t {}) } -> std::same_as<std::size_t>;
-                      { kit_type_::count_below(words, words, key128_t {}) } -> std::same_as<std::size_t>;
-                  };
+concept a_row_kit = kit_type_::compiled_k && (kit_type_::mask_equal_width_k <= 32) &&
+                    requires(std::span<std::uint32_t const> narrow_keys,
+                             std::span<std::int32_t const> signed_narrow_keys, std::span<std::uint64_t const> words,
+                             std::span<std::int64_t const> signed_keys, std::span<key128_t const> wide_keys,
+                             std::span<std::uint32_t const, kit_type_::mask_equal_width_k> narrow_window,
+                             std::span<std::uint64_t const, kit_type_::mask_equal_width_k> window,
+                             std::span<key128_t const, kit_type_::mask_equal_width_k> wide_window) {
+                        { kit_type_::mask_equal(narrow_window, std::uint32_t {}) } -> std::same_as<std::uint32_t>;
+                        { kit_type_::mask_equal(window, std::uint64_t {}) } -> std::same_as<std::uint32_t>;
+                        { kit_type_::mask_equal(wide_window, key128_t {}) } -> std::same_as<std::uint32_t>;
+                        { kit_type_::count_below(narrow_keys, std::uint32_t {}) } -> std::same_as<std::size_t>;
+                        { kit_type_::count_below(signed_narrow_keys, std::int32_t {}) } -> std::same_as<std::size_t>;
+                        { kit_type_::count_below(words, std::uint64_t {}) } -> std::same_as<std::size_t>;
+                        { kit_type_::count_below(signed_keys, std::int64_t {}) } -> std::same_as<std::size_t>;
+                        { kit_type_::count_below(wide_keys, key128_t {}) } -> std::same_as<std::size_t>;
+                        { kit_type_::count_below(words, words, key128_t {}) } -> std::same_as<std::size_t>;
+                    };
 
 /** A kit with a select scan of its own, several words per instruction; the others take the serial
  *  kit's, which every Elias-Fano sequence can fall back on. */
 template <typename kit_type_>
-concept select_kit =
-    row_kit<kit_type_> && requires(std::span<std::uint64_t const> words, std::uint64_t sampled, std::size_t remaining) {
-        { kit_type_::select_set_bit(words, sampled, remaining) } -> std::same_as<std::uint64_t>;
-    };
+concept a_select_kit = a_row_kit<kit_type_> &&
+                       requires(std::span<std::uint64_t const> words, std::uint64_t sampled, std::size_t remaining) {
+                           { kit_type_::select_set_bit(words, sampled, remaining) } -> std::same_as<std::uint64_t>;
+                       };
 
 /** The newest kit the compiler's flags promise, for code selecting at compile time, not at open. */
 #if SMASHTABLE_TARGET_ICELAKE && defined(__AVX512F__) && defined(__AVX512VL__) && defined(__AVX512BW__) && \
@@ -1807,7 +1807,7 @@ constexpr decltype(auto) visit_row_kit(row_kit_t kit, callback_type_ &&callback)
 
 /** The key right after @p key, or @p key itself when nothing orders after it. */
 template <typename key_type_>
-    requires row_searchable_key<key_type_>
+    requires a_row_searchable_key<key_type_>
 [[nodiscard]] constexpr key_type_ successor_or_self(key_type_ key) noexcept {
     if constexpr (std::same_as<key_type_, key128_t>) {
         if (key.low != (std::numeric_limits<std::uint64_t>::max)()) return key128_t {key.high, key.low + 1};
@@ -1818,8 +1818,8 @@ template <typename key_type_>
 }
 
 /** How many of @p keys order at or below @p wanted; for a sorted row, the upper bound. */
-template <row_kit row_kit_type_, typename key_type_, std::size_t extent_>
-    requires row_searchable_key<key_type_>
+template <a_row_kit row_kit_type_, typename key_type_, std::size_t extent_>
+    requires a_row_searchable_key<key_type_>
 [[nodiscard]] std::size_t count_not_above(std::span<key_type_ const, extent_> keys,
                                           std::type_identity_t<key_type_> wanted) noexcept {
     key_type_ const successor = successor_or_self(wanted);
@@ -1827,7 +1827,7 @@ template <row_kit row_kit_type_, typename key_type_, std::size_t extent_>
 }
 
 /** How many keys of a split row order at or below @p wanted. */
-template <row_kit row_kit_type_, std::size_t extent_>
+template <a_row_kit row_kit_type_, std::size_t extent_>
 [[nodiscard]] std::size_t count_not_above(std::span<std::uint64_t const, extent_> high_words,
                                           std::span<std::uint64_t const, extent_> low_words, key128_t wanted) noexcept {
     key128_t const successor = successor_or_self(wanted);
@@ -1837,8 +1837,8 @@ template <row_kit row_kit_type_, std::size_t extent_>
 /** The lower bound of @p wanted in @p sorted of any length. A row of up to about 256 bytes of keys
  *  goes to the kit whole; a longer one is first narrowed to such a window by branchless halving.
  *  Exact only when @p sorted is sorted. */
-template <row_kit row_kit_type_, typename key_type_, std::size_t extent_>
-    requires row_searchable_key<key_type_>
+template <a_row_kit row_kit_type_, typename key_type_, std::size_t extent_>
+    requires a_row_searchable_key<key_type_>
 [[nodiscard]] std::size_t count_below_sorted(std::span<key_type_ const, extent_> sorted,
                                              std::type_identity_t<key_type_> wanted) noexcept {
     std::size_t const window = 256 / sizeof(key_type_);
@@ -1854,7 +1854,7 @@ template <row_kit row_kit_type_, typename key_type_, std::size_t extent_>
 }
 
 /** The lower bound of @p wanted in a sorted split row of any length, by 256 bytes of high words. */
-template <row_kit row_kit_type_, std::size_t extent_>
+template <a_row_kit row_kit_type_, std::size_t extent_>
 [[nodiscard]] std::size_t count_below_sorted(std::span<std::uint64_t const, extent_> high_words,
                                              std::span<std::uint64_t const, extent_> low_words,
                                              key128_t wanted) noexcept {
@@ -1874,7 +1874,7 @@ template <row_kit row_kit_type_, std::size_t extent_>
 
 /** The lower bound of @p wanted in the sorted row at @p row, laid out by @p format_type_ and
  *  searched by @p row_kit_type_. */
-template <typename format_type_, row_kit row_kit_type_>
+template <typename format_type_, a_row_kit row_kit_type_>
 [[nodiscard]] std::size_t count_below_in_row(typename format_type_::word_t const *row,
                                              typename format_type_::key_t wanted) noexcept {
     if constexpr (format_type_::keys_are_split_k)

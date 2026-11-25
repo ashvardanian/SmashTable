@@ -87,10 +87,10 @@ namespace ashvardanian::smashtable {
  *  @tparam atomic_reference_ The reference every header word and counter is owned through.
  */
 template <typename value_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
-          allocator_of<std::byte> allocator_type_ = default_allocator_t,
-          waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
+          an_allocator<std::byte> allocator_type_ = default_allocator_t,
+          a_waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
           template <typename> class atomic_reference_ = atomic_ref>
-    requires key_hasher<hasher_type_, typename hash_layout_for<value_type_, hasher_type_>::key_t> &&
+    requires a_key_hasher<hasher_type_, typename hash_layout_for<value_type_, hasher_type_>::key_t> &&
              std::equivalence_relation<equals_type_ const &, typename hash_layout_for<value_type_, hasher_type_>::key_t,
                                        typename hash_layout_for<value_type_, hasher_type_>::key_t>
 class atomic_hash_table {
@@ -420,23 +420,23 @@ class atomic_hash_table {
 
 template <typename key_type_, typename mapped_type_, typename hasher_type_ = default_hash_t,
           typename equals_type_ = equal_to_t, typename allocator_type_ = default_allocator_t,
-          waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
+          a_waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
           template <typename> class atomic_reference_ = atomic_ref>
 using atomic_hash_map = atomic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_,
                                           waiting_policy_type_, atomic_reference_>;
 
 template <typename key_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
           typename allocator_type_ = default_allocator_t,
-          waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
+          a_waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
           template <typename> class atomic_reference_ = atomic_ref>
 using atomic_hash_set =
     atomic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_, waiting_policy_type_, atomic_reference_>;
 
-static_assert(tagged_collection<atomic_hash_set<std::uint64_t>> &&
-                  tagged_collection<atomic_hash_map<std::uint64_t, double>>,
+static_assert(a_tagged_collection<atomic_hash_set<std::uint64_t>> &&
+                  a_tagged_collection<atomic_hash_map<std::uint64_t, double>>,
               "a pinned table names its element, its key and its shape like every other container");
-static_assert(set_shaped_store<atomic_hash_set<std::uint64_t>> &&
-                  map_shaped_store<atomic_hash_map<std::uint64_t, double>>,
+static_assert(a_set_shaped_store<atomic_hash_set<std::uint64_t>> &&
+                  a_map_shaped_store<atomic_hash_map<std::uint64_t, double>>,
               "the set and map aliases of one table must not resolve to the same shape");
 
 #pragma endregion Aliases

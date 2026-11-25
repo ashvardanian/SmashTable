@@ -36,7 +36,7 @@ namespace ashvardanian::smashtable {
 /** A record counting its reuses in a @c generation member of the pool's index type, which a handle
  *  compares. The generation shares the index's width, so a narrow index wraps it sooner. */
 template <typename value_type_, typename index_type_>
-concept generation_tagged = requires(value_type_ &record) {
+concept a_generation_tagged_record = requires(value_type_ &record) {
     { record.generation } -> std::same_as<index_type_ &>;
 };
 
@@ -48,7 +48,7 @@ concept generation_tagged = requires(value_type_ &record) {
  *  @tparam allocator_type_ Supplies and reclaims the single byte buffer.
  */
 template <typename value_type_, std::unsigned_integral index_type_ = std::uint32_t,
-          allocator_of<std::byte> allocator_type_ = default_allocator_t>
+          an_allocator<std::byte> allocator_type_ = default_allocator_t>
 class basic_fixed_pool {
   public:
     using value_t = value_type_;
@@ -180,13 +180,13 @@ class basic_fixed_pool {
     /** Frees the taken record at @p index, stepping its generation so older handles go stale. */
     void vacate(index_t index) noexcept {
         assert(index < capacity_ && free_count_ < capacity_ && "vacating a record that was never taken");
-        if constexpr (generation_tagged<value_t, index_t>) ++records_data_()[index].generation;
+        if constexpr (a_generation_tagged_record<value_t, index_t>) ++(*this)[index].generation;
         free_indices_()[free_count_++] = index;
     }
 
     /** A handle to the record at @p index, which @c at answers until it is vacated. */
     [[nodiscard]] handle_t handle_of(index_t index) const noexcept
-        requires generation_tagged<value_t, index_t>
+        requires a_generation_tagged_record<value_t, index_t>
     {
         assert(index < capacity_ && "index out of bounds");
         return {index, records_data_()[index].generation};
@@ -194,14 +194,14 @@ class basic_fixed_pool {
 
     /** The record @p handle names, or null once that record was vacated. */
     [[nodiscard]] value_t *at(handle_t handle) noexcept
-        requires generation_tagged<value_t, index_t>
+        requires a_generation_tagged_record<value_t, index_t>
     {
         if (handle.index >= capacity_) return nullptr;
         value_t &record = records_data_()[handle.index];
         return record.generation == handle.generation ? &record : nullptr;
     }
     [[nodiscard]] value_t const *at(handle_t handle) const noexcept
-        requires generation_tagged<value_t, index_t>
+        requires a_generation_tagged_record<value_t, index_t>
     {
         if (handle.index >= capacity_) return nullptr;
         value_t const &record = records_data_()[handle.index];

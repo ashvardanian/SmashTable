@@ -73,7 +73,7 @@ struct splus_tree_header_t {
 template <typename value_type_,
           std::size_t keys_per_row_ =
               keys_per_row<typename mapping_key_type_or_itself<value_type_>::type>(cache_line_bytes_k),
-          row_kit row_kit_type_ = native_row_kit_t>
+          a_row_kit row_kit_type_ = native_row_kit_t>
 class immutable_splus_tree_view {
   public:
     /** Every stored element: the key itself for a set, a @c mapping of both halves for a map. */
@@ -89,9 +89,9 @@ class immutable_splus_tree_view {
     using mapped_type = mapped_t; // ? STL compatibility
 
     /** What one entry of the mapped array holds: an empty stand-in when the tree is a set. */
-    using mapped_slot_t = std::conditional_t<is_mapping<value_t>, mapped_t, placeholder_t>;
+    using mapped_slot_t = std::conditional_t<a_mapping<value_t>, mapped_t, placeholder_t>;
 
-    using is_associative = std::bool_constant<is_mapping<value_t>>;
+    using is_associative = std::bool_constant<a_mapping<value_t>>;
 
     using format_t = row_format<key_t, keys_per_row_>;
     using word_t = typename format_t::word_t;
@@ -110,12 +110,12 @@ class immutable_splus_tree_view {
     static constexpr std::size_t saved_alignment_k = alignof(word_t) > alignof(mapped_slot_t) ? alignof(word_t)
                                                                                               : alignof(mapped_slot_t);
 
-    static_assert(row_searchable_key<key_t>, "the row kits search the key, whatever rides beside it");
+    static_assert(a_row_searchable_key<key_t>, "the row kits search the key, whatever rides beside it");
     static_assert(saved_rows_offset_k % saved_alignment_k == 0,
                   "the header keeps the rows on the alignment the saved bytes start on");
 
   private:
-    template <typename, std::size_t, row_kit, typename>
+    template <typename, std::size_t, a_row_kit, typename>
     friend class immutable_splus_tree;
 
     using level_nodes_t = std::array<std::size_t, levels_capacity_k + 1>;
@@ -241,7 +241,7 @@ class immutable_splus_tree_view {
 
     /** The value the key at position @p ordinal carries, which must be below @c size. */
     [[nodiscard]] mapped_slot_t const &mapped_at(std::size_t ordinal) const noexcept
-        requires is_mapping<value_t>
+        requires a_mapping<value_t>
     {
         assert(ordinal < size_ && "mapped_at takes a position below size");
         return mapped_[ordinal];
@@ -260,7 +260,7 @@ class immutable_splus_tree_view {
 
   private:
     /** The bytes one mapped value takes in the saved form, zero for a set. */
-    static constexpr std::size_t saved_mapped_bytes_k = is_mapping<value_t> ? sizeof(mapped_slot_t) : 0;
+    static constexpr std::size_t saved_mapped_bytes_k = a_mapping<value_t> ? sizeof(mapped_slot_t) : 0;
 
     /** Where the mapped values start after @p rows_bytes of rows, on their own alignment. */
     static constexpr std::size_t saved_mapped_offset_(std::size_t rows_bytes) noexcept {
@@ -317,7 +317,7 @@ class immutable_splus_tree_view {
 template <typename value_type_,
           std::size_t keys_per_row_ =
               keys_per_row<typename mapping_key_type_or_itself<value_type_>::type>(cache_line_bytes_k),
-          row_kit row_kit_type_ = native_row_kit_t, typename allocator_type_ = default_allocator<value_type_>>
+          a_row_kit row_kit_type_ = native_row_kit_t, typename allocator_type_ = default_allocator<value_type_>>
 class immutable_splus_tree {
   public:
     /** The in-place view every lookup goes through, over this tree's storage or saved bytes. */
@@ -414,7 +414,7 @@ class immutable_splus_tree {
             format_t::store(tree.row_(leaves_level, ordinal / keys_per_row_k), ordinal % keys_per_row_k,
                             ordinal < sorted.size() ? mapping_key_or_itself(sorted[ordinal]) : format_t::padding_k);
 
-        if constexpr (is_mapping<value_t>) {
+        if constexpr (a_mapping<value_t>) {
             status_t const reserved = tree.mapped_.reserve(sorted.size());
             if (failed(reserved)) return reserved;
             for (value_t const &element : sorted) {
@@ -484,7 +484,7 @@ class immutable_splus_tree {
         std::size_t const mapped_offset = view_t::saved_mapped_offset_(rows_bytes);
         std::memset(bytes.data() + view_t::saved_rows_offset_k + rows_bytes, 0,
                     mapped_offset - view_t::saved_rows_offset_k - rows_bytes);
-        if constexpr (is_mapping<value_t>)
+        if constexpr (a_mapping<value_t>)
             if (!mapped_.empty())
                 std::memcpy(bytes.data() + mapped_offset, mapped_.data(), mapped_.size() * sizeof(mapped_slot_t));
         return success_k;
@@ -501,7 +501,7 @@ class immutable_splus_tree {
 
     /** The value the key at position @p ordinal carries, which must be below @c size. */
     [[nodiscard]] mapped_slot_t const &mapped_at(std::size_t ordinal) const noexcept
-        requires is_mapping<value_t>
+        requires a_mapping<value_t>
     {
         return view_.mapped_at(ordinal);
     }
@@ -523,22 +523,22 @@ class immutable_splus_tree {
 
 /** An immutable S+ tree of bare keys. */
 template <typename key_type_, std::size_t keys_per_row_ = keys_per_row<key_type_>(cache_line_bytes_k),
-          row_kit row_kit_type_ = native_row_kit_t, typename allocator_type_ = default_allocator<key_type_>>
+          a_row_kit row_kit_type_ = native_row_kit_t, typename allocator_type_ = default_allocator<key_type_>>
 using immutable_splus_set = immutable_splus_tree<key_type_, keys_per_row_, row_kit_type_, allocator_type_>;
 
 /** An immutable S+ tree pairing each key with a value the rank indexes. */
 template <typename key_type_, typename mapped_type_,
           std::size_t keys_per_row_ = keys_per_row<key_type_>(cache_line_bytes_k),
-          row_kit row_kit_type_ = native_row_kit_t,
+          a_row_kit row_kit_type_ = native_row_kit_t,
           typename allocator_type_ = default_allocator<mapping<key_type_, mapped_type_>>>
 using immutable_splus_map =
     immutable_splus_tree<mapping<key_type_, mapped_type_>, keys_per_row_, row_kit_type_, allocator_type_>;
 
-static_assert(tagged_collection<immutable_splus_set<std::uint64_t>>,
+static_assert(a_tagged_collection<immutable_splus_set<std::uint64_t>>,
               "an immutable S+ tree names its element, its key and its shape like every other container");
 static_assert(!immutable_splus_set<std::uint64_t>::is_associative::value, "the set alias stores bare keys");
 static_assert(immutable_splus_map<std::uint64_t, double>::is_associative::value, "the map alias stores a mapping");
-static_assert(tagged_collection<immutable_splus_set<std::uint64_t>::view_t>,
+static_assert(a_tagged_collection<immutable_splus_set<std::uint64_t>::view_t>,
               "a view names its element, its key and its shape as the tree it reads does");
 static_assert(std::is_same_v<immutable_splus_map<std::uint64_t, double>::key_type, std::uint64_t> &&
                   std::is_same_v<immutable_splus_map<std::uint64_t, double>::mapped_type, double>,

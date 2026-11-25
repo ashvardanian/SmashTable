@@ -67,9 +67,9 @@ static_assert(transaction_mirrors_the_store<parity_snapshot_ranked_set_t>,
 static_assert(transaction_mirrors_the_store<parity_monotonic_ranked_set_t>,
               "a set-shaped ranked store's transaction must mirror the store it opens on");
 
-static_assert(set_shaped_store<parity_snapshot_set_t> && map_shaped_store<parity_snapshot_map_t>,
+static_assert(a_set_shaped_store<parity_snapshot_set_t> && a_map_shaped_store<parity_snapshot_map_t>,
               "the set and map aliases of one engine must not resolve to the same shape");
-static_assert(set_shaped_store<parity_monotonic_ranked_set_t> && map_shaped_store<parity_monotonic_ranked_map_t>,
+static_assert(a_set_shaped_store<parity_monotonic_ranked_set_t> && a_map_shaped_store<parity_monotonic_ranked_map_t>,
               "the set and map aliases of one engine must not resolve to the same shape");
 
 static_assert(wrappers_honour_the_level<parity_serializable_map_t>,

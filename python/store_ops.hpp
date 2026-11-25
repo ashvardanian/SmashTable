@@ -33,7 +33,7 @@ namespace ashvardanian::smashtable::python {
 /** Whether a type asks for more alignment than @c PyObject_Malloc promises, which stops at
  *  @c max_align_t. */
 template <typename object_type_>
-concept over_aligned_for_python = alignof(object_type_) > alignof(std::max_align_t);
+concept an_object_over_aligned_for_python = alignof(object_type_) > alignof(std::max_align_t);
 
 #pragma region Bridge
 
@@ -65,7 +65,7 @@ struct store_bridge {
     using value_t = typename store_t::value_t;
 
     /** Whether elements carry a mapped value, which decides map-versus-set at every shared site. */
-    static constexpr bool associative_k = is_mapping<value_t>;
+    static constexpr bool associative_k = a_mapping<value_t>;
 
     /** Whether a partition hash routes the keys, which is what distinguishes the two sharings. */
     static constexpr bool partitioned_k = requires { typename store_t::hash_t; };
@@ -107,7 +107,7 @@ struct store_bridge {
      */
     template <typename object_type_, typename... arguments_type_>
     [[nodiscard]] static object_type_ *own_in_python_storage(arguments_type_ &&...arguments) noexcept {
-        if constexpr (over_aligned_for_python<object_type_>) {
+        if constexpr (an_object_over_aligned_for_python<object_type_>) {
             // Still CPython's allocator, so the block stays accounted for: it is over-allocated by
             // the alignment plus room for the pointer it handed back, which sits directly below the
             // aligned address for `release_python_storage` to read and return.
@@ -132,7 +132,7 @@ struct store_bridge {
     static void release_python_storage(void *owned) noexcept {
         if (!owned) return;
         std::destroy_at(static_cast<object_type_ *>(owned));
-        if constexpr (over_aligned_for_python<object_type_>) {
+        if constexpr (an_object_over_aligned_for_python<object_type_>) {
             void *block = nullptr;
             std::memcpy(&block, static_cast<std::byte *>(owned) - sizeof(void *), sizeof(void *));
             PyObject_Free(block);

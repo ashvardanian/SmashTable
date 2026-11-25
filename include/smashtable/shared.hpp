@@ -28,7 +28,7 @@
  *  those atoms rather than beside them.
  *
  *  Each concept detects a method, never a promise: a docblock naming a contract names the method's,
- *  and a store whose @c update creates an absent key still satisfies @c offers_update.
+ *  and a store whose @c update creates an absent key still satisfies @c a_store_with_update.
  *
  *  @section shared_device_code Reaching Device Code
  *
@@ -531,7 +531,7 @@ struct mapping {
 
 /** Concept to detect if a type is an mapping (has key_type and mapped_type members). */
 template <typename type_>
-concept is_mapping = requires {
+concept a_mapping = requires {
     typename std::remove_cvref_t<type_>::key_type;
     typename std::remove_cvref_t<type_>::mapped_type;
 };
@@ -596,7 +596,7 @@ using default_allocator_t = default_allocator<std::byte>;
 /** An allocator handing out raw storage for @p value_type_, or @c nullptr where it cannot, as
  *  @c default_allocator does and every caller here checks. */
 template <typename allocator_type_, typename value_type_>
-concept allocator_of = requires(allocator_type_ &allocator, value_type_ *pointer, std::size_t count) {
+concept an_allocator = requires(allocator_type_ &allocator, value_type_ *pointer, std::size_t count) {
     { allocator.allocate(count) } -> std::same_as<value_type_ *>;
     allocator.deallocate(pointer, count);
 };
@@ -695,7 +695,7 @@ struct hash<key_type_, std::void_t<decltype(std::declval<key_type_ const &>().da
 
 /** A hasher that answers an unsigned integer for @p key_type_, which a table slots the key by. */
 template <typename hasher_type_, typename key_type_>
-concept key_hasher = requires(hasher_type_ const &hasher, key_type_ const &key) {
+concept a_key_hasher = requires(hasher_type_ const &hasher, key_type_ const &key) {
     { hasher(key) } -> std::unsigned_integral;
 };
 
@@ -709,7 +709,7 @@ template <typename first_type_, typename... rest_types_>
  *  <tt>++iterator</tt> and <tt>first != last</tt> - all a bulk write consuming its input once needs, spelled here
  *  rather than in @c \<iterator\>. */
 template <typename iterator_type_>
-concept readable_iterator =
+concept a_readable_iterator =
     std::movable<iterator_type_> && std::equality_comparable<iterator_type_> && requires(iterator_type_ iterator) {
         *iterator;
         ++iterator;
@@ -718,32 +718,32 @@ concept readable_iterator =
 /** A readable iterator whose copies re-read the same positions: it compares to them and
  *  dereferences to a reference, the multi-pass rule a counted or halving walk relies on. */
 template <typename iterator_type_>
-concept multipass_iterator =
-    readable_iterator<iterator_type_> && std::copyable<iterator_type_> && std::equality_comparable<iterator_type_> &&
+concept a_multipass_iterator =
+    a_readable_iterator<iterator_type_> && std::copyable<iterator_type_> && std::equality_comparable<iterator_type_> &&
     std::is_reference_v<decltype(*std::declval<iterator_type_ &>())>;
 
 /** Where a walk from @p iterator_type_ stops, compared against it from either side. */
 template <typename sentinel_type_, typename iterator_type_>
-concept iterator_sentinel =
-    readable_iterator<iterator_type_> && requires(iterator_type_ const &iterator, sentinel_type_ const &sentinel) {
+concept an_iterator_sentinel =
+    a_readable_iterator<iterator_type_> && requires(iterator_type_ const &iterator, sentinel_type_ const &sentinel) {
         { iterator == sentinel } -> std::convertible_to<bool>;
         { iterator != sentinel } -> std::convertible_to<bool>;
     };
 
 /** A position a walk writes @p value_type_ through and steps forward, as <tt>*iterator = value</tt>. */
 template <typename iterator_type_, typename value_type_>
-concept writable_iterator = requires(iterator_type_ iterator, value_type_ &&value) {
+concept a_writable_iterator = requires(iterator_type_ iterator, value_type_ &&value) {
     *iterator = std::forward<value_type_>(value);
     ++iterator;
 };
 
 /** A position a reservoir writes @p value_type_ into by index, as <tt>iterator[index] = value</tt>. */
 template <typename iterator_type_, typename value_type_>
-concept indexed_writable_iterator =
+concept an_indexed_writable_iterator =
     requires(iterator_type_ iterator, std::size_t index, value_type_ const &value) { iterator[index] = value; };
 
 /** Steps @p iterator forward @p count positions, in one jump where it supports <tt>+=</tt>. */
-template <readable_iterator iterator_type_>
+template <a_readable_iterator iterator_type_>
 constexpr void advance_iterator(iterator_type_ &iterator, std::size_t count) noexcept {
     if constexpr (requires { iterator += static_cast<std::ptrdiff_t>(count); })
         iterator += static_cast<std::ptrdiff_t>(count);
@@ -816,7 +816,7 @@ class reversed_iterator {
 };
 
 /** How many steps separate two positions, in one subtraction where they support it. */
-template <multipass_iterator iterator_type_, iterator_sentinel<iterator_type_> sentinel_type_>
+template <a_multipass_iterator iterator_type_, an_iterator_sentinel<iterator_type_> sentinel_type_>
 constexpr std::size_t distance_between(iterator_type_ first, sentinel_type_ const &last) noexcept {
     if constexpr (requires { last - first; }) return static_cast<std::size_t>(last - first);
     else {
@@ -973,16 +973,16 @@ consteval bool contains_type() {
 
 /** A promise about the range itself, which a staged bulk write reads before it builds. */
 template <typename type_>
-concept promises_about_the_range = std::same_as<type_, assume_sorted_t> || std::same_as<type_, assume_unique_t>;
+concept a_range_promise = std::same_as<type_, assume_sorted_t> || std::same_as<type_, assume_unique_t>;
 
 /** A promise that the room is already secured, which a write into that room reads. */
 template <typename type_>
-concept promises_about_the_room = std::same_as<type_, assume_reserved_t>;
+concept a_room_promise = std::same_as<type_, assume_reserved_t>;
 
 /** Any promise this library reads, which is what an open tag pack admits - a foreign type is
  *  refused there. */
 template <typename type_>
-concept promises_something = promises_about_the_range<type_> || promises_about_the_room<type_>;
+concept a_promise = a_range_promise<type_> || a_room_promise<type_>;
 
 #pragma endregion Tag Dispatch Types
 
@@ -1123,14 +1123,14 @@ template <typename value_type_, typename comparable_type_>
 /** Concept checking if a type has a @c .copy() method returning @c expected<T>. This allows
  *  non-nothrow-copyable types to participate in safe copy operations. */
 template <typename type_>
-concept has_copy_method = requires(type_ const &t) {
+concept a_type_with_copy_method = requires(type_ const &t) {
     { t.copy() } noexcept -> std::same_as<expected<type_>>;
 };
 
 /** Concept checking if a type has a static @c .make() method returning @c expected<T>. This allows
  *  types with potentially throwing constructors to participate in safe construction. */
 template <typename type_, typename... args_types_>
-concept has_make_method = requires(args_types_ &&...args) {
+concept a_type_with_make_method = requires(args_types_ &&...args) {
     { type_::make(std::forward<args_types_>(args)...) } noexcept -> std::same_as<expected<type_>>;
 };
 
@@ -1145,9 +1145,9 @@ template <typename object_type_>
 expected<object_type_> copy_safely(object_type_ const &object) noexcept {
     if constexpr (std::is_nothrow_copy_constructible_v<object_type_>)
         return expected<object_type_>(object_type_ {object}, success_k);
-    else if constexpr (has_copy_method<object_type_>) return object.copy();
+    else if constexpr (a_type_with_copy_method<object_type_>) return object.copy();
     else {
-        static_assert(std::is_nothrow_copy_constructible_v<object_type_> || has_copy_method<object_type_>,
+        static_assert(std::is_nothrow_copy_constructible_v<object_type_> || a_type_with_copy_method<object_type_>,
                       "Type must be nothrow copy constructible or provide .copy() returning an expected");
         return status_t::unknown_k;
     }
@@ -1191,7 +1191,7 @@ expected<identifier_type_> copy_identifier(comparable_type_ const &comparable) n
  *  two trivial halves still cannot refuse.
  */
 template <typename type_>
-concept duplication_can_refuse = !std::is_nothrow_copy_constructible_v<type_>;
+concept a_type_with_fallible_copy = !std::is_nothrow_copy_constructible_v<type_>;
 
 /**
  *  @brief Hands @p stage_one every element of [ @p first, @p last ), duplicated outside the target.
@@ -1209,7 +1209,7 @@ concept duplication_can_refuse = !std::is_nothrow_copy_constructible_v<type_>;
  *  @par Statuses:
  *  - Any status an element's @c copy or @p stage_one returns passes through unchanged.
  */
-template <typename value_type_, readable_iterator input_iterator_type_, typename stage_one_type_>
+template <typename value_type_, a_readable_iterator input_iterator_type_, typename stage_one_type_>
 status_t stage_each(input_iterator_type_ first, input_iterator_type_ last, stage_one_type_ &&stage_one) noexcept {
     for (; first != last; ++first) {
         if constexpr (!std::is_lvalue_reference_v<decltype(*first)>) {
@@ -1254,7 +1254,7 @@ struct has_comparable_particle<value_type_, std::void_t<typename value_type_::co
  *  static_assert(std::is_same_v<mapping_key_type_or_itself<double>::type, double>, "Must be double");
  *  @endcode
  */
-template <typename can_be_mapping_type_, bool = is_mapping<can_be_mapping_type_>>
+template <typename can_be_mapping_type_, bool = a_mapping<can_be_mapping_type_>>
 struct mapping_key_type_or_itself {
     using type = can_be_mapping_type_;
 };
@@ -1269,7 +1269,7 @@ struct mapping_key_type_or_itself<can_be_mapping_type_, true> {
 template <typename can_be_mapping_type_>
 typename mapping_key_type_or_itself<can_be_mapping_type_>::type const & //
 mapping_key_or_itself(can_be_mapping_type_ const &can_be_mapping) noexcept {
-    if constexpr (is_mapping<can_be_mapping_type_>) return can_be_mapping.key;
+    if constexpr (a_mapping<can_be_mapping_type_>) return can_be_mapping.key;
     else return can_be_mapping;
 }
 
@@ -1283,7 +1283,7 @@ mapping_key_or_itself(can_be_mapping_type_ const &can_be_mapping) noexcept {
  *  static_assert(std::is_same_v<mapped_value_type_or_void<double>::type, void>, "Must be void");
  *  @endcode
  */
-template <typename can_be_mapping_type_, bool = is_mapping<can_be_mapping_type_>>
+template <typename can_be_mapping_type_, bool = a_mapping<can_be_mapping_type_>>
 struct mapped_value_type_or_void {
     using type = void;
 };
@@ -1713,22 +1713,22 @@ inline constexpr bool is_dating_identifier_v = is_dating_identifier<type_>::valu
 /** Detects operands that carry a generation of their own, so ordering can separate versions. A
  *  @c watched_identifier keeps its generation inside @c watch, so it is ordered by key alone. */
 template <typename type_>
-concept carries_generation = requires(type_ const &value) {
+concept a_generation_carrier = requires(type_ const &value) {
     { value.generation } -> std::convertible_to<generation_t>;
 };
 
 /** Detects a version-decorated value: a generation stamp @b and the payload it decorates. Stricter
- *  than @c carries_generation on purpose - @c watch_t carries a generation and no payload, and
+ *  than @c a_generation_carrier on purpose - @c watch_t carries a generation and no payload, and
  *  would otherwise be peeled down a branch that does not compile. */
 template <typename type_>
-concept carries_versioned_payload = carries_generation<type_> && requires(type_ const &value) { value.payload; };
+concept a_versioned_value = a_generation_carrier<type_> && requires(type_ const &value) { value.payload; };
 
 /** Operands whose generation can break a tie, because a key can still be peeled out of them. A bare
  *  @c watch_t is the counter-example: it dates an entry without naming one, so it is compared
  *  against the entry it dates rather than fed to a comparator. */
 template <typename type_>
-concept orderable_per_version =
-    carries_versioned_payload<type_> || (carries_generation<type_> && is_dating_identifier_v<type_>);
+concept a_version_ordered_operand =
+    a_versioned_value<type_> || (a_generation_carrier<type_> && is_dating_identifier_v<type_>);
 
 /** The identifier a version-decorated object is addressed by, with the metadata peeled off. A chain
  *  defers to the version it holds, a version to the value it wraps, and a dated identifier to the
@@ -1739,7 +1739,7 @@ decltype(auto) identifier_of(type_ const &object) noexcept {
     if constexpr (requires { typename dereferenced_t::is_version_chain; }) return identifier_of(object.head);
     else if constexpr (is_dating_identifier_v<dereferenced_t>)
         return (typename dereferenced_t::identifier_t const &)object.identifier;
-    else if constexpr (carries_versioned_payload<dereferenced_t>) return identifier_of(object.payload);
+    else if constexpr (a_versioned_value<dereferenced_t>) return identifier_of(object.payload);
     else return mapping_key_or_itself(object);
 }
 
@@ -1779,7 +1779,7 @@ struct versioning_for {
     using accessed_identifier_t = accessed_identifier<identifier_t>;
 
     static_assert(!std::is_reference<value_t>(), "Only value types are supported.");
-    static_assert(std::is_nothrow_copy_constructible_v<identifier_t> || has_copy_method<identifier_t>,
+    static_assert(std::is_nothrow_copy_constructible_v<identifier_t> || a_type_with_copy_method<identifier_t>,
                   "To WATCH, the identifier must be nothrow copy constructible or provide .copy()");
     static_assert(std::is_nothrow_default_constructible<value_t>(), "We need an empty state.");
     static_assert(std::is_nothrow_move_constructible<value_t>() && std::is_nothrow_move_assignable<value_t>(),
@@ -1859,7 +1859,7 @@ struct versioning_for {
             using second_t = std::remove_reference_t<second_type_>;
             static_assert(!std::is_same_v<first_t, watch_t> && !std::is_same_v<second_t, watch_t>,
                           "A watch dates an entry without naming one, so it is compared with `==`, never ordered");
-            if constexpr (orderable_per_version<first_t> && orderable_per_version<second_t>)
+            if constexpr (a_version_ordered_operand<first_t> && a_version_ordered_operand<second_t>)
                 return per_version_compare(a, b);
             else return per_key_compare(a, b);
         }
@@ -1944,7 +1944,7 @@ struct per_version_equals {
         if (!equals(identifier_of(first), identifier_of(second))) return false;
         using first_t = std::remove_reference_t<first_type_>;
         using second_t = std::remove_reference_t<second_type_>;
-        if constexpr (orderable_per_version<first_t> && orderable_per_version<second_t>)
+        if constexpr (a_version_ordered_operand<first_t> && a_version_ordered_operand<second_t>)
             return first.generation == second.generation;
         else return true;
     }
@@ -1957,7 +1957,7 @@ struct per_version_equals {
  *  the partition a read touched would buy a lock for a check nobody makes.
  */
 template <typename store_type_>
-concept records_what_it_reads = at_least(store_type_::isolation_k, isolation_t::serializable_k);
+concept a_read_validating_store = at_least(store_type_::isolation_k, isolation_t::serializable_k);
 
 #pragma endregion Optimistic Concurrency
 
@@ -2155,7 +2155,7 @@ constexpr void atomic_notify_all(integral_type_ &counter) noexcept {
  *  @see https://github.com/ashvardanian/ForkUnion
  */
 template <typename reference_type_, typename value_type_>
-concept extended_atomic_ref = requires(reference_type_ reference, value_type_ value) {
+concept an_extended_atomic_ref = requires(reference_type_ reference, value_type_ value) {
     reference.store_add(value, memory_order_relaxed_k);
     reference.store_sub(value, memory_order_relaxed_k);
     reference.set_bits(value, memory_order_relaxed_k);
@@ -2175,7 +2175,7 @@ concept extended_atomic_ref = requires(reference_type_ reference, value_type_ va
 template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_add(integral_type_ &word, integral_type_ addend, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         reference.store_add(addend, order);
     else reference.fetch_add(addend, order);
 }
@@ -2184,7 +2184,7 @@ constexpr void atomic_post_add(integral_type_ &word, integral_type_ addend, orde
 template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_sub(integral_type_ &word, integral_type_ subtrahend, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         reference.store_sub(subtrahend, order);
     else reference.fetch_sub(subtrahend, order);
 }
@@ -2193,7 +2193,7 @@ constexpr void atomic_post_sub(integral_type_ &word, integral_type_ subtrahend, 
 template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_set_bits(integral_type_ &word, integral_type_ bits, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         reference.set_bits(bits, order);
     else reference.fetch_or(bits, order);
 }
@@ -2202,7 +2202,7 @@ constexpr void atomic_post_set_bits(integral_type_ &word, integral_type_ bits, o
 template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_clear_bits(integral_type_ &word, integral_type_ bits, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         reference.clear_bits(bits, order);
     else reference.fetch_and(static_cast<integral_type_>(~bits), order);
 }
@@ -2216,7 +2216,7 @@ constexpr void atomic_post_clear_bits(integral_type_ &word, integral_type_ bits,
 template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_>
 constexpr void atomic_max_fetch(integral_type_ &word, integral_type_ floor) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         reference.store_max(floor, memory_order_release_k);
     else {
         integral_type_ observed = reference.load(memory_order_relaxed_k);
@@ -2237,7 +2237,7 @@ template <template <typename> class atomic_reference_ = atomic_ref, std::integra
 [[nodiscard]] constexpr integral_type_ atomic_fetch_max(integral_type_ &word, integral_type_ floor,
                                                         order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         return reference.fetch_max(floor, order);
     else {
         integral_type_ observed = reference.load(memory_order_acquire_k);
@@ -2249,7 +2249,7 @@ template <template <typename> class atomic_reference_ = atomic_ref, std::integra
 /** Raises @p word to @p floor without reading what was there, which Arm spells @c stumax. */
 template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_max(integral_type_ &word, integral_type_ floor, order_type_ order) noexcept {
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         atomic_reference_<integral_type_>(word).store_max(floor, order);
     else { [[maybe_unused]] integral_type_ const before = atomic_fetch_max<atomic_reference_>(word, floor, order); }
 }
@@ -2258,7 +2258,7 @@ constexpr void atomic_post_max(integral_type_ &word, integral_type_ floor, order
 template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_flip_bits(integral_type_ &word, integral_type_ bits, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         reference.flip_bits(bits, order);
     else reference.fetch_xor(bits, order);
 }
@@ -2275,7 +2275,7 @@ template <template <typename> class atomic_reference_ = atomic_ref, std::integra
 [[nodiscard]] constexpr integral_type_ atomic_fetch_add_if_at_most(integral_type_ &word, integral_type_ addend,
                                                                    integral_type_ limit, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         return reference.fetch_add_if_at_most(addend, limit, order);
     else {
         integral_type_ observed = reference.load(memory_order_acquire_k);
@@ -2295,7 +2295,7 @@ template <template <typename> class atomic_reference_ = atomic_ref, std::integra
 [[nodiscard]] constexpr integral_type_ atomic_fetch_sub_if_at_least(integral_type_ &word, integral_type_ subtrahend,
                                                                     integral_type_ floor, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         return reference.fetch_sub_if_at_least(subtrahend, floor, order);
     else {
         integral_type_ observed = reference.load(memory_order_acquire_k);
@@ -2312,7 +2312,7 @@ template <template <typename> class atomic_reference_ = atomic_ref, std::integra
 [[nodiscard]] constexpr bool atomic_fetch_test_and_set_bit(integral_type_ &word, unsigned bit,
                                                            order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         return reference.fetch_test_and_set_bit(bit, order);
     else return (reference.fetch_or(static_cast<integral_type_>(integral_type_ {1} << bit), order) >> bit) & 1;
 }
@@ -2322,7 +2322,7 @@ template <template <typename> class atomic_reference_ = atomic_ref, std::integra
 [[nodiscard]] constexpr bool atomic_fetch_test_and_reset_bit(integral_type_ &word, unsigned bit,
                                                              order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+    if constexpr (an_extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         return reference.fetch_test_and_reset_bit(bit, order);
     else return (reference.fetch_and(static_cast<integral_type_>(~(integral_type_ {1} << bit)), order) >> bit) & 1;
 }
@@ -2406,7 +2406,7 @@ constexpr std::size_t roundup_to_pow2(std::size_t x) noexcept {
  *  rather than deferring to the standard concept and pulling <tt>\<random\></tt> into every unit.
  */
 template <typename generator_type_>
-concept uniform_random_bits = requires(generator_type_ &generator) {
+concept a_uniform_random_bit_generator = requires(generator_type_ &generator) {
     typename generator_type_::result_type;
     { generator() } -> std::same_as<typename generator_type_::result_type>;
     requires std::same_as<decltype((generator_type_::min)()), typename generator_type_::result_type>;
@@ -2427,7 +2427,7 @@ concept uniform_random_bits = requires(generator_type_ &generator) {
  *      and the results concatenated, since masking a short draw could never reach the high bits.
  */
 template <typename generator_type_>
-    requires uniform_random_bits<std::remove_cvref_t<generator_type_>>
+    requires a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
 constexpr std::size_t draw_below(generator_type_ &&generator, std::size_t bound) noexcept {
     using generator_t = std::remove_reference_t<generator_type_>;
     if (bound <= 1) return 0;
@@ -2530,7 +2530,7 @@ struct binary_node_search {
  *  Checks the tree type @p tree_type_.
  */
 template <typename tree_type_>
-concept supports_order_statistics =
+concept an_order_statistic_tree =
     requires(tree_type_ const &tree, std::size_t k, typename tree_type_::value_t const &value) {
         { tree.select(k) } -> std::convertible_to<typename tree_type_::node_t const *>;
         { tree.rank(value) } -> std::same_as<std::size_t>;
@@ -2542,16 +2542,16 @@ concept supports_order_statistics =
 
 /** A store whose members are bare keys, which is what @c *_set names. */
 template <typename store_type_>
-concept set_shaped_store = !is_mapping<typename store_type_::value_t>;
+concept a_set_shaped_store = !a_mapping<typename store_type_::value_t>;
 
 /** A store whose members pair a key with a value, which is what @c *_map names. */
 template <typename store_type_>
-concept map_shaped_store = is_mapping<typename store_type_::value_t>;
+concept a_map_shaped_store = a_mapping<typename store_type_::value_t>;
 
 /** A container that reports whether it maps keys to values, and how reads are delivered. Every
  *  container in this library carries these, and the test suites assert on them. */
 template <typename collection_type_>
-concept tagged_collection = requires {
+concept a_tagged_collection = requires {
     typename collection_type_::value_type;
     typename collection_type_::key_type;
     typename collection_type_::is_associative;
@@ -2578,19 +2578,21 @@ enum class incumbent_policy_t : std::uint8_t {
 
 /** Whether the collection writes a whole range, overwriting the keys already there. */
 template <typename collection_type_>
-concept offers_batch_upsert = requires(collection_type_ &collection, typename collection_type_::value_type *cursor) {
-    { collection.upsert(cursor, cursor) } -> std::same_as<status_t>;
-};
+concept a_collection_with_batch_upsert =
+    requires(collection_type_ &collection, typename collection_type_::value_type *cursor) {
+        { collection.upsert(cursor, cursor) } -> std::same_as<status_t>;
+    };
 
 /** Whether the collection writes a whole range, refusing it over a key already there. */
 template <typename collection_type_>
-concept offers_batch_insert = requires(collection_type_ &collection, typename collection_type_::value_type *cursor) {
-    { collection.insert(cursor, cursor) } -> std::same_as<status_t>;
-};
+concept a_collection_with_batch_insert =
+    requires(collection_type_ &collection, typename collection_type_::value_type *cursor) {
+        { collection.insert(cursor, cursor) } -> std::same_as<status_t>;
+    };
 
 /** Whether the collection writes a whole range, leaving the keys already there alone. */
 template <typename collection_type_>
-concept offers_batch_insert_if_missing =
+concept a_collection_with_batch_insert_if_missing =
     requires(collection_type_ &collection, typename collection_type_::value_type *cursor) {
         { collection.insert_if_missing(cursor, cursor) } -> std::same_as<status_t>;
     };
@@ -2603,8 +2605,9 @@ concept offers_batch_insert_if_missing =
  *  refusing the allocator at every point of a batch is for.
  */
 template <typename collection_type_>
-concept batches_atomically = offers_batch_upsert<collection_type_> && offers_batch_insert<collection_type_> &&
-                             offers_batch_insert_if_missing<collection_type_>;
+concept an_atomically_batching_collection =
+    a_collection_with_batch_upsert<collection_type_> && a_collection_with_batch_insert<collection_type_> &&
+    a_collection_with_batch_insert_if_missing<collection_type_>;
 
 #pragma endregion Container Traits
 
@@ -2622,9 +2625,9 @@ concept batches_atomically = offers_batch_upsert<collection_type_> && offers_bat
  *  stages by pushing a version onto a key's chain and never moves a node at all.
  */
 template <typename collection_type_>
-concept key_addressable_collection =
-    tagged_collection<collection_type_> && requires(collection_type_ &collection, collection_type_ const &constant,
-                                                    typename collection_type_::key_type const &key) {
+concept a_key_addressable_collection =
+    a_tagged_collection<collection_type_> && requires(collection_type_ &collection, collection_type_ const &constant,
+                                                      typename collection_type_::key_type const &key) {
         { constant.size() } -> std::convertible_to<std::size_t>;
         { constant.empty() } -> std::convertible_to<bool>;
         { constant.contains(key) } -> std::same_as<expected<bool>>;
@@ -2643,12 +2646,12 @@ concept key_addressable_collection =
  *      can't hand out iterators because a version may be staged and invisible; don't conflate them.
  */
 template <typename collection_type_>
-concept ordered_collection = key_addressable_collection<collection_type_> &&
-                             requires(collection_type_ &collection, typename collection_type_::key_type const &key) {
-                                 collection.lower_bound(key);
-                                 collection.upper_bound(key);
-                                 collection.erase_range(key, key);
-                             };
+concept an_ordered_collection = a_key_addressable_collection<collection_type_> &&
+                                requires(collection_type_ &collection, typename collection_type_::key_type const &key) {
+                                    collection.lower_bound(key);
+                                    collection.upper_bound(key);
+                                    collection.erase_range(key, key);
+                                };
 
 #pragma endregion Store Tiers
 
@@ -2657,138 +2660,143 @@ concept ordered_collection = key_addressable_collection<collection_type_> &&
 /** Whether the store carries @c insert_or_assign, whose contract is to write over an occupied
  *  key. */
 template <typename store_type_>
-concept offers_insert_or_assign = requires(store_type_ &store, typename store_type_::value_t &&element) {
+concept a_store_with_insert_or_assign = requires(store_type_ &store, typename store_type_::value_t &&element) {
     store.insert_or_assign(std::move(element));
 };
 
 /** Whether the store counts the versions it keeps, in total and for one key. */
 template <typename store_type_>
-concept offers_versions_count = requires(store_type_ const &store, typename store_type_::identifier_t const &key) {
-    store.versions_count();
-    store.versions_count(key);
-};
+concept a_store_with_versions_count =
+    requires(store_type_ const &store, typename store_type_::identifier_t const &key) {
+        store.versions_count();
+        store.versions_count(key);
+    };
 
 /** Whether the store visits every member, in whatever order it holds them. */
 template <typename store_type_>
-concept offers_for_each = requires(store_type_ const &store, no_op_t callback) { store.for_each(callback); };
+concept a_store_with_for_each = requires(store_type_ const &store, no_op_t callback) { store.for_each(callback); };
 
 /** Whether the store hands an element back by value rather than to a callback. */
 template <typename store_type_>
-concept offers_find_copy =
+concept a_store_with_find_copy =
     requires(store_type_ const &store, typename store_type_::identifier_t const &key) { store.find_copy(key); };
 
 /** Whether the store erases every key at or after a bound. */
 template <typename store_type_>
-concept offers_erase_from = requires(store_type_ &store, typename store_type_::identifier_t const &key,
-                                     no_op_t callback) { store.erase_from(key, callback); };
+concept a_store_with_erase_from = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                           no_op_t callback) { store.erase_from(key, callback); };
 
 /** Whether the store erases every key before a bound. */
 template <typename store_type_>
-concept offers_erase_up_to = requires(store_type_ &store, typename store_type_::identifier_t const &key,
-                                      no_op_t callback) { store.erase_up_to(key, callback); };
+concept a_store_with_erase_up_to = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                            no_op_t callback) { store.erase_up_to(key, callback); };
 
 /** Whether the store answers the first member at or after a key. */
 template <typename store_type_>
-concept offers_lower_bound = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                      no_op_t callback) { store.lower_bound(key, callback, callback); };
+concept a_store_with_lower_bound = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                            no_op_t callback) { store.lower_bound(key, callback, callback); };
 
 /** Whether the store answers the first member strictly after a key. */
 template <typename store_type_>
-concept offers_upper_bound = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                      no_op_t callback) { store.upper_bound(key, callback, callback); };
+concept a_store_with_upper_bound = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                            no_op_t callback) { store.upper_bound(key, callback, callback); };
 
 /** Whether the store walks a half-open window of the keyspace. */
 template <typename store_type_>
-concept offers_range = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                no_op_t callback) { store.range(key, key, callback); };
+concept a_store_with_range = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                      no_op_t callback) { store.range(key, key, callback); };
 
 /** Whether the store walks a window greatest first. */
 template <typename store_type_>
-concept offers_descending_range = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                           no_op_t callback) { store.range(key, key, callback, descending); };
+concept a_store_with_descending_range =
+    requires(store_type_ const &store, typename store_type_::identifier_t const &key, no_op_t callback) {
+        store.range(key, key, callback, descending);
+    };
 
 /** Whether the store erases a half-open window of the keyspace. */
 template <typename store_type_>
-concept offers_erase_range = requires(store_type_ &store, typename store_type_::identifier_t const &key,
-                                      no_op_t callback) { store.erase_range(key, key, callback); };
+concept a_store_with_erase_range = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                            no_op_t callback) { store.erase_range(key, key, callback); };
 
 /** Whether the store answers the member at an ordinal. */
 template <typename store_type_>
-concept offers_select = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                 std::size_t ordinal, no_op_t callback) { store.select(ordinal, callback, callback); };
+concept a_store_with_select =
+    requires(store_type_ const &store, typename store_type_::identifier_t const &key, std::size_t ordinal,
+             no_op_t callback) { store.select(ordinal, callback, callback); };
 
 /** Whether the store answers how many members precede a key. */
 template <typename store_type_>
-concept offers_rank = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                               std::size_t ordinal, no_op_t callback) { store.rank(key, callback, callback); };
+concept a_store_with_rank = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                     std::size_t ordinal, no_op_t callback) { store.rank(key, callback, callback); };
 
 /** Whether the store names the snapshot no open reader sits below. */
 template <typename store_type_>
-concept offers_low_water_mark = requires(store_type_ const &store) { store.low_water_mark(); };
+concept a_store_with_low_water_mark = requires(store_type_ const &store) { store.low_water_mark(); };
 
 /** Whether the store hands over every member equal to a key, not only the first. */
 template <typename store_type_>
-concept offers_equal_range = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                      no_op_t callback) { store.equal_range(key, callback); };
+concept a_store_with_equal_range = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                            no_op_t callback) { store.equal_range(key, callback); };
 
 /** Whether the store names its smallest member without being given a bound to beat. */
 template <typename store_type_>
-concept offers_smallest = requires(store_type_ const &store, no_op_t callback) { store.smallest(callback, callback); };
+concept a_store_with_smallest =
+    requires(store_type_ const &store, no_op_t callback) { store.smallest(callback, callback); };
 
 /** Whether the store removes its smallest member as one operation. */
 template <typename store_type_>
-concept offers_pop_smallest =
+concept a_store_with_pop_smallest =
     requires(store_type_ &store, no_op_t callback) { store.pop_smallest(callback, callback); };
 
 /** Whether the store reclaims superseded versions on demand. */
 template <typename store_type_>
-concept offers_vacuum = requires(store_type_ &store) { store.vacuum(); };
+concept a_store_with_vacuum = requires(store_type_ &store) { store.vacuum(); };
 
 /** Whether the store reclaims a window of the keyspace rather than all of it. */
 template <typename store_type_>
-concept offers_vacuum_window =
+concept a_store_with_vacuum_window =
     requires(store_type_ &store, typename store_type_::identifier_t const &key) { store.vacuum(key, key); };
 
 /** Whether the store carries @c update, whose contract is to refuse an absent key. */
 template <typename store_type_>
-concept offers_update =
+concept a_store_with_update =
     requires(store_type_ &store, typename store_type_::value_t &&element) { store.update(std::move(element)); };
 
 /** Whether the store carries @c insert, whose contract is to refuse an occupied key. */
 template <typename store_type_>
-concept offers_insert =
+concept a_store_with_insert =
     requires(store_type_ &store, typename store_type_::value_t &&element) { store.insert(std::move(element)); };
 
 /** Whether the store answers both ends of a window, which is less than the whole ordered
  *  surface. */
 template <typename store_type_>
-concept offers_both_bounds = offers_lower_bound<store_type_> && offers_upper_bound<store_type_>;
+concept a_store_with_both_bounds = a_store_with_lower_bound<store_type_> && a_store_with_upper_bound<store_type_>;
 
 /** Whether the store can open a merged walk at all, from either end it knows how to name. */
 template <typename store_type_>
-concept offers_a_merged_walk = offers_smallest<store_type_> || offers_select<store_type_>;
+concept a_store_with_a_merged_walk = a_store_with_smallest<store_type_> || a_store_with_select<store_type_>;
 
 /** Whether the store carries @c insert_if_missing, which leaves a key already there alone. */
 template <typename store_type_>
-concept offers_insert_if_missing = requires(store_type_ &store, typename store_type_::value_t &&element) {
+concept a_store_with_insert_if_missing = requires(store_type_ &store, typename store_type_::value_t &&element) {
     store.insert_if_missing(std::move(element));
 };
 
 /** Whether the three-argument @c insert also hands over the element already holding the key. */
 template <typename store_type_>
-concept offers_insert_naming_occupant =
+concept a_store_with_insert_naming_occupant =
     requires(store_type_ &store, typename store_type_::value_t &&element, no_op_t callback) {
         store.insert(std::move(element), callback, callback);
     };
 
 /** Whether the store rewrites the mapped side of a window in place. */
 template <typename store_type_>
-concept offers_update_range = requires(store_type_ &store, typename store_type_::identifier_t const &key,
-                                       no_op_t callback) { store.update_range(key, key, callback); };
+concept a_store_with_update_range = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                             no_op_t callback) { store.update_range(key, key, callback); };
 
 /** Whether the store draws one member of a window at random. */
 template <typename store_type_>
-concept offers_sample_one =
+concept a_store_with_sample_one =
     requires(store_type_ const &store, typename store_type_::identifier_t const &lower,
              typename store_type_::identifier_t const &upper, no_entropy_t generator, no_op_t callback) {
         { store.sample_one(lower, upper, generator, callback) } noexcept -> std::same_as<status_t>;
@@ -2796,7 +2804,7 @@ concept offers_sample_one =
 
 /** Whether the store fills a reservoir from a window. */
 template <typename store_type_>
-concept offers_sample_reservoir =
+concept a_store_with_sample_reservoir =
     requires(store_type_ const &store, typename store_type_::identifier_t const &lower,
              typename store_type_::identifier_t const &upper, no_entropy_t generator, std::size_t &seen,
              std::size_t capacity, typename store_type_::value_t *reservoir) {
@@ -2807,188 +2815,191 @@ concept offers_sample_reservoir =
 
 /** Whether an open transaction stages a tombstone for every member it reads. */
 template <typename store_type_>
-concept transaction_offers_clear = requires(typename store_type_::transaction_t &transaction) { transaction.clear(); };
+concept a_store_with_transaction_clear =
+    requires(typename store_type_::transaction_t &transaction) { transaction.clear(); };
 
 /** Whether an open transaction counts the members matching a key. */
 template <typename store_type_>
-concept transaction_offers_count = requires(typename store_type_::transaction_t const &transaction,
-                                            typename store_type_::identifier_t const &key) { transaction.count(key); };
+concept a_store_with_transaction_count =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key) {
+        transaction.count(key);
+    };
 
 /** Whether an open transaction visits what its snapshot and its own writes show. */
 template <typename store_type_>
-concept transaction_offers_for_each = requires(typename store_type_::transaction_t const &transaction,
-                                               no_op_t callback) { transaction.for_each(callback); };
+concept a_store_with_transaction_for_each = requires(typename store_type_::transaction_t const &transaction,
+                                                     no_op_t callback) { transaction.for_each(callback); };
 
 /** Whether an open transaction erases a half-open window of its own keys. */
 template <typename store_type_>
-concept transaction_offers_erase_range =
+concept a_store_with_transaction_erase_range =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.erase_range(key, key, callback); };
 
 /** Whether an open transaction erases every key at or after a bound. */
 template <typename store_type_>
-concept transaction_offers_erase_from =
+concept a_store_with_transaction_erase_from =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.erase_from(key, callback); };
 
 /** Whether an open transaction erases every key before a bound. */
 template <typename store_type_>
-concept transaction_offers_erase_up_to =
+concept a_store_with_transaction_erase_up_to =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.erase_up_to(key, callback); };
 
 /** Whether an open transaction answers the first member strictly after a key. */
 template <typename store_type_>
-concept transaction_offers_upper_bound =
+concept a_store_with_transaction_upper_bound =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.upper_bound(key, callback, callback); };
 
 /** Whether an open transaction answers an inclusive bound, which a merged scan seeds from. */
 template <typename store_type_>
-concept transaction_offers_lower_bound =
+concept a_store_with_transaction_lower_bound =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.lower_bound(key, callback, callback); };
 
 /** Whether an open transaction hands over every member equal to a key. */
 template <typename store_type_>
-concept transaction_offers_equal_range =
+concept a_store_with_transaction_equal_range =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.equal_range(key, callback); };
 
 /** Whether an open transaction carries @c update, whose contract is to refuse an absent key. */
 template <typename store_type_>
-concept transaction_offers_update =
+concept a_store_with_transaction_update =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element) {
         transaction.update(std::move(element));
     };
 
 /** Whether an open transaction carries @c insert, whose contract is to refuse an occupied key. */
 template <typename store_type_>
-concept transaction_offers_insert =
+concept a_store_with_transaction_insert =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element) {
         transaction.insert(std::move(element));
     };
 
 /** Whether an open transaction says if anything is staged. */
 template <typename store_type_>
-concept transaction_offers_has_changes =
+concept a_store_with_transaction_has_changes =
     requires(typename store_type_::transaction_t const &transaction) { transaction.has_changes(); };
 
 /** Whether an open transaction says how much is staged. */
 template <typename store_type_>
-concept transaction_offers_changes_count =
+concept a_store_with_transaction_changes_count =
     requires(typename store_type_::transaction_t const &transaction) { transaction.changes_count(); };
 
 /** Whether a transaction's three-argument @c insert also hands over the element holding the key. */
 template <typename store_type_>
-concept transaction_offers_insert_naming_occupant =
+concept a_store_with_transaction_insert_naming_occupant =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element,
              no_op_t callback) { transaction.insert(std::move(element), callback, callback); };
 
 /** Whether an open transaction rewrites the mapped side of a window in place. */
 template <typename store_type_>
-concept transaction_offers_update_range =
+concept a_store_with_transaction_update_range =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.update_range(key, key, callback); };
 
 /** Whether a transaction carries @c insert_if_missing, whose contract is to leave an occupied
  *  key. */
 template <typename store_type_>
-concept transaction_offers_insert_if_missing =
+concept a_store_with_transaction_insert_if_missing =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element) {
         transaction.insert_if_missing(std::move(element));
     };
 
 /** Whether the transaction hands an element back by value rather than to a callback. */
 template <typename store_type_>
-concept transaction_offers_find_copy =
+concept a_store_with_transaction_find_copy =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key) {
         transaction.find_copy(key);
     };
 
 /** Whether the transaction names the generation it writes under. */
 template <typename store_type_>
-concept transaction_offers_generation =
+concept a_store_with_transaction_generation =
     requires(typename store_type_::transaction_t const &transaction) { transaction.generation(); };
 
 /** Whether an open transaction answers both ends of a window. */
 template <typename store_type_>
-concept transaction_offers_both_bounds =
-    transaction_offers_lower_bound<store_type_> && transaction_offers_upper_bound<store_type_>;
+concept a_store_with_transaction_both_bounds =
+    a_store_with_transaction_lower_bound<store_type_> && a_store_with_transaction_upper_bound<store_type_>;
 
 /** Whether an open transaction walks a half-open window of the keyspace. */
 template <typename store_type_>
-concept transaction_offers_range =
+concept a_store_with_transaction_range =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.range(key, key, callback); };
 
 /** Whether an open transaction walks a window greatest first. */
 template <typename store_type_>
-concept transaction_offers_descending_range =
+concept a_store_with_transaction_descending_range =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.range(key, key, callback, descending); };
 
 /** Whether an open transaction answers the member at an ordinal. */
 template <typename store_type_>
-concept transaction_offers_select =
+concept a_store_with_transaction_select =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.select(std::size_t {0}, callback, callback); };
 
 /** Whether an open transaction answers how many members precede a key. */
 template <typename store_type_>
-concept transaction_offers_rank =
+concept a_store_with_transaction_rank =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.rank(key, callback, callback); };
 
 /** Whether an open transaction names its smallest member without a bound to beat. */
 template <typename store_type_>
-concept transaction_offers_smallest = requires(typename store_type_::transaction_t const &transaction,
-                                               no_op_t callback) { transaction.smallest(callback, callback); };
+concept a_store_with_transaction_smallest = requires(typename store_type_::transaction_t const &transaction,
+                                                     no_op_t callback) { transaction.smallest(callback, callback); };
 
 /** The ordered surface, spelled from its atoms so a second definition of "ordered" cannot drift
  *  from this one. */
 template <typename store_type_>
-concept offers_ordered_surface = offers_lower_bound<store_type_> && offers_upper_bound<store_type_> &&
-                                 offers_range<store_type_> && offers_erase_range<store_type_>;
+concept a_store_with_ordered_surface = a_store_with_lower_bound<store_type_> && a_store_with_upper_bound<store_type_> &&
+                                       a_store_with_range<store_type_> && a_store_with_erase_range<store_type_>;
 
 /** The ordinal surface, which only a core summing subtree counts can answer. */
 template <typename store_type_>
-concept offers_order_statistics = offers_select<store_type_> && offers_rank<store_type_>;
+concept a_store_with_order_statistics = a_store_with_select<store_type_> && a_store_with_rank<store_type_>;
 
 /** What an open transaction says about its own staging, whether and how much. */
 template <typename store_type_>
-concept transaction_offers_change_report =
-    transaction_offers_has_changes<store_type_> && transaction_offers_changes_count<store_type_>;
+concept a_store_with_transaction_change_report =
+    a_store_with_transaction_has_changes<store_type_> && a_store_with_transaction_changes_count<store_type_>;
 
 /** Whether an open transaction walks every key at or after a bound. */
 template <typename store_type_>
-concept transaction_offers_range_from =
+concept a_store_with_transaction_range_from =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.range_from(key, callback); };
 
 /** Whether an open transaction walks every key before a bound. */
 template <typename store_type_>
-concept transaction_offers_range_up_to =
+concept a_store_with_transaction_range_up_to =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.range_up_to(key, callback); };
 
 /** Whether an open transaction copies out the first member at or after a key. */
 template <typename store_type_>
-concept transaction_offers_lower_bound_copy =
+concept a_store_with_transaction_lower_bound_copy =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key) {
         transaction.lower_bound_copy(key);
     };
 
 /** Whether an open transaction copies out the first member after a key. */
 template <typename store_type_>
-concept transaction_offers_upper_bound_copy =
+concept a_store_with_transaction_upper_bound_copy =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key) {
         transaction.upper_bound_copy(key);
     };
 
 /** Whether an open transaction draws one member of a window at random. */
 template <typename store_type_>
-concept transaction_offers_sample_one =
+concept a_store_with_transaction_sample_one =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &lower,
              typename store_type_::identifier_t const &upper, no_entropy_t generator, no_op_t callback) {
         { transaction.sample_one(lower, upper, generator, callback) } noexcept -> std::same_as<status_t>;
@@ -2996,7 +3007,7 @@ concept transaction_offers_sample_one =
 
 /** Whether an open transaction fills a reservoir from a window. */
 template <typename store_type_>
-concept transaction_offers_sample_reservoir =
+concept a_store_with_transaction_sample_reservoir =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &lower,
              typename store_type_::identifier_t const &upper, no_entropy_t generator, std::size_t &seen,
              std::size_t capacity, typename store_type_::value_t *reservoir) {
@@ -3007,11 +3018,11 @@ concept transaction_offers_sample_reservoir =
 
 /** Whether the store says how many keys its ordinal surface indexes. */
 template <typename store_type_>
-concept offers_ranked_size = requires(store_type_ const &store) { store.ranked_size(); };
+concept a_store_with_ranked_size = requires(store_type_ const &store) { store.ranked_size(); };
 
 /** Whether an open transaction sizes its watch list ahead of the writes that fill it. */
 template <typename store_type_>
-concept transaction_offers_reserve =
+concept a_store_with_transaction_reserve =
     requires(typename store_type_::transaction_t &transaction, std::size_t size) { transaction.reserve(size); };
 
 #pragma endregion Store Surfaces
@@ -3050,11 +3061,11 @@ struct rebound_order_of<store_type_, order_type_,
 /** Whether a store opens one part of a sharded transaction at a snapshot and a generation drawn
  *  elsewhere. */
 template <typename store_type_>
-concept offers_transaction_at = requires(store_type_ &store) { store.transaction_at(opened_at_t {}); };
+concept a_store_opening_transactions_at = requires(store_type_ &store) { store.transaction_at(opened_at_t {}); };
 
 /** Whether a store was built into an order a shard set can stamp every part alike from. */
 template <typename store_type_>
-concept draws_from_a_shared_order = offers_transaction_at<store_type_> && requires(store_type_ &store) {
+concept a_store_in_a_shared_order = a_store_opening_transactions_at<store_type_> && requires(store_type_ &store) {
     store.order();
 } && !std::is_same_v<typename order_of<store_type_>::type, no_order_t>;
 
@@ -3279,7 +3290,7 @@ struct storage_node_of<collection_type_, std::void_t<typename collection_type_::
  *  the call site rather than at the declaration, so it is asserted here instead.
  */
 template <typename store_type_>
-concept optimistically_concurrent_store =
+concept an_optimistically_concurrent_store =
     requires(store_type_ &store, typename store_type_::transaction_t &transaction) {
         typename store_type_::transaction_t;
         requires store_type_::is_transactional::value;
@@ -3328,7 +3339,7 @@ struct group_step {
 /** Whether an open transaction stages and commits in one call, under one hold of what it
  *  reaches. */
 template <typename transaction_type_>
-concept stages_and_commits = requires(transaction_type_ &transaction) {
+concept a_transaction_with_stage_and_commit = requires(transaction_type_ &transaction) {
     { transaction.stage_and_commit() } noexcept -> std::same_as<status_t>;
 };
 
@@ -3356,7 +3367,7 @@ status_t commit_with_retries(transaction_type_ &transaction, std::size_t attempt
                              stage_changes_type_ &&stage_changes) noexcept {
     for (std::size_t attempt = 0; attempt != attempts; ++attempt) {
         status_t status = stage_changes(transaction);
-        if constexpr (stages_and_commits<transaction_type_>) {
+        if constexpr (a_transaction_with_stage_and_commit<transaction_type_>) {
             if (succeeded(status)) status = transaction.stage_and_commit();
         }
         else {
@@ -3388,7 +3399,7 @@ status_t commit_with_retries(transaction_type_ &transaction, std::size_t attempt
  *  refused. A validation that refuses keeps nothing.
  */
 template <typename transaction_type_>
-concept splits_its_commit = requires(transaction_type_ &transaction) {
+concept a_transaction_with_split_commit = requires(transaction_type_ &transaction) {
     { transaction.validate_for_commit() } noexcept -> std::same_as<status_t>;
     transaction.publish_under();
     transaction.release_validation();
@@ -3402,7 +3413,7 @@ concept splits_its_commit = requires(transaction_type_ &transaction) {
  *  weaker protocol, it is an unusable one, so there is nothing to keep by asking separately.
  */
 template <typename transaction_type_>
-concept shards_its_commit = requires(transaction_type_ &transaction, generation_t stamp) {
+concept a_transaction_with_sharded_commit = requires(transaction_type_ &transaction, generation_t stamp) {
     { transaction.validate_for_commit() } noexcept -> std::same_as<status_t>;
     transaction.publish_under(static_cast<commit_stamp_t>(stamp));
     transaction.release_validation();
@@ -3421,7 +3432,7 @@ concept shards_its_commit = requires(transaction_type_ &transaction, generation_
  *
  *  @tparam store_types_ The stores taking part, each staging and committing on its own.
  */
-template <optimistically_concurrent_store... store_types_>
+template <an_optimistically_concurrent_store... store_types_>
 class transaction_group {
   public:
     static constexpr std::size_t participants_k = sizeof...(store_types_);
@@ -3438,8 +3449,8 @@ class transaction_group {
     static constexpr bool shares_one_order_k =
         participants_k > 1 && !std::is_same_v<order_t, no_order_t> &&
         (std::is_same_v<typename order_of<store_types_>::type, order_t> && ...) &&
-        (draws_from_a_shared_order<store_types_> && ...) &&
-        (shards_its_commit<typename store_types_::transaction_t> && ...);
+        (a_store_in_a_shared_order<store_types_> && ...) &&
+        (a_transaction_with_sharded_commit<typename store_types_::transaction_t> && ...);
 
     /** The claim every participant reads under where they share an order, and nothing where they do
      *  not. */
@@ -3681,7 +3692,7 @@ class transaction_group {
      *  would only widen the window a wrapper's own lock closes when it commits in one call.
      */
     static constexpr bool asks_before_writing_k =
-        participants_k > 1 && (splits_its_commit<typename store_types_::transaction_t> && ...);
+        participants_k > 1 && (a_transaction_with_split_commit<typename store_types_::transaction_t> && ...);
 
     /**
      *  @brief Publishes the participants, drawing each one's commit stamp.
@@ -3808,7 +3819,7 @@ class transaction_group {
 };
 
 /** Deduces the store types, so a caller names the stores and not their spellings. */
-template <optimistically_concurrent_store... store_types_>
+template <an_optimistically_concurrent_store... store_types_>
 expected<transaction_group<store_types_...>> make_transaction_group(store_types_ &...stores) noexcept {
     return transaction_group<store_types_...>::make(stores...);
 }
@@ -3831,7 +3842,7 @@ expected<transaction_group<store_types_...>> make_transaction_group(store_types_
  *  @tparam store_types_ The kinds of store that may join, all built into one order type, with any
  *      number of stores of each.
  */
-template <optimistically_concurrent_store... store_types_>
+template <an_optimistically_concurrent_store... store_types_>
 class dynamic_transaction_group {
   public:
     /** How many kinds of store may join, which bounds nothing about how many stores do. */
@@ -3846,9 +3857,9 @@ class dynamic_transaction_group {
 
     static_assert((std::is_same_v<typename order_of<store_types_>::type, order_t> && ...),
                   "one stamp spans the group only where every kind is built into one order type");
-    static_assert((draws_from_a_shared_order<store_types_> && ...),
+    static_assert((a_store_in_a_shared_order<store_types_> && ...),
                   "a store joins at the snapshot and generation the group drew");
-    static_assert((shards_its_commit<typename store_types_::transaction_t> && ...),
+    static_assert((a_transaction_with_sharded_commit<typename store_types_::transaction_t> && ...),
                   "a participant publishes under a stamp the group drew");
 
   private:
@@ -4285,8 +4296,8 @@ class dynamic_transaction_group {
  *  arguments is legitimate, and is what a bare stall does.
  */
 template <typename policy_type_, typename watched_type_, typename value_type_>
-concept waiting_policy = requires(policy_type_ const &policy, watched_type_ &watched, value_type_ const observed,
-                                  std::size_t const attempts_spent) {
+concept a_waiting_policy = requires(policy_type_ const &policy, watched_type_ &watched, value_type_ const observed,
+                                    std::size_t const attempts_spent) {
     { policy(watched, observed, attempts_spent) } noexcept;
 };
 
@@ -4303,8 +4314,8 @@ concept waiting_policy = requires(policy_type_ const &policy, watched_type_ &wat
  *  or a waiter sleeps through the handoff it parked for.
  */
 template <typename policy_type_, typename watched_type_, typename value_type_>
-concept parking_waiting_policy =
-    waiting_policy<policy_type_, watched_type_, value_type_> &&
+concept a_parking_waiting_policy =
+    a_waiting_policy<policy_type_, watched_type_, value_type_> &&
     requires(policy_type_ const &policy, watched_type_ &watched, value_type_ const observed) {
         { policy.wait_until_changed(watched, observed) } noexcept;
         { policy.notify_waiters(watched) } noexcept;
@@ -4378,11 +4389,11 @@ using standard_waiting_policy_t = standard_waiting_policy<>;
  *  takes back where it was not admitted. A reader's retries are bounded adds, which is what the
  *  word's layout buys: every writer bit sits above the reader tally, so @em no @em writer @em here
  *  and @em room @em for @em one @em more @em reader is the single question does the sum stay within
- *  the limit. A reference satisfying @c extended_atomic_ref answers it in one instruction and, when
- *  the answer is no, without taking the line at all; @c atomic_ref answers it with the loop that
- *  question replaces. Dropping the held bit reads nothing back, so it is posted rather than waited
- *  on. Releasing a reader is the one path that cannot be either, since the count it returns is what
- *  tells the last reader out to wake a writer.
+ *  the limit. A reference satisfying @c an_extended_atomic_ref answers it in one instruction and,
+ *  when the answer is no, without taking the line at all; @c atomic_ref answers it with the loop
+ *  that question replaces. Dropping the held bit reads nothing back, so it is posted rather than
+ *  waited on. Releasing a reader is the one path that cannot be either, since the count it returns
+ *  is what tells the last reader out to wake a writer.
  *
  *  Locks here are held across user code - callbacks, comparators, allocators, a whole commit loop -
  *  so a pure spinner would burn a core while a holder walks a range, and pure parking would pay a
@@ -4392,7 +4403,7 @@ using standard_waiting_policy_t = standard_waiting_policy<>;
  *  Offers exactly what @c std::shared_mutex is used for here, and nothing else: no recursion, no
  *  timed acquisition, no upgrading.
  */
-template <parking_waiting_policy<std::uint32_t *, std::uint32_t> waiting_policy_type_ = standard_waiting_policy_t,
+template <a_parking_waiting_policy<std::uint32_t *, std::uint32_t> waiting_policy_type_ = standard_waiting_policy_t,
           template <typename> class atomic_reference_ = atomic_ref>
 class spin_shared_mutex {
 
@@ -4659,7 +4670,7 @@ enum class order_sharing_t : bool {
  */
 template <std::size_t commits_in_flight_ = 16, std::size_t reader_buckets_ = 4,
           order_sharing_t sharing_ = order_sharing_t::shared_k,
-          parking_waiting_policy<generation_t *, generation_t> waiting_policy_type_ = standard_waiting_policy_t,
+          a_parking_waiting_policy<generation_t *, generation_t> waiting_policy_type_ = standard_waiting_policy_t,
           template <typename> class atomic_reference_ = atomic_ref>
 class basic_commit_order {
 
@@ -5261,8 +5272,8 @@ inline constexpr std::size_t algebra_chunk_k = 512;
  *  that does need not be held while the other is taken, which is what two crossing comparisons need
  *  in order not to wedge on a writer queued between them. */
 template <typename side_type_>
-concept resumes_from_a_key = requires(side_type_ &side, typename side_type_::transaction_t const &reading,
-                                      typename side_type_::identifier_t const &key, no_op_t callback) {
+concept a_side_resuming_from_a_key = requires(side_type_ &side, typename side_type_::transaction_t const &reading,
+                                              typename side_type_::identifier_t const &key, no_op_t callback) {
     typename side_type_::value_t;
     side.transaction();
     reading.smallest(callback, callback);
@@ -5301,7 +5312,7 @@ expected<walk_control_t> visit_chunk_(probing_type_ &probing, std::span<member_t
 template <typename walked_type_, typename probing_type_, typename visitor_type_>
 status_t compare_crossed_(walked_type_ &walked, probing_type_ &probing, visitor_type_ &&visitor) noexcept {
 
-    if constexpr (resumes_from_a_key<walked_type_> && resumes_from_a_key<probing_type_>) {
+    if constexpr (a_side_resuming_from_a_key<walked_type_> && a_side_resuming_from_a_key<probing_type_>) {
         using member_t = typename walked_type_::value_t;
         auto reading_walked = walked.transaction();
         if (!reading_walked) return reading_walked.status();

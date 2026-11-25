@@ -135,7 +135,7 @@ class reference_store {
 
     using key_type = typename mapping_key_type_or_itself<value_t>::type;
     using mapped_type = typename mapped_value_type_or_void<value_t>::type;
-    using is_associative = std::bool_constant<is_mapping<value_t>>;
+    using is_associative = std::bool_constant<a_mapping<value_t>>;
     using is_transactional = std::true_type;
 
     /** A commit publishes every staged version before any reader can run, and takes no snapshot. */
@@ -1082,7 +1082,7 @@ class reference_store {
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-            requires is_mapping<value_t>
+            requires a_mapping<value_t>
         {
             values_array_t revised;
             status_t collecting = success_k;
@@ -1108,7 +1108,7 @@ class reference_store {
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                             callback_type_ &&callback) const noexcept
-            requires uniform_random_bits<std::remove_cvref_t<generator_type_>>
+            requires a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
         {
             std::size_t counted = 0;
             if (status_t const measured = range(lower, upper, [&](value_t const &) noexcept { ++counted; });
@@ -1131,11 +1131,11 @@ class reference_store {
         /** Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t,
-                  indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
+                  an_indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
         status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                   std::size_t &seen, std::size_t capacity,
                                   output_iterator_type_ &&reservoir) const noexcept
-            requires uniform_random_bits<std::remove_cvref_t<generator_type_>>
+            requires a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
         {
             return range(lower, upper, [&](value_t const &value) noexcept {
                 if (seen < capacity) reservoir[seen] = value;
@@ -1751,8 +1751,8 @@ class reference_store {
      *  @param[in] begin Iterator to the first element.
      *  @param[in] end Iterator past the last element.
      */
-    template <readable_iterator elements_begin_type_,
-              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
+    template <a_readable_iterator elements_begin_type_,
+              an_iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t insert_or_assign(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         generation_t const generation = next_generation_();
         commit_stamp_t const stamp = next_commit_stamp_();
@@ -1777,8 +1777,8 @@ class reference_store {
      *  @param[in] begin Iterator to the first element.
      *  @param[in] end Iterator past the last element.
      */
-    template <readable_iterator elements_begin_type_,
-              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
+    template <a_readable_iterator elements_begin_type_,
+              an_iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         return insert_or_assign(begin, end);
     }
@@ -1791,8 +1791,8 @@ class reference_store {
      *  @par Statuses:
      *  - Any status the element's or the key's @c copy returns passes through unchanged.
      */
-    template <readable_iterator elements_begin_type_,
-              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
+    template <a_readable_iterator elements_begin_type_,
+              an_iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         auto maybe_txn = transaction();
         if (!maybe_txn) return status_t::out_of_memory_heap_k;
@@ -1817,8 +1817,8 @@ class reference_store {
      *  - @c key_not_found_k Any key is absent.
      *  - Any status the key's @c copy returns passes through unchanged.
      */
-    template <readable_iterator elements_begin_type_,
-              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
+    template <a_readable_iterator elements_begin_type_,
+              an_iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t update(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         auto maybe_txn = transaction();
         if (!maybe_txn) return status_t::out_of_memory_heap_k;
@@ -2140,7 +2140,7 @@ class reference_store {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-        requires is_mapping<value_t>
+        requires a_mapping<value_t>
     {
         generation_t generation = next_generation_();
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
@@ -2333,7 +2333,7 @@ class reference_store {
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                         callback_type_ &&callback) const noexcept
-        requires uniform_random_bits<std::remove_cvref_t<generator_type_>>
+        requires a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
     {
 
         std::size_t count = 0;
@@ -2366,10 +2366,10 @@ class reference_store {
      *  @param[out] reservoir Buffer the samples land in, written by index.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_,
-              indexed_writable_iterator<value_t> output_iterator_type_>
+              an_indexed_writable_iterator<value_t> output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                               std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
-        requires uniform_random_bits<std::remove_cvref_t<generator_type_>>
+        requires a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
     {
         static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                       "sampling copies each drawn element into the caller's buffer, so that copy must not throw");

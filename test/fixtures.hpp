@@ -734,24 +734,24 @@ struct counting_hash_t {
 /** Helper to construct a new key matching the @c member_type_ from an integer value */
 template <typename member_type_>
 auto trivial_id_to_key(trivial_id_t value) {
-    if constexpr (has_make_method<member_type_, trivial_id_t>) {
+    if constexpr (a_type_with_make_method<member_type_, trivial_id_t>) {
         auto [key, status] = member_type_::make(value);
         expect_equal(status, success_k, "the fixture key must be constructible from an identifier");
         return std::move(key);
     }
-    else if constexpr (is_mapping<member_type_>) return trivial_id_to_key<typename member_type_::key_type>(value);
+    else if constexpr (a_mapping<member_type_>) return trivial_id_to_key<typename member_type_::key_type>(value);
     else return member_type_ {value};
 }
 
 /** Helper to construct a new @c member_type_ from an integer value */
 template <typename member_type_>
 auto trivial_id_to_member(trivial_id_t value) {
-    if constexpr (has_make_method<member_type_, trivial_id_t>) {
+    if constexpr (a_type_with_make_method<member_type_, trivial_id_t>) {
         auto [member, status] = member_type_::make(value);
         expect_equal(status, success_k, "the fixture member must be constructible from an identifier");
         return std::move(member);
     }
-    else if constexpr (is_mapping<member_type_>)
+    else if constexpr (a_mapping<member_type_>)
         return member_type_ {trivial_id_to_key<member_type_>(value), typename member_type_::mapped_type(value)};
     else return member_type_ {value};
 }
@@ -759,7 +759,7 @@ auto trivial_id_to_member(trivial_id_t value) {
 /** Helper to construct a new @c member_type_ from an integer value */
 template <typename member_type_, typename mapped_type_>
 member_type_ trivial_id_to_member(trivial_id_t identifier, mapped_type_ value) {
-    if constexpr (is_mapping<member_type_>)
+    if constexpr (a_mapping<member_type_>)
         return {trivial_id_to_key<member_type_>(identifier), typename member_type_::mapped_type(value)};
     else return trivial_id_to_key<member_type_>(identifier);
 }

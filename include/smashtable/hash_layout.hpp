@@ -93,10 +93,10 @@ using hash_bucket_mask_t = std::uint32_t;
 /** A key a lookup compares a window at a time: a 4- or 8-byte integer, read as unsigned, or a
  *  @c key128_t. */
 template <typename key_type_>
-concept window_key = (std::is_integral_v<key_type_> && !std::is_same_v<key_type_, bool> &&
-                      (std::is_same_v<std::make_unsigned_t<key_type_>, std::uint32_t> ||
-                       std::is_same_v<std::make_unsigned_t<key_type_>, std::uint64_t>)) ||
-                     std::is_same_v<key_type_, key128_t>;
+concept a_window_key = (std::is_integral_v<key_type_> && !std::is_same_v<key_type_, bool> &&
+                        (std::is_same_v<std::make_unsigned_t<key_type_>, std::uint32_t> ||
+                         std::is_same_v<std::make_unsigned_t<key_type_>, std::uint64_t>)) ||
+                       std::is_same_v<key_type_, key128_t>;
 
 /** The four states a slot can be in, spelled out by the two header lanes. */
 enum class hash_slot_state_t : std::uint8_t {
@@ -421,7 +421,7 @@ struct hash_slot_ref {
  *  to CPU's memory latency.
  */
 template <typename value_type_, typename hasher_type_,
-          waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
+          a_waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
           template <typename> class atomic_reference_ = atomic_ref>
 class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
 
@@ -564,7 +564,7 @@ constexpr hash_window_slots_t hash_window_slots(hash_bucket_head_t const &head, 
  *  @p slots_count bounds it, so a full table ends it too.
  *
  *  @param[in] headers The headers region, indexed by bucket.
- *  @param[in] keys The keys region, indexed by slot, every key a @c window_key.
+ *  @param[in] keys The keys region, indexed by slot, every key satisfying @c a_window_key.
  *  @param[in] slots_count The slot count, a power of two, at least one window.
  *  @param[in] entry The home slot of @p wanted, already masked to the table.
  *  @param[in] wanted The key to find.
@@ -574,7 +574,7 @@ template <typename row_kit_type_, typename key_type_, typename offset_type_, typ
 void walk_hash_windows(hash_bucket_head_t const *headers, key_type_ const *keys, offset_type_ slots_count,
                        offset_type_ entry, std::type_identity_t<key_type_> const &wanted,
                        on_match_type_ &&on_match) noexcept {
-    static_assert(window_key<key_type_>, "only 4-, 8- and 16-byte keys compare a window at a time");
+    static_assert(a_window_key<key_type_>, "only 4-, 8- and 16-byte keys compare a window at a time");
     using word_t = typename std::conditional_t<std::is_integral_v<key_type_>, std::make_unsigned<key_type_>,
                                                std::type_identity<key_type_>>::type;
     constexpr std::size_t mask_equal_width_k = row_kit_type_::mask_equal_width_k;
@@ -648,7 +648,7 @@ walk_control_t for_each_in_hash_bucket(hash_slot_ref<value_type_, hasher_type_> 
  *  @tparam hasher_type_ Hash function object, only used to derive the offset type.
  *  @tparam allocator_type_ Supplies and reclaims the single byte buffer.
  */
-template <typename value_type_, typename hasher_type_, allocator_of<std::byte> allocator_type_>
+template <typename value_type_, typename hasher_type_, an_allocator<std::byte> allocator_type_>
 struct hash_storage {
 
     using layout_t = hash_layout_for<value_type_, hasher_type_>;

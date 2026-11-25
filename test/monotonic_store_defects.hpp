@@ -43,7 +43,7 @@ void check_direct_write_spares_staged_version() {
     expect_equal(container.size(), 1);
     auto [committed, committed_status] = container.find_copy(trivial_id_to_key<member_t>(7));
     if (!expect_equal(committed_status, success_k)) return;
-    if constexpr (is_mapping<member_t>) expect_equal(committed.mapped, typename member_t::mapped_type(100));
+    if constexpr (a_mapping<member_t>) expect_equal(committed.mapped, typename member_t::mapped_type(100));
 }
 
 /** A direct erase takes the published version only, so the staged one still commits. */
@@ -70,7 +70,7 @@ void check_direct_erase_spares_staged_version() {
     expect_equal(container.size(), 1);
     auto [committed, committed_status] = container.find_copy(trivial_id_to_key<member_t>(3));
     if (!expect_equal(committed_status, success_k)) return;
-    if constexpr (is_mapping<member_t>) expect_equal(committed.mapped, typename member_t::mapped_type(42));
+    if constexpr (a_mapping<member_t>) expect_equal(committed.mapped, typename member_t::mapped_type(42));
 }
 
 /** A ranged erase takes published versions only, so an overlapping staged write still commits. */
@@ -98,7 +98,7 @@ void check_erase_range_spares_staged_versions() {
     expect_equal(container.size(), 5);
     auto [committed, committed_status] = container.find_copy(trivial_id_to_key<member_t>(4));
     if (!expect_equal(committed_status, success_k)) return;
-    if constexpr (is_mapping<member_t>) expect_equal(committed.mapped, typename member_t::mapped_type(400));
+    if constexpr (a_mapping<member_t>) expect_equal(committed.mapped, typename member_t::mapped_type(400));
 }
 
 /** Clearing keeps handing out fresh stamps, so a later transaction never reuses a live one. */
@@ -423,7 +423,7 @@ void check_transaction_equal_range_sees_staged_writes() {
     expect_equal(transaction.equal_range(trivial_id_to_key<member_t>(2),
                                          [&](member_t const &member) noexcept {
                                              ++staged_matches;
-                                             if constexpr (is_mapping<member_t>)
+                                             if constexpr (a_mapping<member_t>)
                                                  expect_equal(member.mapped, typename member_t::mapped_type(22));
                                          }),
                  success_k);

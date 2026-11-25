@@ -49,11 +49,12 @@ struct doubly_linked_record_t {
     std::uint32_t previous {intrusive_list<>::absent_k};
 };
 
-static_assert(generation_tagged<watched_record_t, std::uint32_t> && !generation_tagged<std::uint64_t, std::uint32_t>);
+static_assert(a_generation_tagged_record<watched_record_t, std::uint32_t> &&
+              !a_generation_tagged_record<std::uint64_t, std::uint32_t>);
 static_assert(sizeof(basic_fixed_pool<watched_record_t>::handle_t) == 8, "a handle fits one event word");
-static_assert(singly_linked_records<singly_linked_record_t[4], std::uint32_t> &&
-              !doubly_linked_records<singly_linked_record_t[4], std::uint32_t>);
-static_assert(doubly_linked_records<basic_fixed_pool<doubly_linked_record_t>, std::uint32_t>);
+static_assert(a_singly_linked_record_array<singly_linked_record_t[4], std::uint32_t> &&
+              !a_doubly_linked_record_array<singly_linked_record_t[4], std::uint32_t>);
+static_assert(a_doubly_linked_record_array<basic_fixed_pool<doubly_linked_record_t>, std::uint32_t>);
 
 #pragma endregion Fixtures
 

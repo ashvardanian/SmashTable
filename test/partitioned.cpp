@@ -75,16 +75,16 @@ using standard_mutex_map_t = partitioned_store<tree_composite_map_t, hash<compos
  */
 using hash_store_t = monotonic_hash_set<trivial_key_t, hash<trivial_key_t>, equal_to_t, std::allocator<std::byte>>;
 
-static_assert(offers_ordered_surface<tree_trivial_set_t>, "the tree-backed store is ordered");
-static_assert(offers_ordered_surface<locked_store<tree_trivial_set_t>>,
+static_assert(a_store_with_ordered_surface<tree_trivial_set_t>, "the tree-backed store is ordered");
+static_assert(a_store_with_ordered_surface<locked_store<tree_trivial_set_t>>,
               "wrapping an ordered store must keep the ordered surface");
-static_assert(offers_ordered_surface<partitioned_store<tree_trivial_set_t>>,
+static_assert(a_store_with_ordered_surface<partitioned_store<tree_trivial_set_t>>,
               "sharding an ordered store must keep the ordered surface");
 
-static_assert(!offers_ordered_surface<hash_store_t>, "a hash-backed store has no ordering to offer");
-static_assert(!offers_ordered_surface<locked_store<hash_store_t>>,
+static_assert(!a_store_with_ordered_surface<hash_store_t>, "a hash-backed store has no ordering to offer");
+static_assert(!a_store_with_ordered_surface<locked_store<hash_store_t>>,
               "the lock wrapper must not claim an ordering its inner store denies");
-static_assert(!offers_ordered_surface<partitioned_store<hash_store_t>>,
+static_assert(!a_store_with_ordered_surface<partitioned_store<hash_store_t>>,
               "the partitioned wrapper must not claim an ordering its inner store denies");
 
 /**
@@ -113,19 +113,20 @@ struct unerasable_ordered_set_t : tree_trivial_set_t {
     void erase_range(arguments_types_ &&...) = delete;
 };
 
-static_assert(!offers_erase_range<unerasable_ordered_set_t>, "the fixture erases no window");
-static_assert(!offers_ordered_surface<unerasable_ordered_set_t>, "so the composite every forward once asked is false");
-static_assert(offers_lower_bound<unerasable_ordered_set_t> && offers_upper_bound<unerasable_ordered_set_t> &&
-                  offers_range<unerasable_ordered_set_t>,
+static_assert(!a_store_with_erase_range<unerasable_ordered_set_t>, "the fixture erases no window");
+static_assert(!a_store_with_ordered_surface<unerasable_ordered_set_t>,
+              "so the composite every forward once asked is false");
+static_assert(a_store_with_lower_bound<unerasable_ordered_set_t> &&
+                  a_store_with_upper_bound<unerasable_ordered_set_t> && a_store_with_range<unerasable_ordered_set_t>,
               "while the three surfaces it does offer are there to keep");
 
-static_assert(offers_lower_bound<locked_store<unerasable_ordered_set_t>> &&
-                  offers_upper_bound<locked_store<unerasable_ordered_set_t>> &&
-                  offers_range<locked_store<unerasable_ordered_set_t>>,
+static_assert(a_store_with_lower_bound<locked_store<unerasable_ordered_set_t>> &&
+                  a_store_with_upper_bound<locked_store<unerasable_ordered_set_t>> &&
+                  a_store_with_range<locked_store<unerasable_ordered_set_t>>,
               "a lock wrapper keeps the bounds of a store that erases no window");
-static_assert(offers_lower_bound<partitioned_store<unerasable_ordered_set_t>> &&
-                  offers_upper_bound<partitioned_store<unerasable_ordered_set_t>> &&
-                  offers_range<partitioned_store<unerasable_ordered_set_t>>,
+static_assert(a_store_with_lower_bound<partitioned_store<unerasable_ordered_set_t>> &&
+                  a_store_with_upper_bound<partitioned_store<unerasable_ordered_set_t>> &&
+                  a_store_with_range<partitioned_store<unerasable_ordered_set_t>>,
               "and so does a shard set over it");
 static_assert(
     requires(locked_store<unerasable_ordered_set_t> const &store) { store.cursor_from(trivial_key_t {}); },
@@ -166,34 +167,35 @@ struct enumerable_set_t : tree_trivial_set_t {
     }
 };
 
-static_assert(offers_order_statistics<ranked_set_t>, "the weight-balanced store answers by ordinal");
-static_assert(offers_order_statistics<locked_store<monotonic_ranked_set_t>>,
+static_assert(a_store_with_order_statistics<ranked_set_t>, "the weight-balanced store answers by ordinal");
+static_assert(a_store_with_order_statistics<locked_store<monotonic_ranked_set_t>>,
               "the ordinal surface travels through the wrapper whichever store family carries it");
-static_assert(offers_order_statistics<partitioned_store<monotonic_ranked_set_t>>,
+static_assert(a_store_with_order_statistics<partitioned_store<monotonic_ranked_set_t>>,
               "the ordinal surface travels through the wrapper whichever store family carries it");
-static_assert(offers_order_statistics<locked_store<ranked_set_t>>,
+static_assert(a_store_with_order_statistics<locked_store<ranked_set_t>>,
               "wrapping an order-statistics store must keep the ordinal surface");
-static_assert(offers_order_statistics<partitioned_store<ranked_set_t>>,
+static_assert(a_store_with_order_statistics<partitioned_store<ranked_set_t>>,
               "sharding an order-statistics store must keep the ordinal surface");
 
-static_assert(!offers_order_statistics<tree_trivial_set_t>, "the AVL core sums no subtree counts");
-static_assert(!offers_order_statistics<locked_store<tree_trivial_set_t>>,
+static_assert(!a_store_with_order_statistics<tree_trivial_set_t>, "the AVL core sums no subtree counts");
+static_assert(!a_store_with_order_statistics<locked_store<tree_trivial_set_t>>,
               "the lock wrapper must not claim ordinals its inner core cannot answer");
-static_assert(!offers_order_statistics<partitioned_store<tree_trivial_set_t>>,
+static_assert(!a_store_with_order_statistics<partitioned_store<tree_trivial_set_t>>,
               "the partitioned wrapper must not claim ordinals its inner core cannot answer");
-static_assert(!offers_order_statistics<locked_store<hash_store_t>>, "an unordered core has no ordinals at all");
-static_assert(!offers_order_statistics<partitioned_store<hash_store_t>>, "an unordered core has no ordinals at all");
+static_assert(!a_store_with_order_statistics<locked_store<hash_store_t>>, "an unordered core has no ordinals at all");
+static_assert(!a_store_with_order_statistics<partitioned_store<hash_store_t>>,
+              "an unordered core has no ordinals at all");
 
-static_assert(offers_for_each<enumerable_set_t>, "the fixture store enumerates");
-static_assert(offers_for_each<locked_store<enumerable_set_t>>,
+static_assert(a_store_with_for_each<enumerable_set_t>, "the fixture store enumerates");
+static_assert(a_store_with_for_each<locked_store<enumerable_set_t>>,
               "wrapping an enumerable store must keep the enumeration");
-static_assert(offers_for_each<partitioned_store<enumerable_set_t>>,
+static_assert(a_store_with_for_each<partitioned_store<enumerable_set_t>>,
               "sharding an enumerable store must keep the enumeration");
 
-static_assert(offers_for_each<tree_trivial_set_t>, "a transactional store walks its own members");
-static_assert(offers_for_each<locked_store<tree_trivial_set_t>>,
+static_assert(a_store_with_for_each<tree_trivial_set_t>, "a transactional store walks its own members");
+static_assert(a_store_with_for_each<locked_store<tree_trivial_set_t>>,
               "the lock wrapper forwards the enumeration its inner store offers");
-static_assert(offers_for_each<partitioned_store<tree_trivial_set_t>>,
+static_assert(a_store_with_for_each<partitioned_store<tree_trivial_set_t>>,
               "the partitioned wrapper forwards the enumeration its inner store offers");
 
 /** Both wrappers over the enumerable fixture, which is what the enumeration suites walk. */
@@ -256,9 +258,9 @@ using forkunion_mutex_t = spin_shared_mutex<fu::preferred_yield_t, fu::preferred
 using forkunion_order_t =
     basic_commit_order<16, 4, order_sharing_t::shared_k, fu::preferred_yield_t, fu::preferred_atomic_ref>;
 
-static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
+static_assert(an_extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
               "a reference short of the concept would pass as a ForkUnion case over the fallback loops");
-static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
+static_assert(an_extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
               "the mutex word is narrower than a stamp, and must reach the same verbs");
 
 /** Sixteen stamped partitions locked, ordered and waited on through ForkUnion. */
@@ -305,10 +307,11 @@ static_assert(transaction_moves_as_a_value<partitioned_store<locked_store<snapsh
               "a transaction moves as a value");
 
 /*  The wrappers stay in the concept's group, which also asks how a transaction moves. */
-static_assert(optimistically_concurrent_store<locked_store<tree_trivial_set_t>>, "the lock wrapper stays in the group");
-static_assert(optimistically_concurrent_store<partitioned_store<tree_trivial_set_t>>,
+static_assert(an_optimistically_concurrent_store<locked_store<tree_trivial_set_t>>,
+              "the lock wrapper stays in the group");
+static_assert(an_optimistically_concurrent_store<partitioned_store<tree_trivial_set_t>>,
               "the partitioned wrapper stays in the group");
-static_assert(optimistically_concurrent_store<partitioned_store<locked_store<snapshot_trivial_map_t>>>,
+static_assert(an_optimistically_concurrent_store<partitioned_store<locked_store<snapshot_trivial_map_t>>>,
               "the nesting stays in the group");
 
 #pragma endregion Surface Parity

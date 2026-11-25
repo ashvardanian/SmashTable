@@ -235,7 +235,7 @@ static void test_erase_wraps_table_end() {
 /** @c check_kit through @p kit , skipped where this machine cannot run it. */
 static case_result_t test_kit(row_kit_t kit) {
     if (!row_kit_supported(kit)) return case_result_t::skipped(needs_kit_reason(kit));
-    visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { check_kit(kit_instance); });
+    visit_row_kit(kit, [](a_row_kit auto kit_instance) noexcept { check_kit(kit_instance); });
     return {};
 }
 

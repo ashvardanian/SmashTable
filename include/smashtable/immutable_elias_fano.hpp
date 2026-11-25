@@ -32,7 +32,7 @@
 
 #include "smashtable/basic_vector.hpp"
 #include "smashtable/immutable_packed_array.hpp"
-#include "smashtable/row_search.hpp" // `row_kit`, `native_row_kit_t`
+#include "smashtable/row_search.hpp" // `a_row_kit`, `native_row_kit_t`
 
 namespace ashvardanian::smashtable {
 
@@ -40,8 +40,8 @@ namespace ashvardanian::smashtable {
  *  order and read back by position - the offsets of variable-length rows, a few bits apiece.
  *  @p row_kit_type_ scans the high parts in @c select where it has a scan of its own. */
 template <typename value_type_ = std::uint64_t,
-          allocator_of<std::uint64_t> allocator_type_ = default_allocator<std::uint64_t>,
-          row_kit row_kit_type_ = native_row_kit_t>
+          an_allocator<std::uint64_t> allocator_type_ = default_allocator<std::uint64_t>,
+          a_row_kit row_kit_type_ = native_row_kit_t>
 class immutable_elias_fano {
   public:
     using value_t = value_type_;
@@ -179,7 +179,7 @@ class immutable_elias_fano {
         std::uint64_t const sampled = samples_[position / select_stride_k];
         std::size_t const remaining = position % select_stride_k;
         if (!remaining) return sampled;
-        using select_kit_t = std::conditional_t<select_kit<row_kit_type_>, row_kit_type_, serial_row_kit_t>;
+        using select_kit_t = std::conditional_t<a_select_kit<row_kit_type_>, row_kit_type_, serial_row_kit_t>;
         return select_kit_t::select_set_bit(std::span<std::uint64_t const>(highs_.data(), highs_.size()), sampled,
                                             remaining);
     }

@@ -123,7 +123,8 @@ struct recording_allocator {
 static void test_emplace_back_through_make() {
     static_assert(!std::is_nothrow_constructible_v<fallible_element_t, int>,
                   "the test element must not qualify for the nothrow branch");
-    static_assert(has_make_method<fallible_element_t, int>, "the test element must qualify for the make branch");
+    static_assert(a_type_with_make_method<fallible_element_t, int>,
+                  "the test element must qualify for the make branch");
 
     basic_vector<fallible_element_t> vector;
     expect_equal(vector.emplace_back(7), success_k);

@@ -58,7 +58,7 @@ struct no_augmentation_t {};
  *  tree can aggregate it.
  */
 template <typename augmentation_type_, typename value_type_>
-concept wb_augmentation = requires(value_type_ const &payload) {
+concept a_wb_augmentation = requires(value_type_ const &payload) {
     { augmentation_type_::augmented_count(payload) } -> std::convertible_to<std::size_t>;
 };
 
@@ -116,7 +116,7 @@ class basic_wb_node
 
     /** True when a second count is maintained, which is what gates every augmented code path. */
     static constexpr bool is_augmented_k = !std::is_same_v<augmentation_t, no_augmentation_t>;
-    static_assert(!is_augmented_k || wb_augmentation<augmentation_t, value_t>,
+    static_assert(!is_augmented_k || a_wb_augmentation<augmentation_t, value_t>,
                   "An augmentation policy must expose `static std::size_t augmented_count(value_t const &)`");
 
     /** The augmented counter, degenerating to an empty type when no augmentation is asked for. */
@@ -450,7 +450,7 @@ class basic_wb_node
      *  @par Statuses:
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <multipass_iterator iterator_type_, allocator_of<node_t> node_allocator_type_>
+    template <a_multipass_iterator iterator_type_, an_allocator<node_t> node_allocator_type_>
     static build_result_t build_from_sorted(iterator_type_ first, std::size_t count,
                                             node_allocator_type_ &allocator) noexcept {
         if (count == 0) return {};
@@ -760,7 +760,7 @@ class basic_wb_node
      *  @param[in,out] allocator Hands back a raw node, or @c nullptr when it cannot.
      *  @return The new root, the node the key lives in, and whether it was made or matched.
      */
-    template <allocator_of<node_t> node_allocator_type_>
+    template <an_allocator<node_t> node_allocator_type_>
     static find_or_make_result_t upsert(node_t *node, value_type_ &&payload, comparator_t const &comparator,
                                         node_allocator_type_ &allocator) noexcept {
         // Base case: empty tree, allocate new node
@@ -843,7 +843,7 @@ class basic_wb_node
 
     /** Uniformly samples one node whose key lies in [lower, upper), or nullptr when empty. */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename predicate_type_ = no_op_t>
-        requires uniform_random_bits<std::remove_cvref_t<generator_type_>> &&
+        requires a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>> &&
                  (std::same_as<std::remove_cvref_t<predicate_type_>, no_op_t> ||
                   std::predicate<predicate_type_ &, node_t *>)
     static node_t *sample_range(node_t *node, lower_type_ &&lower, upper_type_ &&upper, comparator_t const &comparator,
@@ -1015,7 +1015,7 @@ class basic_wb_tree {
     using mapped_type = mapped_t; // ? STL compatibility
 
     /** Trait to indicate this container uses iterator-based reads, not callbacks. */
-    using is_associative = std::bool_constant<is_mapping<value_t>>;
+    using is_associative = std::bool_constant<a_mapping<value_t>>;
 
     /**
      *  @brief Rebind this tree type to different element and comparator types. Follows STL
@@ -1631,11 +1631,11 @@ class basic_wb_tree {
      *    the newcomer.
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <incumbent_policy_t policy_, readable_iterator input_iterator_type_, typename... tags_types_>
+    template <incumbent_policy_t policy_, a_readable_iterator input_iterator_type_, typename... tags_types_>
     static status_t stage_range_(wb_tree_t &staged, input_iterator_type_ first, input_iterator_type_ last,
                                  tags_types_...) noexcept {
         if constexpr (contains_type<assume_sorted_t, tags_types_...>()) {
-            static_assert(multipass_iterator<input_iterator_type_>,
+            static_assert(a_multipass_iterator<input_iterator_type_>,
                           "a sorted build seeks the middle of its range, which a single-pass range cannot answer");
             std::size_t const count = distance_between(first, last);
             typename node_t::build_result_t const built = node_t::build_from_sorted(first, count, staged.allocator_);
@@ -1674,9 +1674,9 @@ class basic_wb_tree {
      *  @par Statuses:
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_, typename... tags_types_>
+    template <a_readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
-        requires(promises_about_the_range<tags_types_> && ...)
+        requires(a_range_promise<tags_types_> && ...)
     {
         if (first == last) return success_k;
         wb_tree_t staged = stage_alike();
@@ -1701,9 +1701,9 @@ class basic_wb_tree {
      *  - @c key_already_exists_k A key repeats inside an unsorted range or is already in this tree.
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_, typename... tags_types_>
+    template <a_readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
-        requires(promises_about_the_range<tags_types_> && ...)
+        requires(a_range_promise<tags_types_> && ...)
     {
         if (first == last) return success_k;
         wb_tree_t staged = stage_alike();
@@ -1729,9 +1729,9 @@ class basic_wb_tree {
      *  @par Statuses:
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_, typename... tags_types_>
+    template <a_readable_iterator input_iterator_type_, typename... tags_types_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
-        requires(promises_about_the_range<tags_types_> && ...)
+        requires(a_range_promise<tags_types_> && ...)
     {
         if (first == last) return success_k;
         wb_tree_t staged = stage_alike();
@@ -2128,11 +2128,12 @@ using wb_map = basic_wb_tree<mapping<key_type_, mapped_type_>, comparator_type_,
                                  basic_wb_node<mapping<key_type_, mapped_type_>, comparator_type_, augmentation_type_>>,
                              augmentation_type_>;
 
-static_assert(ordered_collection<wb_set<std::uint64_t>> && ordered_collection<wb_map<std::uint64_t, double>>,
+static_assert(an_ordered_collection<wb_set<std::uint64_t>> && an_ordered_collection<wb_map<std::uint64_t, double>>,
               "a weight-balanced tree answers a key, a bound and a range like every ordered collection");
-static_assert(batches_atomically<wb_set<std::uint64_t>> && batches_atomically<wb_map<std::uint64_t, double>>,
+static_assert(an_atomically_batching_collection<wb_set<std::uint64_t>> &&
+                  an_atomically_batching_collection<wb_map<std::uint64_t, double>>,
               "a weight-balanced tree takes a whole batch or none of it");
-static_assert(set_shaped_store<wb_set<std::uint64_t>> && map_shaped_store<wb_map<std::uint64_t, double>>,
+static_assert(a_set_shaped_store<wb_set<std::uint64_t>> && a_map_shaped_store<wb_map<std::uint64_t, double>>,
               "the set and map aliases of one tree must not resolve to the same shape");
 
 #pragma endregion Observers

@@ -28,7 +28,7 @@
 #include <utility>     // `std::move`, `std::swap`
 
 #include "smashtable/hash_layout.hpp"
-#include "smashtable/row_search.hpp" // `row_kit`, `native_row_kit_t`
+#include "smashtable/row_search.hpp" // `a_row_kit`, `native_row_kit_t`
 
 namespace ashvardanian::smashtable {
 
@@ -42,10 +42,10 @@ namespace ashvardanian::smashtable {
  *  @tparam allocator_type_ Supplies and reclaims the single byte buffer.
  *  @tparam row_kit_type_ The kit comparing a window of its @c mask_equal_width_k keys at once.
  */
-template <window_key key_type_, std::unsigned_integral index_type_ = std::uint32_t,
-          typename hasher_type_ = default_hash_t, allocator_of<std::byte> allocator_type_ = default_allocator_t,
-          row_kit row_kit_type_ = native_row_kit_t>
-    requires key_hasher<hasher_type_, key_type_>
+template <a_window_key key_type_, std::unsigned_integral index_type_ = std::uint32_t,
+          typename hasher_type_ = default_hash_t, an_allocator<std::byte> allocator_type_ = default_allocator_t,
+          a_row_kit row_kit_type_ = native_row_kit_t>
+    requires a_key_hasher<hasher_type_, key_type_>
 class basic_hash_index {
   public:
     using key_t = key_type_;

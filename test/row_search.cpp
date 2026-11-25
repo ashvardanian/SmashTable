@@ -370,14 +370,14 @@ void test_serial_matches_definitions() {
 /** @c check_kit_rows through @p kit , skipped where this machine cannot run it. */
 case_result_t test_kit_rows(row_kit_t kit) {
     if (!row_kit_supported(kit)) return case_result_t::skipped(needs_kit_reason(kit));
-    visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { check_kit_rows(kit_instance); });
+    visit_row_kit(kit, [](a_row_kit auto kit_instance) noexcept { check_kit_rows(kit_instance); });
     return {};
 }
 
 /** @c check_kit_layouts through @p kit , skipped where this machine cannot run it. */
 case_result_t test_kit_layouts(row_kit_t kit) {
     if (!row_kit_supported(kit)) return case_result_t::skipped(needs_kit_reason(kit));
-    visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { check_kit_layouts(kit_instance); });
+    visit_row_kit(kit, [](a_row_kit auto kit_instance) noexcept { check_kit_layouts(kit_instance); });
     return {};
 }
 

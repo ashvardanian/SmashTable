@@ -64,9 +64,9 @@ struct hash<key128_t> {
 
 /** The key types every kit searches. */
 template <typename key_type_>
-concept row_searchable_key = std::same_as<key_type_, std::uint32_t> || std::same_as<key_type_, std::int32_t> ||
-                             std::same_as<key_type_, std::uint64_t> || std::same_as<key_type_, std::int64_t> ||
-                             std::same_as<key_type_, key128_t>;
+concept a_row_searchable_key = std::same_as<key_type_, std::uint32_t> || std::same_as<key_type_, std::int32_t> ||
+                               std::same_as<key_type_, std::uint64_t> || std::same_as<key_type_, std::int64_t> ||
+                               std::same_as<key_type_, key128_t>;
 
 static_assert(cache_line_bytes_k % sizeof(key128_t) == 0 && cache_line_bytes_k >= 2 * sizeof(key128_t),
               "a cache line holds a whole number of keys of every width, and two at least");
@@ -86,7 +86,7 @@ template <typename key_type_>
  *  and a 16-byte row is a column of high words followed by a column of low words, so both columns
  *  share one medium unit. */
 template <typename key_type_, std::size_t keys_per_row_>
-    requires row_searchable_key<key_type_> && (keys_per_row_ >= 2)
+    requires a_row_searchable_key<key_type_> && (keys_per_row_ >= 2)
 struct row_format {
     using key_t = key_type_;
     using word_t = std::conditional_t<std::same_as<key_type_, key128_t>, std::uint64_t, key_type_>;

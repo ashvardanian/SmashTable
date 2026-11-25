@@ -52,9 +52,9 @@ using forkunion_mutex_t = spin_shared_mutex<fu::preferred_yield_t, fu::preferred
 using forkunion_order_t =
     basic_commit_order<16, 4, order_sharing_t::shared_k, fu::preferred_yield_t, fu::preferred_atomic_ref>;
 
-static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
+static_assert(an_extended_atomic_ref<fu::preferred_atomic_ref<std::uint64_t>, std::uint64_t>,
               "a reference short of the concept would pass as a ForkUnion row over the fallback loops");
-static_assert(extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
+static_assert(an_extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, std::uint32_t>,
               "the mutex word is narrower than a stamp, and must reach the same verbs");
 
 /** Two partitioned stores locked, ordered and waited on through ForkUnion. */

@@ -29,95 +29,95 @@ struct alien_key_t {};
  */
 struct sample_one_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_sample_one<store_type_>;
+    static constexpr bool offered = a_store_with_sample_one<store_type_>;
 };
 struct sample_reservoir_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_sample_reservoir<store_type_>;
+    static constexpr bool offered = a_store_with_sample_reservoir<store_type_>;
 };
 struct equal_range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_equal_range<store_type_>;
+    static constexpr bool offered = a_store_with_equal_range<store_type_>;
 };
 struct select_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_select<store_type_>;
+    static constexpr bool offered = a_store_with_select<store_type_>;
 };
 struct rank_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_rank<store_type_>;
+    static constexpr bool offered = a_store_with_rank<store_type_>;
 };
 struct ranked_size_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_ranked_size<store_type_>;
+    static constexpr bool offered = a_store_with_ranked_size<store_type_>;
 };
 struct for_each_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_for_each<store_type_>;
+    static constexpr bool offered = a_store_with_for_each<store_type_>;
 };
 struct lower_bound_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_lower_bound<store_type_>;
+    static constexpr bool offered = a_store_with_lower_bound<store_type_>;
 };
 struct upper_bound_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_upper_bound<store_type_>;
+    static constexpr bool offered = a_store_with_upper_bound<store_type_>;
 };
 struct range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_range<store_type_>;
+    static constexpr bool offered = a_store_with_range<store_type_>;
 };
 struct erase_range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_erase_range<store_type_>;
+    static constexpr bool offered = a_store_with_erase_range<store_type_>;
 };
 struct erase_from_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_erase_from<store_type_>;
+    static constexpr bool offered = a_store_with_erase_from<store_type_>;
 };
 struct erase_up_to_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_erase_up_to<store_type_>;
+    static constexpr bool offered = a_store_with_erase_up_to<store_type_>;
 };
 struct update_range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_update_range<store_type_>;
+    static constexpr bool offered = a_store_with_update_range<store_type_>;
 };
 struct insert_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_insert<store_type_>;
+    static constexpr bool offered = a_store_with_insert<store_type_>;
 };
 struct insert_if_missing_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_insert_if_missing<store_type_>;
+    static constexpr bool offered = a_store_with_insert_if_missing<store_type_>;
 };
 struct insert_or_assign_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_insert_or_assign<store_type_>;
+    static constexpr bool offered = a_store_with_insert_or_assign<store_type_>;
 };
 struct update_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_update<store_type_>;
+    static constexpr bool offered = a_store_with_update<store_type_>;
 };
 struct find_copy_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_find_copy<store_type_>;
+    static constexpr bool offered = a_store_with_find_copy<store_type_>;
 };
 struct vacuum_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_vacuum<store_type_>;
+    static constexpr bool offered = a_store_with_vacuum<store_type_>;
 };
 struct vacuum_window_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_vacuum_window<store_type_>;
+    static constexpr bool offered = a_store_with_vacuum_window<store_type_>;
 };
 struct versions_count_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_versions_count<store_type_>;
+    static constexpr bool offered = a_store_with_versions_count<store_type_>;
 };
 struct low_water_mark_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_low_water_mark<store_type_>;
+    static constexpr bool offered = a_store_with_low_water_mark<store_type_>;
 };
 struct visible_cursor_surface_t {
     template <typename store_type_>
@@ -128,15 +128,15 @@ struct visible_cursor_surface_t {
 };
 struct shard_protocol_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = draws_from_a_shared_order<store_type_>;
+    static constexpr bool offered = a_store_in_a_shared_order<store_type_>;
 };
 struct smallest_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_smallest<store_type_>;
+    static constexpr bool offered = a_store_with_smallest<store_type_>;
 };
 struct pop_smallest_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_pop_smallest<store_type_>;
+    static constexpr bool offered = a_store_with_pop_smallest<store_type_>;
 };
 struct heterogeneous_erase_surface_t {
     template <typename store_type_>
@@ -153,55 +153,55 @@ struct heterogeneous_erase_surface_t {
  *  missing entirely fails as loudly as one whose method is. */
 struct transaction_insert_if_missing_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_insert_if_missing<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_insert_if_missing<store_type_>;
 };
 struct transaction_changes_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_change_report<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_change_report<store_type_>;
 };
 struct transaction_for_each_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_for_each<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_for_each<store_type_>;
 };
 struct transaction_range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_range<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_range<store_type_>;
 };
 struct transaction_equal_range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_equal_range<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_equal_range<store_type_>;
 };
 struct transaction_lower_bound_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_lower_bound<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_lower_bound<store_type_>;
 };
 struct transaction_upper_bound_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_upper_bound<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_upper_bound<store_type_>;
 };
 struct transaction_find_copy_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_find_copy<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_find_copy<store_type_>;
 };
 struct transaction_generation_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_generation<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_generation<store_type_>;
 };
 struct transaction_reserve_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_reserve<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_reserve<store_type_>;
 };
 struct transaction_select_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_select<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_select<store_type_>;
 };
 struct transaction_rank_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_rank<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_rank<store_type_>;
 };
 struct transaction_smallest_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = transaction_offers_smallest<store_type_>;
+    static constexpr bool offered = a_store_with_transaction_smallest<store_type_>;
 };
 
 #pragma endregion Transaction Surfaces

@@ -73,8 +73,8 @@ namespace ashvardanian::smashtable {
  *  update()               fails           key_not_found_k         strict: key must exist
  *  @endverbatim
  *
- *  @tparam collection_type_ The underlying core, satisfying @c key_addressable_collection and
- *      providing a @c rebind template alias. Cores that also satisfy @c ordered_collection unlock
+ *  @tparam collection_type_ The underlying core, satisfying @c a_key_addressable_collection and
+ *      providing a @c rebind template alias. Cores also satisfying @c an_ordered_collection unlock
  *      the ordered surface - bounds, ranges, and, with order statistics, @c select and @c rank.
  *  @tparam atomic_reference_ The reference the generation and commit counters are owned through.
  */
@@ -642,7 +642,7 @@ class monotonic_store {
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         status_t smallest(callback_found_type_ &&callback_found,
                           callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             auto const &store = store_ref();
             versioned_t const *store_visible = nullptr;
@@ -676,7 +676,7 @@ class monotonic_store {
                   typename callback_missing_type_ = no_op_t>
         status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                              callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
 
             auto const &store = store_ref();
@@ -723,7 +723,7 @@ class monotonic_store {
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             return walk_from_(std::forward<lower_type_>(lower), upper, std::forward<callback_type_>(callback));
         }
@@ -734,7 +734,7 @@ class monotonic_store {
          */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             return walk_from_(std::forward<lower_type_>(lower), unbounded, std::forward<callback_type_>(callback));
         }
@@ -748,7 +748,7 @@ class monotonic_store {
                   typename callback_type_ = no_op_t>
         status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
                        descending_t) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             auto const &store = store_ref();
             auto staged_cursor = upper_bound_or_end(changes_, from);
@@ -790,7 +790,7 @@ class monotonic_store {
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             auto [lowest, status] = smallest_copy_();
             if (failed(status)) return status == key_not_found_k ? success_k : status;
@@ -799,7 +799,7 @@ class monotonic_store {
 
         /** Copies the lowest member this transaction reads, so a walk has a key to start from. */
         expected<value_t> smallest_copy_() const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             expected<value_t> result {status_t::key_not_found_k};
             if (status_t const answered =
@@ -860,7 +860,7 @@ class monotonic_store {
          */
         template <typename lower_type_, typename upper_type_, typename callback_type_>
         status_t walk_from_(lower_type_ &&lower, upper_type_ const &upper, callback_type_ &&callback) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             auto const &store = store_ref();
             auto staged_cursor = changes_.lower_bound(lower);
@@ -934,7 +934,7 @@ class monotonic_store {
                   typename callback_missing_type_ = no_op_t>
         status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                              callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
 
             auto const &store = store_ref();
@@ -967,7 +967,7 @@ class monotonic_store {
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
                         callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires supports_order_statistics<versioned_chains_t>
+            requires an_order_statistic_tree<versioned_chains_t>
         {
             std::size_t visible_index = 0;
             bool found = false;
@@ -1029,7 +1029,7 @@ class monotonic_store {
                   typename callback_missing_type_ = no_op_t>
         status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                       callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires supports_order_statistics<versioned_chains_t>
+            requires an_order_statistic_tree<versioned_chains_t>
         {
             std::size_t rank_value = 0;
             bool found = false;
@@ -1101,7 +1101,7 @@ class monotonic_store {
          */
         template <typename comparable_type_ = identifier_t>
         expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             expected<value_t> result {status_t::key_not_found_k};
             status_t const answered = lower_bound(
@@ -1121,7 +1121,7 @@ class monotonic_store {
          */
         template <typename comparable_type_ = identifier_t>
         expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             expected<value_t> result {status_t::key_not_found_k};
             status_t const answered = upper_bound(
@@ -1142,7 +1142,7 @@ class monotonic_store {
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             return erase_walked_([&](auto &&step) noexcept { return walk_from_(lower, upper, step); },
                                  std::forward<callback_type_>(callback));
@@ -1157,7 +1157,7 @@ class monotonic_store {
          */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             return erase_walked_([&](auto &&step) noexcept { return walk_from_(lower, unbounded, step); },
                                  std::forward<callback_type_>(callback));
@@ -1172,7 +1172,7 @@ class monotonic_store {
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires an_ordered_collection<versioned_chains_t>
         {
             // The walk needs a key to start from and there is no smallest key to name, so the lowest
             // member this transaction reads is asked for and used as the bound.
@@ -1208,7 +1208,7 @@ class monotonic_store {
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-            requires is_mapping<value_t> && ordered_collection<versioned_chains_t>
+            requires a_mapping<value_t> && an_ordered_collection<versioned_chains_t>
         {
             values_vector_t revised(values_allocator_t(storage_shape_t::allocator_of(store_ref().entries_)));
             status_t collecting = success_k;
@@ -1238,7 +1238,8 @@ class monotonic_store {
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                             callback_type_ &&callback) const noexcept
-            requires ordered_collection<versioned_chains_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>
+            requires an_ordered_collection<versioned_chains_t> &&
+                     a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
         {
             std::size_t counted = 0;
             if (status_t const measured = range(lower, upper, [&](value_t const &) noexcept { ++counted; });
@@ -1261,11 +1262,12 @@ class monotonic_store {
         /** Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t,
-                  indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
+                  an_indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
         status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                   std::size_t &seen, std::size_t capacity,
                                   output_iterator_type_ &&reservoir) const noexcept
-            requires ordered_collection<versioned_chains_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>
+            requires an_ordered_collection<versioned_chains_t> &&
+                     a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
         {
             static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                           "a reservoir copies into the caller's buffer, so the member must copy without throwing");
@@ -1838,7 +1840,7 @@ class monotonic_store {
      *  @par Statuses:
      *  - Any status @p stage_one or the element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_, typename stage_one_type_>
+    template <a_readable_iterator input_iterator_type_, typename stage_one_type_>
     status_t commit_each_(input_iterator_type_ first, input_iterator_type_ last, stage_one_type_ &&stage_one) noexcept {
         if (first == last) return success_k;
         auto opened = transaction();
@@ -1968,7 +1970,7 @@ class monotonic_store {
      */
     template <typename comparable_type_ = identifier_t>
     expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const bounded = lower_bound(
@@ -1990,7 +1992,7 @@ class monotonic_store {
      */
     template <typename comparable_type_ = identifier_t>
     expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const bounded = upper_bound(
@@ -2150,7 +2152,7 @@ class monotonic_store {
      *  - @c key_already_exists_k Any key exists.
      *  - Any status the element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_>
+    template <a_readable_iterator input_iterator_type_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         // Duplicates inside the range collapse onto a single staged version, so the strictness is
         // about the store's own keys rather than about the range repeating itself.
@@ -2174,7 +2176,7 @@ class monotonic_store {
      *  @par Statuses:
      *  - Any status the element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_>
+    template <a_readable_iterator input_iterator_type_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
             return staging.insert_if_missing(std::move(candidate));
@@ -2193,7 +2195,7 @@ class monotonic_store {
      *  @par Statuses:
      *  - Any status the element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_>
+    template <a_readable_iterator input_iterator_type_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
             return staging.upsert(std::move(candidate));
@@ -2213,7 +2215,7 @@ class monotonic_store {
      *  - @c key_not_found_k Any key is missing.
      *  - Any status the element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_>
+    template <a_readable_iterator input_iterator_type_>
     status_t update(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [this](transaction_t &staging, value_t &&candidate) noexcept {
             auto const [key_is_present, status] = contains(mapping_key_or_itself<value_t>(candidate));
@@ -2273,7 +2275,7 @@ class monotonic_store {
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     status_t smallest(callback_found_type_ &&callback_found,
                       callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
         static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
                       "callback_found must be noexcept invocable with value_t const &");
@@ -2297,7 +2299,7 @@ class monotonic_store {
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     status_t pop_smallest(callback_found_type_ &&callback_found = {},
                           callback_missing_type_ &&callback_missing = {}) noexcept
-        requires ordered_collection<versioned_chains_t> && std::is_copy_constructible_v<identifier_t>
+        requires an_ordered_collection<versioned_chains_t> && std::is_copy_constructible_v<identifier_t>
     {
         identifier_t doomed;
         bool found = false;
@@ -2328,7 +2330,7 @@ class monotonic_store {
               typename callback_missing_type_ = no_op_t>
     status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
 
         static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
@@ -2363,7 +2365,7 @@ class monotonic_store {
               typename callback_missing_type_ = no_op_t>
     status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
 
         static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
@@ -2418,7 +2420,7 @@ class monotonic_store {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) const noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
         chain_node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                             entries_.key_comp(), [&](chain_node_t *node) noexcept {
@@ -2435,7 +2437,7 @@ class monotonic_store {
               typename callback_type_ = no_op_t>
     status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
                    descending_t) const noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
         auto const less = entries_.key_comp();
         for (auto cursor = upper_bound_or_end(entries_, from); cursor != entries_.begin();) {
@@ -2460,7 +2462,7 @@ class monotonic_store {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-        requires is_mapping<value_t> && ordered_collection<versioned_chains_t>
+        requires a_mapping<value_t> && an_ordered_collection<versioned_chains_t>
     {
         generation_t generation = next_generation_();
         chain_node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -2483,7 +2485,7 @@ class monotonic_store {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
         retire_between_(entries_.lower_bound(std::forward<lower_type_>(lower)),
                         entries_.lower_bound(std::forward<upper_type_>(upper)), std::forward<callback_type_>(callback));
@@ -2500,7 +2502,7 @@ class monotonic_store {
      */
     template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
     status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
         retire_between_(entries_.lower_bound(std::forward<lower_type_>(lower)), entries_.end(),
                         std::forward<callback_type_>(callback));
@@ -2517,7 +2519,7 @@ class monotonic_store {
      */
     template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
     status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
         retire_between_(entries_.begin(), entries_.lower_bound(std::forward<upper_type_>(upper)),
                         std::forward<callback_type_>(callback));
@@ -2539,7 +2541,7 @@ class monotonic_store {
      *  @return How many entries were reclaimed.
      */
     expected<std::size_t> vacuum() noexcept {
-        if constexpr (ordered_collection<versioned_chains_t>) {
+        if constexpr (an_ordered_collection<versioned_chains_t>) {
             return vacuum_between_(entries_.begin(), entries_.end());
         }
         else {
@@ -2566,7 +2568,7 @@ class monotonic_store {
      */
     template <typename lower_type_, typename upper_type_>
     expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
         return vacuum_between_(entries_.lower_bound(std::forward<lower_type_>(lower)),
                                entries_.lower_bound(std::forward<upper_type_>(upper)));
@@ -2579,7 +2581,8 @@ class monotonic_store {
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                         callback_type_ &&callback) const noexcept
-        requires ordered_collection<versioned_chains_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>
+        requires an_ordered_collection<versioned_chains_t> &&
+                 a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
     {
 
         auto node = chain_node_t::sample_range( //
@@ -2591,10 +2594,11 @@ class monotonic_store {
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_,
-              indexed_writable_iterator<value_t> output_iterator_type_>
+              an_indexed_writable_iterator<value_t> output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                               std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
-        requires ordered_collection<versioned_chains_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>
+        requires an_ordered_collection<versioned_chains_t> &&
+                 a_uniform_random_bit_generator<std::remove_cvref_t<generator_type_>>
     {
         static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                       "sampling copies each drawn element into the caller's buffer, so that copy must not throw");
@@ -2630,7 +2634,7 @@ class monotonic_store {
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
                     callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires supports_order_statistics<versioned_chains_t>
+        requires an_order_statistic_tree<versioned_chains_t>
     {
         std::size_t visible_index = 0;
         bool found = false;
@@ -2665,7 +2669,7 @@ class monotonic_store {
               typename callback_missing_type_ = no_op_t>
     status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires supports_order_statistics<versioned_chains_t>
+        requires an_order_statistic_tree<versioned_chains_t>
     {
         std::size_t rank_value = 0;
         bool found = false;
@@ -2772,7 +2776,7 @@ class monotonic_store {
      *  stream of its own. */
     template <typename stream_type_>
     void print(stream_type_ &stream)
-        requires ordered_collection<versioned_chains_t>
+        requires an_ordered_collection<versioned_chains_t>
     {
         stream << "Items: " << entries_.size() << "\n";
         stream << "Imbalance: " << entries_.total_imbalance() << "\n";

@@ -30,7 +30,7 @@
 #include <utility> // `std::exchange`, `std::move`
 
 #include "smashtable/basic_vector.hpp"
-#include "smashtable/row_search.hpp" // `row_kit`, which the befriended Elias-Fano sequence is constrained by
+#include "smashtable/row_search.hpp" // `a_row_kit`, which the befriended Elias-Fano sequence is constrained by
 
 namespace ashvardanian::smashtable {
 
@@ -148,7 +148,7 @@ class immutable_packed_array_view {
 /** An immutable array of unsigned integers between a base and a maximum, built once from values
  *  pulled in order, each kept in the bit width of the maximum less the base. */
 template <std::unsigned_integral value_type_ = std::uint64_t,
-          allocator_of<std::uint64_t> allocator_type_ = default_allocator<std::uint64_t>>
+          an_allocator<std::uint64_t> allocator_type_ = default_allocator<std::uint64_t>>
 class immutable_packed_array {
   public:
     using value_t = value_type_;
@@ -161,7 +161,7 @@ class immutable_packed_array {
                   "immutable_packed_array requires allocators that propagate on move assignment");
 
   private:
-    template <typename, allocator_of<std::uint64_t>, row_kit>
+    template <typename, an_allocator<std::uint64_t>, a_row_kit>
     friend class immutable_elias_fano;
 
     using words_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<std::uint64_t>;

@@ -25,9 +25,9 @@
 namespace ashvardanian::smashtable {
 
 /** A sorted set of unique @p value_type_ ordered by @p comparator_type_. The rank search goes
- *  through @p row_kit_type_ when the element is a @c row_searchable_key ordered by @c less_t, and
+ *  through @p row_kit_type_ when the element is @c a_row_searchable_key ordered by @c less_t, and
  *  through a binary search with the comparator otherwise. */
-template <typename value_type_, typename comparator_type_ = less_t, row_kit row_kit_type_ = native_row_kit_t,
+template <typename value_type_, typename comparator_type_ = less_t, a_row_kit row_kit_type_ = native_row_kit_t,
           typename allocator_type_ = default_allocator<value_type_>>
     requires std::strict_weak_order<comparator_type_ const &, value_type_, value_type_>
 class basic_flat_set {
@@ -61,7 +61,7 @@ class basic_flat_set {
                   "shifting the tail moves elements inside noexcept code, so they must move-assign without throwing");
 
   private:
-    static constexpr bool searches_through_kit_k = row_searchable_key<value_t> && std::same_as<comparator_t, less_t>;
+    static constexpr bool searches_through_kit_k = a_row_searchable_key<value_t> && std::same_as<comparator_t, less_t>;
 
     using elements_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<value_t>;
     using elements_t = basic_vector<value_t, elements_allocator_t>;
@@ -270,7 +270,7 @@ class basic_flat_set {
      *  @par Statuses:
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_>
+    template <a_readable_iterator input_iterator_type_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         if (first == last) return success_k;
         basic_flat_set staged = stage_alike();
@@ -290,7 +290,7 @@ class basic_flat_set {
      *  - @c key_already_exists_k A key repeats inside the range or is already in this set.
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_>
+    template <a_readable_iterator input_iterator_type_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         if (first == last) return success_k;
         basic_flat_set staged = stage_alike();
@@ -311,7 +311,7 @@ class basic_flat_set {
      *  @par Statuses:
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <readable_iterator input_iterator_type_>
+    template <a_readable_iterator input_iterator_type_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         if (first == last) return success_k;
         basic_flat_set staged = stage_alike();
@@ -371,10 +371,10 @@ class basic_flat_set {
      *    newcomer.
      *  - Any status an element's @c copy returns passes through unchanged.
      */
-    template <incumbent_policy_t policy_, readable_iterator input_iterator_type_>
+    template <incumbent_policy_t policy_, a_readable_iterator input_iterator_type_>
     static status_t stage_range_(basic_flat_set &staged, input_iterator_type_ first,
                                  input_iterator_type_ last) noexcept {
-        if constexpr (multipass_iterator<input_iterator_type_>)
+        if constexpr (a_multipass_iterator<input_iterator_type_>)
             if (status_t const room = staged.elements_.reserve(distance_between(first, last)); failed(room))
                 return room;
         return stage_each<value_t>(first, last, [&](value_t &&candidate) noexcept -> status_t {
@@ -444,9 +444,10 @@ class basic_flat_set {
 #pragma endregion Staging
 };
 
-static_assert(ordered_collection<basic_flat_set<std::uint64_t>>,
+static_assert(an_ordered_collection<basic_flat_set<std::uint64_t>>,
               "a flat set answers a key, a bound and a range the way every ordered collection does");
-static_assert(batches_atomically<basic_flat_set<std::uint64_t>>, "a flat set takes a whole batch or none of it");
+static_assert(an_atomically_batching_collection<basic_flat_set<std::uint64_t>>,
+              "a flat set takes a whole batch or none of it");
 static_assert(!basic_flat_set<std::uint64_t>::is_associative::value, "a flat set stores bare keys");
 
 } // namespace ashvardanian::smashtable

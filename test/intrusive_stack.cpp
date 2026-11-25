@@ -27,7 +27,7 @@ struct pushed_record_t {
     std::uint32_t sequence {0};
 };
 
-static_assert(pointer_linked<pushed_record_t>);
+static_assert(a_pointer_linked_record<pushed_record_t>);
 
 /** Four pushers, half of their records alone and half in pairs, and one taker draining as they go:
  *  every record arrives once, with the fields its pusher wrote, and each pusher's in push order. */
