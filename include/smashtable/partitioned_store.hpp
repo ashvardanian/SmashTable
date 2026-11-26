@@ -326,7 +326,7 @@ class partitioned_store {
             return success_k;
         }
         else {
-            auto [copied, status] = mapping_key_or_itself(element).copy();
+            auto [copied, status] = copy_safely<identifier_t>(mapping_key_or_itself(element));
             if (failed(status)) return status;
             front = std::move(copied);
             return success_k;

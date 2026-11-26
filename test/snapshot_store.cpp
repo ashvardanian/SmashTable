@@ -13,14 +13,15 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint8_t`
 
-#include <algorithm> // `std::find`, `std::max_element`, `std::sort`, `std::next_permutation`
-#include <atomic>    // `std::atomic`
-#include <chrono>    // `std::chrono::steady_clock`
-#include <map>       // `std::map`
-#include <numeric>   // `std::iota`
-#include <optional>  // `std::optional`
-#include <thread>    // `std::thread`
-#include <vector>    // `std::vector`
+#include <algorithm>   // `std::find`, `std::max_element`, `std::sort`, `std::next_permutation`
+#include <atomic>      // `std::atomic`
+#include <chrono>      // `std::chrono::steady_clock`
+#include <map>         // `std::map`
+#include <numeric>     // `std::iota`
+#include <optional>    // `std::optional`
+#include <string_view> // `std::string_view`
+#include <thread>      // `std::thread`
+#include <vector>      // `std::vector`
 
 #include <forkunion.hpp>
 
@@ -102,6 +103,46 @@ using snapshot_hash_map_t = snapshot_hash_map<trivial_key_t, int>;
  *  Memory: Heap.
  */
 using snapshot_heavy_set_t = snapshot_hash_set<heavy_key_t>;
+
+/** The status of @c foreign_expected, an enumeration SmashTable has never seen. */
+enum class foreign_status_t { succeeded_k, refused_k };
+
+/** A result shaped like another library's own: a value paired with a status, success tested through
+ *  @c explicit @c operator @c bool, and nothing of SmashTable's @c expected. */
+template <typename value_type_>
+struct foreign_expected {
+    value_type_ value;
+    foreign_status_t status;
+
+    explicit operator bool() const noexcept { return status == foreign_status_t::succeeded_k; }
+};
+
+/** A move-only key copying through @c foreign_expected, and refusing to copy while it is empty. */
+struct foreign_key_t {
+    std::string_view text;
+
+    foreign_key_t() noexcept = default;
+    explicit foreign_key_t(std::string_view text_view) noexcept : text(text_view) {}
+    foreign_key_t(foreign_key_t &&) noexcept = default;
+    foreign_key_t &operator=(foreign_key_t &&) noexcept = default;
+
+    foreign_expected<foreign_key_t> copy() const noexcept {
+        if (text.empty()) return {foreign_key_t {}, foreign_status_t::refused_k};
+        return {foreign_key_t {text}, foreign_status_t::succeeded_k};
+    }
+
+    char const *data() const noexcept { return text.data(); }
+    std::size_t size() const noexcept { return text.size(); }
+    bool operator==(foreign_key_t const &) const noexcept = default;
+};
+
+/**
+ *  Tests: A key whose copy answers another library's expected-like result.
+ *  Ordering: ✗.
+ *  Copy: .copy() → expected-like.
+ *  Memory: Stack.
+ */
+using foreign_key_map_t = strict_serializable_hash_map<foreign_key_t, int>;
 
 /**
  *  Tests: One snapshot and one stamp shared by sixteen independently locked partitions.
@@ -879,6 +920,31 @@ static void test_heavy_keys_round_trip() {
     expect_equal(store.erase(probe), success_k);
     expect_equal(store.contains(probe), false);
     expect_equal(store.versions_count(), 15);
+}
+
+/** Tests that a key copying through another library's result stages, commits and erases, and that
+ *  a refused copy reads as @c unknown_k */
+static void test_foreign_expected_keys_round_trip() {
+
+    foreign_key_map_t store;
+
+    {
+        auto [writer, writer_status] = store.transaction();
+        if (!expect_equal(writer_status, success_k)) return;
+        expect_equal(writer.upsert(mapping<foreign_key_t, int> {foreign_key_t {"alpha"}, 1}), success_k);
+        expect_equal(writer.upsert(mapping<foreign_key_t, int> {foreign_key_t {"beta"}, 2}), success_k);
+        expect_equal(writer.stage(), success_k);
+        expect_equal(writer.commit(), success_k);
+    }
+    expect_equal(store.size(), 2);
+    expect_equal(store.contains(foreign_key_t {"beta"}), true);
+    expect_equal(store.erase(foreign_key_t {"alpha"}), success_k);
+    expect_equal(store.contains(foreign_key_t {"alpha"}), false);
+
+    auto copied = copy_safely(foreign_key_t {"gamma"});
+    if (!expect_equal(copied.status(), success_k)) return;
+    expect_equal(copied->text, std::string_view {"gamma"});
+    expect_equal(copy_safely(foreign_key_t {}).status(), unknown_k);
 }
 
 /** Tests that a group spanning a snapshot store and a monotonic one commits both together */
@@ -4012,6 +4078,7 @@ int main(int argc, char **argv) {
     run_test_case("test_ranked_size_tracks_every_write", test_ranked_size_tracks_every_write);
 
     run_test_case("test_heavy_keys_round_trip", test_heavy_keys_round_trip);
+    run_test_case("test_foreign_expected_keys_round_trip", test_foreign_expected_keys_round_trip);
     run_test_case("test_group_spans_both_stores", test_group_spans_both_stores);
 
     run_test_case("test_lost_update_matches_isolation", test_lost_update_matches_isolation);

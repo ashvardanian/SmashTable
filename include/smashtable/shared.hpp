@@ -1120,10 +1120,25 @@ template <typename value_type_, typename comparable_type_>
     return result.has_value() && *result == value;
 }
 
-/** Concept checking if a type has a @c .copy() method returning @c expected<T>. This allows
- *  non-nothrow-copyable types to participate in safe copy operations. */
+/**
+ *  @brief Whether @p type_ copies through a @c noexcept @c .copy() answering an expected-like
+ *      result, so a type that cannot copy without failing still joins safe copy operations.
+ *
+ *  Expected-like is the shape this library's @c expected shares with other libraries' own: success
+ *  tested through an @c explicit @c operator @c bool, and the copy taken out as <tt>auto [value,
+ *  status]</tt>. Only that shape is asked for, so a string from another library is a key here and this
+ *  library never names its result type.
+ */
 template <typename type_>
 concept a_type_with_copy_method = requires(type_ const &t) {
+    { t.copy() } noexcept;
+    { static_cast<bool>(t.copy()) } noexcept;
+};
+
+/** Whether the @c .copy() of @p type_ answers this library's own @c expected, whose reason for a
+ *  failure passes through as it is. */
+template <typename type_>
+concept a_type_with_copy_into_expected = requires(type_ const &t) {
     { t.copy() } noexcept -> std::same_as<expected<type_>>;
 };
 
@@ -1139,13 +1154,22 @@ concept a_type_with_make_method = requires(args_types_ &&...args) {
  *  @return The copy.
  *
  *  @par Statuses:
- *  - Any status the @c copy method of @p object returns passes through unchanged.
+ *  - Any status the @c copy method of @p object returns passes through unchanged, where it returns
+ *    this library's @c expected.
+ *  - @c unknown_k where it returns another library's result and that result failed, since its
+ *    reason is one this library cannot read.
  */
 template <typename object_type_>
 expected<object_type_> copy_safely(object_type_ const &object) noexcept {
     if constexpr (std::is_nothrow_copy_constructible_v<object_type_>)
         return expected<object_type_>(object_type_ {object}, success_k);
-    else if constexpr (a_type_with_copy_method<object_type_>) return object.copy();
+    else if constexpr (a_type_with_copy_into_expected<object_type_>) return object.copy();
+    else if constexpr (a_type_with_copy_method<object_type_>) {
+        auto copied = object.copy();
+        if (!copied) return unknown_k;
+        auto [value, status] = std::move(copied);
+        return expected<object_type_>(std::move(value), success_k);
+    }
     else {
         static_assert(std::is_nothrow_copy_constructible_v<object_type_> || a_type_with_copy_method<object_type_>,
                       "Type must be nothrow copy constructible or provide .copy() returning an expected");
