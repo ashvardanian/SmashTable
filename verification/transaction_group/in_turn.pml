@@ -11,6 +11,7 @@
  *
  *  - A group whose commit tore ends pending, so a second commit is refused as not permitted.
  *
+ *  @budget 6144
  *  @verify pass sc,rc11
  *  @verify fail sc whole_across_stores=true: a later participant's refusal tears a group that
  *      commits in turn, which is why @c asks_before_writing_k needs every participant to split

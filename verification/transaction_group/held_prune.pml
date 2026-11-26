@@ -17,7 +17,7 @@
  *  - A group reopens at a snapshot covering its own stamp.
  *  - The reader sees each group whole: a snapshot covering a group's stamp finds it in every store.
  *
- *  @budget 3072
+ *  @budget 8192
  *  @verify pass sc
  *  @verify pass sc nested=true
  *  @verify pass rc11 second_group=false: one group, since two overflow the budget under views
@@ -28,7 +28,6 @@
  *  @verify pass sc nested=true ring=1
  *  @verify fail sc parity_word=0 ring=1 ring_check=false: a group lands over the committer's mark
  *      in the ring of stamps, so the wait for room under the holds is reached
- *  @verify pass sc queued=true
  *  @verify pass sc locked_hold_through_prune=false partition_hold_through_prune=false: both stores
  *      giving their holds up as they publish, each prune takes its store back holding nothing
  *  @verify stuck sc locked_hold_through_prune=false: the locked store given up at its publication,

@@ -13,6 +13,7 @@
  *  - A step taken after the cursor saw the flag owes the writer's key, the least of all.
  *  - Nothing may move the version the committer validates between its validation and its write.
  *
+ *  @budget 3072
  *  @verify pass sc,rc11
  *  @verify fail sc,rc11 note_written=false: without the step, the cursor that read the first
  *      partition's front before the insert never re-reads it, and hands over the second-least key

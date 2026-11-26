@@ -4403,26 +4403,33 @@ using standard_waiting_policy_t = standard_waiting_policy<>;
 #pragma endregion Waiting Policies
 
 /**
- *  @brief A reader-writer lock that spins briefly, then parks.
+ *  @brief A reader-writer lock serving its writers in the order they arrived, which spins briefly
+ *      and then parks.
  *
  *  @tparam waiting_policy_type_ Decides what a core does between attempts, and how a spent spin
  *      parks. The default spends nothing and parks on @c std::atomic::wait.
  *  @tparam atomic_reference_ The reference the word is owned through, for one operation at a time.
  *
- *  A writer takes an idle word with one compare-exchange, and an arriving reader with one add it
- *  takes back where it was not admitted. A reader's retries are bounded adds, which is what the
- *  word's layout buys: every writer bit sits above the reader tally, so @em no @em writer @em here
- *  and @em room @em for @em one @em more @em reader is the single question does the sum stay within
- *  the limit. A reference satisfying @c an_extended_atomic_ref answers it in one instruction and,
- *  when the answer is no, without taking the line at all; @c atomic_ref answers it with the loop
- *  that question replaces. Dropping the held bit reads nothing back, so it is posted rather than
- *  waited on. Releasing a reader is the one path that cannot be either, since the count it returns
- *  is what tells the last reader out to wake a writer.
+ *  One word holds three fields: the writers queued or holding on top, the readers in the middle,
+ *  and the ticket being served at the bottom. A writer takes the next ticket, the serving one plus
+ *  the writers ahead of it, with one add, and enters once the serving ticket is its own and the
+ *  readers have drained. Its unlock steps the serving ticket and leaves the queue in one posted
+ *  add. Tickets are only ever compared for equality, so they wrap freely.
+ *
+ *  An arriving reader takes one add it takes back where it was not admitted, and its retries are
+ *  bounded adds, which is what the layout buys: the writers sit above the readers and the serving
+ *  ticket below them, so whether no writer is queued and one more reader fits is the single
+ *  question of whether the sum stays within the limit, whatever ticket is served. A reference
+ *  satisfying @c an_extended_atomic_ref answers it in one instruction and, when the answer is no,
+ *  without taking the line at all; @c atomic_ref answers it with the loop that question replaces.
+ *  Releasing a reader is the one path that cannot be posted, since the count it returns is what
+ *  tells the last reader out to wake a writer.
  *
  *  Locks here are held across user code - callbacks, comparators, allocators, a whole commit loop -
  *  so a pure spinner would burn a core while a holder walks a range, and pure parking would pay a
- *  syscall for the uncontended case that dominates. Waiting writers are counted, and a non-zero
- *  count turns new readers away, so a steady read load cannot starve any of them indefinitely.
+ *  syscall for the uncontended case that dominates. A queued writer turns new readers away, so a
+ *  steady read load cannot starve the writers, and the tickets keep any writer from starving the
+ *  others behind it.
  *
  *  Offers exactly what @c std::shared_mutex is used for here, and nothing else: no recursion, no
  *  timed acquisition, no upgrading.
@@ -4431,30 +4438,36 @@ template <a_parking_waiting_policy<std::uint32_t *, std::uint32_t> waiting_polic
           template <typename> class atomic_reference_ = atomic_ref>
 class spin_shared_mutex {
 
-    /** Set while one writer owns the lock; the reader count is zero for as long as it is. */
-    static constexpr std::uint32_t writer_held_k = 1u << 31;
+    /** The bits of a ticket, and of the writer count, which has to stay below the ticket count, or
+     *  two queued writers share a ticket: 1'023 writers queued or holding at once, past the
+     *  hardware threads of any machine sharing one lock. */
+    static constexpr unsigned ticket_bits_k = 10;
 
-    /** One unit of the waiting-writer tally, which occupies the fifteen bits below the held bit. */
-    static constexpr std::uint32_t one_writer_waiting_k = 1u << 16;
+    /** The bits of the reader count, whatever the ticket and the writer count leave: twelve. */
+    static constexpr unsigned readers_bits_k = 32 - 2 * ticket_bits_k;
 
-    /** Where the waiting-writer tally lives, capped at 32'767 writers parked at once. */
-    static constexpr std::uint32_t writers_waiting_mask_k = 0x7FFF0000u;
+    /** Where the ticket being served lives, at the bottom of the word. */
+    static constexpr std::uint32_t serving_mask_k = (1u << ticket_bits_k) - 1;
 
-    /** Where the reader tally lives, the units of admitted and of refused readers together. */
-    static constexpr std::uint32_t readers_mask_k = 0x0000FFFFu;
+    /** One unit of the reader count, just above the serving ticket. */
+    static constexpr std::uint32_t one_reader_k = serving_mask_k + 1;
 
-    /** How many readers hold at once: half the tally, the other half being room for the units of
-     *  refused readers, which would otherwise carry into the waiting writers. */
-    static constexpr std::uint32_t readers_limit_k = readers_mask_k >> 1;
+    /** One unit of the writer count, above the readers, its own carry falling out of the word. */
+    static constexpr std::uint32_t one_writer_k = one_reader_k << readers_bits_k;
 
-    /** What turns an arriving reader away: an owning writer, or any writer queued ahead of it. */
-    static constexpr std::uint32_t writer_bits_k = writer_held_k | writers_waiting_mask_k;
+    /** Where the reader count lives, the units of admitted and of refused readers together. */
+    static constexpr std::uint32_t readers_mask_k = one_writer_k - one_reader_k;
+
+    /** The word a reader is admitted below: no writer queued, and fewer readers than half the
+     *  count, 2'047, the other half being room for refused readers' units, so 4'095 readers may
+     *  arrive at once before one carries into the writers. */
+    static constexpr std::uint32_t readers_limit_k = (readers_mask_k >> 1) & readers_mask_k;
 
     /** How long to spin before parking, which is about the cost of one uncontended handoff. */
     static constexpr std::size_t spins_before_parking_k = 64;
 
-    /** The owning bit, the waiting-writer tally and the reader tally, in one word every path
-     *  drives. Plain rather than @c std::atomic, so the caller picks the reference owning it. */
+    /** The writer count, the reader count and the serving ticket, in one word every path drives.
+     *  Plain rather than @c std::atomic, so the caller picks the reference owning it. */
     alignas(atomic_alignment<std::uint32_t>) std::uint32_t state_ {0};
 
     /** The reference every operation below wraps around @c state_, for one operation and no
@@ -4470,66 +4483,55 @@ class spin_shared_mutex {
     spin_shared_mutex &operator=(spin_shared_mutex const &) = delete;
 
   private:
-    /** Takes the word from idle to held in one exchange, answering what the word held before. */
-    [[nodiscard]] std::uint32_t take_as_writer_() noexcept {
-        std::uint32_t observed = 0;
-        if (word_ref_t(state_).compare_exchange_strong(observed, writer_held_k, memory_order_acquire_k,
-                                                       memory_order_relaxed_k))
-            return 0;
-        return observed;
-    }
-
-    /** Adds one reader while the sum stays within the limit, which every writer bit overflows. */
+    /** Adds one reader while the sum stays within the limit, which any queued writer overflows. */
     [[nodiscard]] std::uint32_t take_as_reader_() noexcept {
-        return atomic_fetch_add_if_at_most<atomic_reference_>(state_, 1u, readers_limit_k, memory_order_acquire_k);
+        return atomic_fetch_add_if_at_most<atomic_reference_>(state_, one_reader_k, readers_limit_k + serving_mask_k,
+                                                              memory_order_acquire_k);
     }
 
-    /** Adds one reader whatever the word holds, and takes the unit back where a writer bit or a
-     *  full tally turns it away, waking the parked threads when it is the last unit out. */
+    /** Adds one reader whatever the word holds, and takes the unit back where a queued writer or a
+     *  full count turns it away, waking the parked threads when it is the last unit out. */
     [[nodiscard]] std::uint32_t enter_as_reader_() noexcept {
-        std::uint32_t const before = word_ref_t(state_).fetch_add(1u, memory_order_acquire_k);
+        std::uint32_t const before = word_ref_t(state_).fetch_add(one_reader_k, memory_order_acquire_k);
         if (before >= readers_limit_k) {
-            std::uint32_t const left = word_ref_t(state_).fetch_sub(1u, memory_order_release_k);
-            if ((left & readers_mask_k) == 1) waiting_.notify_waiters(&state_);
+            std::uint32_t const left = word_ref_t(state_).fetch_sub(one_reader_k, memory_order_release_k);
+            if ((left & readers_mask_k) == one_reader_k) waiting_.notify_waiters(&state_);
         }
         return before;
     }
 
   public:
-    [[nodiscard]] bool try_lock() noexcept { return take_as_writer_() == 0; }
+    [[nodiscard]] bool try_lock() noexcept {
+        // Taken only with nobody queued and nobody reading, its serving ticket becoming ours.
+        std::uint32_t idle = word_ref_t(state_).load(memory_order_relaxed_k) & serving_mask_k;
+        return word_ref_t(state_).compare_exchange_strong(idle, idle + one_writer_k, memory_order_acquire_k,
+                                                          memory_order_relaxed_k);
+    }
 
     [[nodiscard]] bool try_lock_shared() noexcept { return take_as_reader_() < readers_limit_k; }
 
     void lock() noexcept {
-        for (std::size_t attempts_spent = 0; attempts_spent != spins_before_parking_k; ++attempts_spent) {
-            std::uint32_t const observed = take_as_writer_();
-            if (observed == 0) return;
-            waiting_(&state_, observed, attempts_spent);
-        }
-
-        // Joining the tally is what stops a stream of readers from renewing the lock forever. A tally
-        // rather than a flag, so one writer taking the lock cannot erase the intent of the others.
+        // Taking the ticket is joining the queue: from this add on, new readers are turned away and
+        // every writer that took one earlier is served first.
         word_ref_t state_ref(state_);
-        std::uint32_t observed =
-            state_ref.fetch_add(one_writer_waiting_k, memory_order_relaxed_k) + one_writer_waiting_k;
-        while (true) {
-            // Leaving the tally and taking the lock are one write, so no arrival slips between them,
-            // and the pair is not a sum any bound can decide.
-            if ((observed & (writer_held_k | readers_mask_k)) == 0) {
-                std::uint32_t const taken = (observed - one_writer_waiting_k) | writer_held_k;
-                if (state_ref.compare_exchange_weak(observed, taken, memory_order_acquire_k, memory_order_relaxed_k))
-                    return;
-                continue; // ? The exchange refreshed `observed`
-            }
-            waiting_.wait_until_changed(&state_, observed);
-            observed = state_ref.load(memory_order_relaxed_k);
+        std::uint32_t observed = state_ref.fetch_add(one_writer_k, memory_order_acquire_k);
+        assert(observed < 0u - one_writer_k && "more writers queued than there are tickets");
+        std::uint32_t const ticket = (observed + observed / one_writer_k) & serving_mask_k;
+        observed += one_writer_k;
+        for (std::size_t attempts_spent = 0; (observed & (readers_mask_k | serving_mask_k)) != ticket;
+             ++attempts_spent) {
+            if (attempts_spent < spins_before_parking_k) waiting_(&state_, observed, attempts_spent);
+            else waiting_.wait_until_changed(&state_, observed);
+            observed = state_ref.load(memory_order_acquire_k);
         }
     }
 
     void unlock() noexcept {
-        // Only the held bit is ours to drop: the writers queued behind us keep their places, and
-        // keep new readers out while they wait. Nothing reads what the word held, so nothing waits.
-        atomic_post_clear_bits<atomic_reference_>(state_, writer_held_k, memory_order_release_k);
+        // Only the holder moves the serving ticket, so the relaxed read is exact, and stepping it
+        // by a difference rather than by one keeps its wraparound from carrying into the readers.
+        std::uint32_t const serving = word_ref_t(state_).load(memory_order_relaxed_k) & serving_mask_k;
+        std::uint32_t const next = (serving + 1) & serving_mask_k;
+        atomic_post_add<atomic_reference_>(state_, next - serving - one_writer_k, memory_order_release_k);
         waiting_.notify_waiters(&state_);
     }
 
@@ -4552,9 +4554,9 @@ class spin_shared_mutex {
     void unlock_shared() noexcept {
         // The count is read back, so this one cannot be posted: the last reader out is the only one
         // a waiting writer is still blocked on.
-        std::uint32_t const previous = word_ref_t(state_).fetch_sub(1, memory_order_release_k);
-        assert((previous & readers_mask_k) != 0 && "an extra unlock would borrow from the waiting-writer tally");
-        if ((previous & readers_mask_k) == 1) waiting_.notify_waiters(&state_);
+        std::uint32_t const previous = word_ref_t(state_).fetch_sub(one_reader_k, memory_order_release_k);
+        assert((previous & readers_mask_k) != 0 && "an extra unlock would take a unit from the queued writers");
+        if ((previous & readers_mask_k) == one_reader_k) waiting_.notify_waiters(&state_);
     }
 };
 

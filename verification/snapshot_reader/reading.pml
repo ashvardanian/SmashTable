@@ -12,6 +12,7 @@
  *
  *  - The claim it holds is what keeps the prune off the version it reads.
  *
+ *  @budget 2048
  *  @verify pass sc,rc11
  *  @verify pass sc committers=2
  *  @verify fail sc,rc11 held_claim=false: giving it back before the reads, the commit that prunes

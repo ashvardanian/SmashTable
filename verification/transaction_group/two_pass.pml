@@ -8,7 +8,7 @@
  *  Each group publishes over the keys it watched, so either group's validation can be refused by
  *  the other's publication as well as by the writer's.
  *
- *  @budget 4096
+ *  @budget 8192
  *  @verify pass sc,rc11
  *  @verify fail sc held_validation=false: validating under a shared lock dropped before the
  *      publication's unique lock, the other group publishes over the watched key in the gap, the

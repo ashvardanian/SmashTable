@@ -291,7 +291,7 @@ static_assert(an_extended_atomic_ref<fu::preferred_atomic_ref<std::uint32_t>, st
 template <typename mutex_type_>
 static void test_shared_mutex_keeps_room_above_its_readers() {
     mutex_type_ mutex;
-    constexpr std::uint32_t readers_limit_k = 0xFFFFu >> 1;
+    constexpr std::uint32_t readers_limit_k = 0xFFFu >> 1;
     std::uint32_t admitted = 0;
     while (admitted != readers_limit_k && mutex.try_lock_shared()) ++admitted;
     expect_equal(admitted, readers_limit_k);
@@ -413,6 +413,121 @@ static void test_shared_mutex_admits_every_writer() {
 
     // A parked writer outlives the readers, so starvation reads as a reader that ran out of budget.
     expect_equal(readers_spent.load(), std::size_t {0}, "a reader spent its budget while a writer was parked");
+}
+
+/** A thread a test watches, named by its id, and whether it has waited on a lock since. */
+struct watched_thread_t {
+    std::atomic<std::thread::id> thread {};
+    std::atomic<std::uint32_t> waited {0};
+};
+
+/**
+ *  @brief A parking policy that marks each watched thread's slot as it waits, then waits as its
+ *      base policy does.
+ *
+ *  A lock waits only once it has queued its caller, so a marked slot tells a test the thread is
+ *  queued without reading the lock's word. The slots are static because a policy is
+ *  default-constructed inside the mutex, so there is nowhere to hand them in, and because only one
+ *  test runs at once.
+ */
+template <typename waiting_policy_type_>
+struct announcing_waiting_policy : waiting_policy_type_ {
+
+    /** The threads the running case watches, empty outside it. */
+    static inline std::span<watched_thread_t> watched {};
+
+    /** Marks the calling thread's slot, if it is watched. */
+    static void mark_waited() noexcept {
+        std::thread::id const self = std::this_thread::get_id();
+        for (watched_thread_t &slot : watched)
+            if (slot.thread.load(std::memory_order_relaxed) == self) slot.waited.store(1, std::memory_order_release);
+    }
+
+    template <typename watched_type_, typename value_type_, typename attempts_type_>
+    void operator()(watched_type_ const &word, value_type_ const observed,
+                    attempts_type_ const attempts_spent) const noexcept {
+        mark_waited();
+        waiting_policy_type_::operator()(word, observed, attempts_spent);
+    }
+
+    template <typename watched_type_, typename value_type_>
+    void wait_until_changed(watched_type_ const &word, value_type_ const observed) const noexcept {
+        mark_waited();
+        waiting_policy_type_::wait_until_changed(word, observed);
+    }
+};
+
+/**
+ *  @brief Four writers queued one by one behind a holder enter in the order they queued, and sixty
+ *      readers arriving behind them wait until the last of them has left.
+ *
+ *  The holder alternates between a writer and a reader, and the first round queues across the
+ *  ticket wraparound. A writer records its entry under the lock, so the order and the exclusion are
+ *  read back after the join.
+ */
+template <typename waiting_policy_type_, template <typename> class atomic_reference_>
+static void test_shared_mutex_serves_writers_in_order() {
+    using policy_t = announcing_waiting_policy<waiting_policy_type_>;
+    using mutex_t = spin_shared_mutex<policy_t, atomic_reference_>;
+    constexpr std::size_t writers_count_k = 4;
+    constexpr std::size_t readers_count_k = 60;
+    constexpr std::size_t tickets_count_k = 1024; // ? The ticket field's width, ten bits
+
+    mutex_t mutex;
+    for (std::size_t ticket = 0; ticket != tickets_count_k - 2; ++ticket) {
+        mutex.lock();
+        mutex.unlock();
+    }
+
+    std::size_t const rounds = scaled_iterations(16);
+    for (std::size_t round = 0; round != rounds; ++round) {
+        std::array<watched_thread_t, writers_count_k + readers_count_k> threads_watched {};
+        policy_t::watched = threads_watched;
+        std::array<std::size_t, writers_count_k> entered {};
+        std::size_t entries = 0;
+        std::atomic<std::uint32_t> writers_inside {0};
+        std::atomic<std::uint32_t> readers_inside {0};
+
+        bool const holder_writes = round % 2 == 0;
+        if (holder_writes) mutex.lock();
+        else mutex.lock_shared();
+
+        std::vector<std::thread> threads;
+        for (std::size_t writer = 0; writer != writers_count_k; ++writer) {
+            threads.emplace_back([&, writer]() noexcept {
+                threads_watched[writer].thread.store(std::this_thread::get_id());
+                unique_lock<mutex_t> guard {mutex};
+                expect_equal(writers_inside.fetch_add(1) + readers_inside.load(), 0u, "writer {} not alone", writer);
+                entered[entries++] = writer;
+                writers_inside.fetch_sub(1);
+            });
+            expect_true(
+                spin_until([&] { return threads_watched[writer].waited.load(std::memory_order_acquire) != 0; }));
+        }
+        for (std::size_t reader = 0; reader != readers_count_k; ++reader)
+            threads.emplace_back([&, reader]() noexcept {
+                threads_watched[writers_count_k + reader].thread.store(std::this_thread::get_id());
+                shared_lock<mutex_t> guard {mutex};
+                readers_inside.fetch_add(1);
+                expect_equal(writers_inside.load(), 0u, "a reader beside a writer");
+                expect_equal(entries, writers_count_k, "a reader entered while a writer waited");
+                readers_inside.fetch_sub(1);
+            });
+        expect_true(spin_until([&] {
+            for (watched_thread_t const &slot : threads_watched)
+                if (slot.waited.load(std::memory_order_acquire) == 0) return false;
+            return true;
+        }));
+
+        if (holder_writes) mutex.unlock();
+        else mutex.unlock_shared();
+        for (std::thread &thread : threads) thread.join();
+        policy_t::watched = {};
+
+        if (!expect_equal(entries, writers_count_k, "round {}", round)) return;
+        for (std::size_t entry = 0; entry != writers_count_k; ++entry)
+            expect_equal(entered[entry], entry, "round {}: entry {} out of ticket order", round, entry);
+    }
 }
 
 #pragma endregion Shared Mutex Tests
@@ -618,13 +733,13 @@ static void test_extended_atomics_take_the_bounded_path() {
     extended_mutex_t mutex;
     mutex.lock();
     expect_equal(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {0},
-                 "a writer takes an idle word with one exchange, which no bound decides");
+                 "a writer takes its ticket with one add, which no bound decides");
     expect_equal(mutex.try_lock_shared(), false, "a reader is refused while a writer holds");
     expect_equal(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {1},
                  "a reader that may be refused asks with the bounded add, which writes nothing when it loses");
     mutex.unlock();
     expect_equal(counting_extended_ref<std::uint32_t>::posted_writes.load(), std::size_t {1},
-                 "and drops the held bit by posting it, since nothing reads what the word held");
+                 "and steps the serving ticket by posting it, since nothing reads what the word held");
 
     mutex.lock_shared();
     mutex.lock_shared();
@@ -2140,6 +2255,11 @@ int main(int argc, char **argv) {
                   test_shared_mutex_admits_every_writer<spin_shared_mutex_t>);
     run_test_case("test_shared_mutex_admits_every_writer<forkunion_mutex_t>",
                   test_shared_mutex_admits_every_writer<forkunion_mutex_t>);
+    run_test_case("test_shared_mutex_serves_writers_in_order<standard_waiting_policy_t, atomic_ref>",
+                  test_shared_mutex_serves_writers_in_order<ashvardanian::smashtable::standard_waiting_policy_t,
+                                                            ashvardanian::smashtable::atomic_ref>);
+    run_test_case("test_shared_mutex_serves_writers_in_order<fu::preferred_yield_t, fu::preferred_atomic_ref>",
+                  test_shared_mutex_serves_writers_in_order<fu::preferred_yield_t, fu::preferred_atomic_ref>);
 
     run_test_case("test_extended_atomics_take_the_bounded_path", test_extended_atomics_take_the_bounded_path);
     run_test_case("test_extended_atomics_reach_the_pinned_table", test_extended_atomics_reach_the_pinned_table);
